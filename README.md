@@ -49,6 +49,11 @@ against the backend contract in
   uploading, manual folder actions, and account/profile access from the
   sidebar. English is the default; the UI switches to Spanish only when the
   current keyboard layout is Spanish.
+- **Fast gallery search**: filter the sidebar by name or path, with `Ctrl+F` /
+  `Cmd+F` focusing the search field and `Enter` selecting the first match.
+- **Sensible rating target**: a `picstome://rate` link uses the selected
+  gallery's folder automatically; the folder picker only appears when no
+  gallery is linked/selected.
 - **Fake API**: seeded galleries (50 + 8 photos), signed URLs, Range support,
   upload/version/delete, browser auth page and a fake web UI to simulate remote
   changes.
@@ -81,7 +86,7 @@ PICSTOME_API_BASE=http://127.0.0.1:8787 PICSTOME_MOCK=1 cargo run -p picstome-sy
 
 1. Open **GitHub → Releases** and download the latest **draft** asset (maintainers
    see drafts on the releases page), e.g. `Picstome.Sync_<version>_universal.dmg`.
-   With the CLI: `gh release download v0.1.5 --pattern '*.dmg'`.
+   With the CLI: `gh release download v0.1.6 --pattern '*.dmg'`.
    You can also use the `build` workflow artifacts under **Actions → build**.
 2. Install it, open **Info** in the header and check **Version**, **Build**,
    **Mode** and **API target**.

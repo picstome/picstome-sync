@@ -121,19 +121,23 @@ def prepare_state(user_data, photos, gallery, rating_dir):
     os.makedirs(user_data, exist_ok=True)
     os.makedirs(photos, exist_ok=True)
     os.makedirs(rating_dir, exist_ok=True)
-    with open(os.path.join(user_data, "index.json"), "w", encoding="utf-8") as handle:
-        json.dump(
-            [
-                {
-                    "galleryId": gallery,
-                    "name": "E2E Gallery",
-                    "localPath": photos,
-                }
-            ],
-            handle,
+    galleries = [
+        {
+            "galleryId": gallery,
+            "name": "E2E Gallery",
+            "localPath": photos,
+        }
+    ]
+    if MOCK:
+        galleries.append(
+            {
+                "galleryId": "G999",
+                "name": "Other Gallery",
+                "localPath": rating_dir,
+            }
         )
-    with open(os.path.join(user_data, "config.json"), "w", encoding="utf-8") as handle:
-        json.dump({"photosDir": rating_dir}, handle)
+    with open(os.path.join(user_data, "index.json"), "w", encoding="utf-8") as handle:
+        json.dump(galleries, handle)
 
 
 def start_mock():
@@ -296,6 +300,39 @@ def main():
         assert dom["badge"] == expected_badge, (kind, dom["badge"])
         assert not dom["badgeHidden"], "environment badge should always be visible"
 
+        if MOCK:
+            search_state = json.loads(
+                run_async(
+                    session,
+                    """
+                    const done = arguments[arguments.length - 1];
+                    const input = document.getElementById('gallerySearch');
+                    const setQuery = (value) => {
+                      input.value = value;
+                      input.dispatchEvent(new Event('input', { bubbles: true }));
+                    };
+                    setQuery('Other');
+                    const otherRows = document.querySelectorAll('.gallery-row').length;
+                    setQuery('zzz');
+                    const emptyVisible = !document.getElementById('searchEmpty').classList.contains('hidden');
+                    setQuery('');
+                    const allRows = document.querySelectorAll('.gallery-row').length;
+                    document.dispatchEvent(new KeyboardEvent('keydown', { key: 'f', ctrlKey: true, bubbles: true }));
+                    const focused = document.activeElement && document.activeElement.id;
+                    done(JSON.stringify({ otherRows, emptyVisible, allRows, focused }));
+                    """,
+                )
+            )
+            log("search:", search_state)
+            assert search_state["otherRows"] == 1, search_state
+            assert search_state["emptyVisible"], search_state
+            assert search_state["allRows"] == 2, search_state
+            assert search_state["focused"] == "gallerySearch", search_state
+            run_async(
+                session,
+                "const done = arguments[arguments.length - 1]; document.getElementById('gallerySearch').blur(); done('blurred');",
+            )
+
         first = js_invoke(session, "sync_gallery", {"galleryId": gallery})
         log("first:", first["counts"], "errors:", first["errors"])
         assert not first["errors"], first["errors"]
@@ -338,102 +375,112 @@ def main():
             log("final:", final["counts"], "skipped:", final["skipped"])
             assert final["skipped"], final["counts"]
 
-        # Remote deletion: Sync must ask what to do and never re-upload silently.
-        manifest_request = urllib.request.Request(
-            f"{api_base}/api/v1/manifest?gallery=G123",
-            headers={
-                "Accept": "application/json",
-                "Authorization": "Bearer demo-token",
-            },
-        )
-        with urllib.request.urlopen(manifest_request, timeout=30) as response:
-            remote_manifest = json.loads(response.read())
-        removed = remote_manifest["photos"][0]
-        remove_request = urllib.request.Request(
-            f"{api_base}/api/v1/dev/remove",
-            data=json.dumps(
-                {"gallery_id": "G123", "photo_id": removed["id"]}
-            ).encode(),
-            headers={"Content-Type": "application/json"},
-            method="POST",
-        )
-        urllib.request.urlopen(remove_request, timeout=30).read()
-
-        run_async(
-            session,
-            "const done = arguments[arguments.length - 1]; document.getElementById('btnSync').click(); done('clicked');",
-        )
-        deadline = time.time() + 60
-        remote_prompt = None
-        while time.time() < deadline:
-            remote_prompt = json.loads(
-                run_async(
-                    session,
-                    """
-                    const done = arguments[arguments.length - 1];
-                    const modal = document.getElementById('remoteDeletedModal');
-                    done(JSON.stringify({
-                      visible: !modal.classList.contains('hidden'),
-                      title: document.getElementById('remoteDeletedTitle').textContent,
-                      hint: document.getElementById('remoteDeletedHint').textContent,
-                      list: document.getElementById('remoteDeletedList').textContent
-                    }));
-                    """,
-                )
+        if MOCK:
+            # Remote deletion: Sync must ask what to do and never re-upload silently.
+            manifest_request = urllib.request.Request(
+                f"{api_base}/api/v1/manifest?gallery=G123",
+                headers={
+                    "Accept": "application/json",
+                    "Authorization": "Bearer demo-token",
+                },
             )
-            if remote_prompt["visible"]:
-                break
-            time.sleep(0.4)
-        log("remote deletion prompt:", remote_prompt)
-        assert remote_prompt and remote_prompt["visible"], "remote deletion prompt did not open"
-        assert "deleted" in remote_prompt["title"].lower(), remote_prompt
-        assert removed["filename"] in remote_prompt["list"], remote_prompt
-
-        removed_path = os.path.join(photos, removed["filename"])
-        assert os.path.exists(removed_path), "photo should exist before resolving"
-        run_async(
-            session,
-            "const done = arguments[arguments.length - 1]; document.getElementById('btnRemoteDeleteLocal').click(); done('clicked');",
-        )
-        deadline = time.time() + 30
-        while time.time() < deadline:
-            state_after = json.loads(
-                run_async(
-                    session,
-                    """
-                    const done = arguments[arguments.length - 1];
-                    done(JSON.stringify({
-                      remote: !document.getElementById('remoteDeletedModal').classList.contains('hidden'),
-                      rating: !document.getElementById('ratingModal').classList.contains('hidden')
-                    }));
-                    """,
-                )
+            with urllib.request.urlopen(manifest_request, timeout=30) as response:
+                remote_manifest = json.loads(response.read())
+            removed = remote_manifest["photos"][0]
+            remove_request = urllib.request.Request(
+                f"{api_base}/api/v1/dev/remove",
+                data=json.dumps(
+                    {"gallery_id": "G123", "photo_id": removed["id"]}
+                ).encode(),
+                headers={"Content-Type": "application/json"},
+                method="POST",
             )
-            if not state_after["remote"]:
-                break
-            time.sleep(0.2)
-        assert not os.path.exists(removed_path), "Delete locally should remove the file"
-        run_async(
-            session,
-            "const done = arguments[arguments.length - 1]; if (!document.getElementById('ratingModal').classList.contains('hidden')) document.getElementById('btnRatingClose').click(); done('closed');",
-        )
-        after_remote = js_invoke(session, "sync_gallery", {"galleryId": gallery})
-        log("after remote delete:", after_remote["counts"], "skipped:", after_remote["skipped"])
-        assert not after_remote["uploaded"], "remote-deleted photo must not be uploaded"
-        assert not after_remote["remoteDeleted"], after_remote["remoteDeleted"]
+            urllib.request.urlopen(remove_request, timeout=30).read()
 
-        # Rating modal: deep link + real exiftool write on a separate folder.
-        rating_name = "rating-photo.jpg"
-        fixture = os.path.join(ROOT, "src-tauri", "tests", "fixtures", "pixel.jpg")
-        with open(fixture, "rb") as src, open(
-            os.path.join(rating_dir, rating_name), "wb"
-        ) as out:
-            out.write(src.read())
+            run_async(
+                session,
+                "const done = arguments[arguments.length - 1]; document.getElementById('btnSync').click(); done('clicked');",
+            )
+            deadline = time.time() + 60
+            remote_prompt = None
+            while time.time() < deadline:
+                remote_prompt = json.loads(
+                    run_async(
+                        session,
+                        """
+                        const done = arguments[arguments.length - 1];
+                        const modal = document.getElementById('remoteDeletedModal');
+                        done(JSON.stringify({
+                          visible: !modal.classList.contains('hidden'),
+                          title: document.getElementById('remoteDeletedTitle').textContent,
+                          hint: document.getElementById('remoteDeletedHint').textContent,
+                          list: document.getElementById('remoteDeletedList').textContent
+                        }));
+                        """,
+                    )
+                )
+                if remote_prompt["visible"]:
+                    break
+                time.sleep(0.4)
+            log("remote deletion prompt:", remote_prompt)
+            assert remote_prompt and remote_prompt["visible"], "remote deletion prompt did not open"
+            assert "deleted" in remote_prompt["title"].lower(), remote_prompt
+            assert removed["filename"] in remote_prompt["list"], remote_prompt
+
+            removed_path = os.path.join(photos, removed["filename"])
+            assert os.path.exists(removed_path), "photo should exist before resolving"
+            run_async(
+                session,
+                "const done = arguments[arguments.length - 1]; document.getElementById('btnRemoteDeleteLocal').click(); done('clicked');",
+            )
+            deadline = time.time() + 30
+            while time.time() < deadline:
+                state_after = json.loads(
+                    run_async(
+                        session,
+                        """
+                        const done = arguments[arguments.length - 1];
+                        done(JSON.stringify({
+                          remote: !document.getElementById('remoteDeletedModal').classList.contains('hidden'),
+                          rating: !document.getElementById('ratingModal').classList.contains('hidden')
+                        }));
+                        """,
+                    )
+                )
+                if not state_after["remote"]:
+                    break
+                time.sleep(0.2)
+            assert not os.path.exists(removed_path), "Delete locally should remove the file"
+            run_async(
+                session,
+                "const done = arguments[arguments.length - 1]; if (!document.getElementById('ratingModal').classList.contains('hidden')) document.getElementById('btnRatingClose').click(); done('closed');",
+            )
+            after_remote = js_invoke(session, "sync_gallery", {"galleryId": gallery})
+            log("after remote delete:", after_remote["counts"], "skipped:", after_remote["skipped"])
+            assert not after_remote["uploaded"], "remote-deleted photo must not be uploaded"
+            assert not after_remote["remoteDeleted"], after_remote["remoteDeleted"]
+
+        # Rating modal: deep link with no gallery must fall back to the selected gallery.
+        rate_name = next(
+            name
+            for name in files
+            if name.endswith(".jpg") and os.path.exists(os.path.join(photos, name))
+        )
+        rate_stem = os.path.splitext(rate_name)[0]
         js_invoke(
             session,
             "dev_handle_deep_link",
-            {"url": "picstome://rate?files=rating-photo&rating=4"},
+            {"url": f"picstome://rate?files={rate_stem}&rating=4"},
         )
+        rating_target = run_async(
+            session,
+            """
+            const done = arguments[arguments.length - 1];
+            done(document.getElementById('ratingTarget').textContent);
+            """,
+        )
+        log("rating target:", rating_target)
+        assert photos in rating_target, rating_target
         rate_result = run_async(
             session,
             """

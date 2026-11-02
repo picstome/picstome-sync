@@ -15,6 +15,7 @@ const state = {
     mock: false,
     auth: { connected: false, name: null, email: null },
     galleries: [],
+    galleryQuery: "",
     currentGalleryId: null,
     syncBusy: false,
     progress: null,
@@ -45,6 +46,8 @@ const els = {
     galleriesLabel: document.getElementById("galleriesLabel"),
     btnAddGallery: document.getElementById("btnAddGallery"),
     galleryList: document.getElementById("galleryList"),
+    gallerySearch: document.getElementById("gallerySearch"),
+    searchEmpty: document.getElementById("searchEmpty"),
     syncEmpty: document.getElementById("syncEmpty"),
     emptyTitle: document.getElementById("emptyTitle"),
     emptyHint: document.getElementById("emptyHint"),
@@ -211,6 +214,8 @@ function applyStrings() {
     if (!s) return;
 
     els.galleriesLabel.textContent = s.galleries;
+    els.gallerySearch.placeholder = s.searchGalleries;
+    els.searchEmpty.textContent = s.noSearchResults;
     els.emptyTitle.textContent = s.noGalleries;
     els.emptyHint.textContent = s.noGalleriesHint;
     els.btnDemo.textContent = s.syncDemo;
@@ -313,13 +318,28 @@ function renderRuntimeInfo() {
         : "—";
 }
 
+function filteredGalleries() {
+    const query = state.galleryQuery.trim().toLowerCase();
+    if (!query) return state.galleries;
+    return state.galleries.filter(
+        (gallery) =>
+            gallery.name.toLowerCase().includes(query) ||
+            gallery.localPath.toLowerCase().includes(query),
+    );
+}
+
 function renderGalleryList() {
     const s = state.strings;
     if (!s) return;
     els.galleryList.replaceChildren();
     els.syncEmpty.classList.toggle("hidden", state.galleries.length > 0);
+    const galleries = filteredGalleries();
+    els.searchEmpty.classList.toggle(
+        "hidden",
+        state.galleries.length === 0 || galleries.length > 0,
+    );
 
-    for (const gallery of state.galleries) {
+    for (const gallery of galleries) {
         const row = document.createElement("button");
         row.type = "button";
         row.className = "gallery-row";
@@ -740,12 +760,17 @@ function openFavoritesPrompt(report) {
 }
 
 function openRateLink({ files, rating, gallery }) {
+    const requested = gallery
+        ? state.galleries.find((item) => item.galleryId === gallery)
+        : null;
+    const current = currentGallery();
+    const targetGallery = requested || current;
     state.rating = {
         open: true,
         files: Array.isArray(files) ? files : [],
         value: normalizeRating(rating || state.config.lastRating || "1"),
-        galleryId: gallery || null,
-        photosDir: state.config.photosDir || null,
+        galleryId: targetGallery?.galleryId || null,
+        photosDir: targetGallery ? null : state.config.photosDir || null,
         source: "link",
         busy: false,
         result: null,
@@ -1126,7 +1151,35 @@ els.remoteDeletedModal.addEventListener("click", (event) => {
     }
 });
 
+els.gallerySearch.addEventListener("input", () => {
+    state.galleryQuery = els.gallerySearch.value;
+    renderGalleryList();
+});
+
+els.gallerySearch.addEventListener("keydown", (event) => {
+    if (event.key === "Enter") {
+        const first = filteredGalleries()[0];
+        if (first) {
+            state.currentGalleryId = first.galleryId;
+            state.report = null;
+            renderAll();
+        }
+    } else if (event.key === "Escape") {
+        event.stopPropagation();
+        els.gallerySearch.value = "";
+        state.galleryQuery = "";
+        renderGalleryList();
+        els.gallerySearch.blur();
+    }
+});
+
 document.addEventListener("keydown", (event) => {
+    if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "f") {
+        event.preventDefault();
+        els.gallerySearch.focus();
+        els.gallerySearch.select();
+        return;
+    }
     if (event.key !== "Escape") return;
     hide(els.infoModal);
     state.rating.open = false;
