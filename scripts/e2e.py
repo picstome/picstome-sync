@@ -181,12 +181,13 @@ def main():
     env.setdefault("WEBKIT_DISABLE_COMPOSITING_MODE", "1")
     env.setdefault("LIBGL_ALWAYS_SOFTWARE", "1")
 
+    driver_log_path = os.path.join(root, "driver.log")
+    driver_log = open(driver_log_path, "w", encoding="utf-8")
     driver = subprocess.Popen(
         [DRIVER, "--port", str(DEBUG_PORT), "--native-driver", NATIVE_DRIVER],
         env=env,
-        stdout=subprocess.PIPE,
+        stdout=driver_log,
         stderr=subprocess.STDOUT,
-        text=True,
     )
     session = None
     try:
@@ -382,6 +383,7 @@ def main():
             driver.wait(timeout=10)
         except Exception:
             driver.kill()
+        driver_log.close()
         if mock_process:
             mock_process.terminate()
             try:
@@ -395,4 +397,11 @@ if __name__ == "__main__":
         main()
     except Exception as err:
         log("E2E FAILED:", err)
+        try:
+            with open(driver_log_path, "r", encoding="utf-8", errors="replace") as handle:
+                tail = handle.read().splitlines()[-20:]
+            if tail:
+                log("driver log:\n" + "\n".join(tail))
+        except Exception:
+            pass
         sys.exit(1)
