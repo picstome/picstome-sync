@@ -289,6 +289,12 @@ pub async fn connect(app: AppHandle, state: State<'_, AppState>) -> Result<Value
     let nonce = auth::new_nonce();
     *state.auth_nonce.lock().unwrap() = Some(nonce.clone());
     let url = api.authorize_url(&nonce)?;
+    if std::env::var("PICSTOME_DISABLE_BROWSER_OPEN")
+        .map(|value| value == "1")
+        .unwrap_or(false)
+    {
+        return Ok(json!({"ok": true, "url": url, "opened": false, "disabled": true}));
+    }
     match app.opener().open_url(url.clone(), None::<&str>) {
         Ok(()) => Ok(json!({"ok": true, "url": url, "opened": true})),
         Err(err) => {

@@ -180,6 +180,7 @@ def main():
     prepare_state(user_data, photos, gallery, rating_dir)
     env.setdefault("WEBKIT_DISABLE_COMPOSITING_MODE", "1")
     env.setdefault("LIBGL_ALWAYS_SOFTWARE", "1")
+    env.setdefault("PICSTOME_DISABLE_BROWSER_OPEN", "1")
 
     driver_log_path = os.path.join(root, "driver.log")
     driver_log = open(driver_log_path, "w", encoding="utf-8")
