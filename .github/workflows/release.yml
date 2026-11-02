@@ -79,4 +79,16 @@ jobs:
           releaseDraft: true
           prerelease: false
           includeUpdaterJson: false
+          releaseBody: |
+            Picstome Sync ${{ inputs.tag || github.ref_name }}
+
+            Builds are ad-hoc signed (no Apple Developer ID). If macOS says the
+            app is damaged or from an unidentified developer:
+
+            1. Right-click the app in Finder and choose **Open**.
+            2. If needed, run `xattr -cr "/Applications/Picstome Sync.app"`.
+            3. Approve it in **System Settings → Privacy & Security**.
+
+            The app shows its version, build profile and exact API URL under the
+            **Info** button in the header.
           args: ${{ matrix.args }}

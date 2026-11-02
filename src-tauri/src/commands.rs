@@ -150,6 +150,75 @@ async fn emit_state(app: &AppHandle, state: &AppState) {
     let _ = app.emit("app-state", view);
 }
 
+fn command_error(message: impl Into<String>, code: &str) -> ErrorPayload {
+    ErrorPayload {
+        message: message.into(),
+        code: code.to_string(),
+        status: 0,
+    }
+}
+
+fn invalid_gallery() -> ErrorPayload {
+    command_error("Invalid gallery", "invalid_gallery")
+}
+
+fn folder_missing() -> ErrorPayload {
+    command_error("Folder not found", "folder_missing")
+}
+
+fn not_linked() -> ErrorPayload {
+    command_error("Gallery is not linked", "not_linked")
+}
+
+async fn sync_linked(
+    app: &AppHandle,
+    state: &AppState,
+    gallery_id: &str,
+) -> Result<SyncReport, ErrorPayload> {
+    let Some(id) = sanitize_gallery_id(gallery_id) else {
+        return Err(invalid_gallery());
+    };
+    let Some(gallery) = state.store.get_gallery(&id) else {
+        return Err(not_linked());
+    };
+    if !folder_exists(&gallery.local_path) {
+        return Err(folder_missing());
+    }
+
+    show_main(app);
+    let report = run_gallery_sync(
+        &state.api,
+        &state.store,
+        &gallery,
+        SyncOptions::default(),
+        progress_emitter(app.clone()),
+    )
+    .await?;
+    emit_state(app, state).await;
+    Ok(report)
+}
+
+fn patch_linked_folder(
+    app: &AppHandle,
+    state: &AppState,
+    gallery_id: &str,
+    reset_snapshot: bool,
+) -> Result<Value, ErrorPayload> {
+    let Some(id) = sanitize_gallery_id(gallery_id) else {
+        return Err(invalid_gallery());
+    };
+    let Some(folder) = pick_folder(app) else {
+        return Ok(json!({"ok": false, "canceled": true}));
+    };
+    state.store.patch_gallery(&id, |entry| {
+        entry.local_path = folder.clone();
+    })?;
+    if reset_snapshot {
+        let _ = state.store.delete_snapshot(&id);
+    }
+    Ok(json!({"ok": true, "localPath": folder}))
+}
+
 pub fn pick_folder(app: &AppHandle) -> Option<String> {
     app.dialog()
         .file()
@@ -172,11 +241,8 @@ pub async fn get_state(state: State<'_, AppState>) -> Result<AppStateView, Error
 
 #[tauri::command]
 pub async fn get_config(state: State<'_, AppState>) -> Result<Value, ErrorPayload> {
-    serde_json::to_value(state.store.load_config()).map_err(|err| ErrorPayload {
-        message: err.to_string(),
-        code: "invalid_data".into(),
-        status: 0,
-    })
+    serde_json::to_value(state.store.load_config())
+        .map_err(|err| command_error(err.to_string(), "invalid_data"))
 }
 
 #[tauri::command]
@@ -261,63 +327,32 @@ pub async fn start_sync(
     name: Option<String>,
 ) -> Result<StartSyncResult, ErrorPayload> {
     let Some(id) = sanitize_gallery_id(&gallery_id) else {
-        return Err(ErrorPayload {
-            message: "Invalid gallery".into(),
-            code: "invalid_gallery".into(),
-            status: 0,
-        });
+        return Err(invalid_gallery());
     };
 
-    let gallery: GalleryEntry = match state.store.get_gallery(&id) {
-        Some(gallery) => gallery,
-        None => {
-            let Some(folder) = pick_folder(&app) else {
-                return Ok(StartSyncResult {
-                    canceled: true,
-                    report: None,
-                });
-            };
-            let Some(gallery) = state.store.upsert_gallery(GalleryEntry {
-                gallery_id: id.clone(),
-                name: name.unwrap_or_else(|| "Gallery".into()),
-                local_path: folder,
-                last_sync_at: None,
-                remote_rev: None,
-                parent_gallery_id: None,
-            })?
-            else {
-                return Err(ErrorPayload {
-                    message: "Could not link gallery".into(),
-                    code: "invalid_gallery".into(),
-                    status: 0,
-                });
-            };
-            gallery
-        }
-    };
-
-    if !folder_exists(&gallery.local_path) {
-        return Err(ErrorPayload {
-            message: "Folder not found".into(),
-            code: "folder_missing".into(),
-            status: 0,
-        });
+    if state.store.get_gallery(&id).is_none() {
+        let Some(folder) = pick_folder(&app) else {
+            return Ok(StartSyncResult {
+                canceled: true,
+                report: None,
+            });
+        };
+        let Some(_) = state.store.upsert_gallery(GalleryEntry {
+            gallery_id: id.clone(),
+            name: name.unwrap_or_else(|| "Gallery".into()),
+            local_path: folder,
+            last_sync_at: None,
+            remote_rev: None,
+            parent_gallery_id: None,
+        })?
+        else {
+            return Err(invalid_gallery());
+        };
     }
 
-    show_main(&app);
-    let report = run_gallery_sync(
-        &state.api,
-        &state.store,
-        &gallery,
-        SyncOptions::default(),
-        progress_emitter(app.clone()),
-    )
-    .await?;
-
-    emit_state(&app, &state).await;
     Ok(StartSyncResult {
         canceled: false,
-        report: Some(report),
+        report: Some(sync_linked(&app, &state, &id).await?),
     })
 }
 
@@ -327,40 +362,7 @@ pub async fn sync_gallery(
     state: State<'_, AppState>,
     gallery_id: String,
 ) -> Result<SyncReport, ErrorPayload> {
-    let Some(id) = sanitize_gallery_id(&gallery_id) else {
-        return Err(ErrorPayload {
-            message: "Invalid gallery".into(),
-            code: "invalid_gallery".into(),
-            status: 0,
-        });
-    };
-    let Some(gallery) = state.store.get_gallery(&id) else {
-        return Err(ErrorPayload {
-            message: "Gallery is not linked".into(),
-            code: "not_linked".into(),
-            status: 0,
-        });
-    };
-    if !folder_exists(&gallery.local_path) {
-        return Err(ErrorPayload {
-            message: "Folder not found".into(),
-            code: "folder_missing".into(),
-            status: 0,
-        });
-    }
-
-    show_main(&app);
-    let report = run_gallery_sync(
-        &state.api,
-        &state.store,
-        &gallery,
-        SyncOptions::default(),
-        progress_emitter(app.clone()),
-    )
-    .await?;
-
-    emit_state(&app, &state).await;
-    Ok(report)
+    sync_linked(&app, &state, &gallery_id).await
 }
 
 #[tauri::command]
@@ -369,20 +371,7 @@ pub fn locate_gallery(
     state: State<'_, AppState>,
     gallery_id: String,
 ) -> Result<Value, ErrorPayload> {
-    let Some(id) = sanitize_gallery_id(&gallery_id) else {
-        return Err(ErrorPayload {
-            message: "Invalid gallery".into(),
-            code: "invalid_gallery".into(),
-            status: 0,
-        });
-    };
-    let Some(folder) = pick_folder(&app) else {
-        return Ok(json!({"ok": false, "canceled": true}));
-    };
-    state.store.patch_gallery(&id, |entry| {
-        entry.local_path = folder.clone();
-    })?;
-    Ok(json!({"ok": true, "localPath": folder}))
+    patch_linked_folder(&app, &state, &gallery_id, false)
 }
 
 #[tauri::command]
@@ -391,21 +380,7 @@ pub fn change_folder(
     state: State<'_, AppState>,
     gallery_id: String,
 ) -> Result<Value, ErrorPayload> {
-    let Some(id) = sanitize_gallery_id(&gallery_id) else {
-        return Err(ErrorPayload {
-            message: "Invalid gallery".into(),
-            code: "invalid_gallery".into(),
-            status: 0,
-        });
-    };
-    let Some(folder) = pick_folder(&app) else {
-        return Ok(json!({"ok": false, "canceled": true}));
-    };
-    state.store.patch_gallery(&id, |entry| {
-        entry.local_path = folder.clone();
-    })?;
-    let _ = state.store.delete_snapshot(&id);
-    Ok(json!({"ok": true, "localPath": folder}))
+    patch_linked_folder(&app, &state, &gallery_id, true)
 }
 
 #[tauri::command]
@@ -414,11 +389,7 @@ pub fn unlink_gallery(
     gallery_id: String,
 ) -> Result<Value, ErrorPayload> {
     let Some(id) = sanitize_gallery_id(&gallery_id) else {
-        return Err(ErrorPayload {
-            message: "Invalid gallery".into(),
-            code: "invalid_gallery".into(),
-            status: 0,
-        });
+        return Err(invalid_gallery());
     };
     state.store.remove_gallery(&id)?;
     let _ = state.store.delete_snapshot(&id);
@@ -432,33 +403,17 @@ pub fn open_folder(
     gallery_id: String,
 ) -> Result<Value, ErrorPayload> {
     let Some(id) = sanitize_gallery_id(&gallery_id) else {
-        return Err(ErrorPayload {
-            message: "Invalid gallery".into(),
-            code: "invalid_gallery".into(),
-            status: 0,
-        });
+        return Err(invalid_gallery());
     };
     let Some(gallery) = state.store.get_gallery(&id) else {
-        return Err(ErrorPayload {
-            message: "Gallery is not linked".into(),
-            code: "not_linked".into(),
-            status: 0,
-        });
+        return Err(not_linked());
     };
     if !folder_exists(&gallery.local_path) {
-        return Err(ErrorPayload {
-            message: "Folder not found".into(),
-            code: "folder_missing".into(),
-            status: 0,
-        });
+        return Err(folder_missing());
     }
     app.opener()
         .open_path(gallery.local_path, None::<&str>)
-        .map_err(|err| ErrorPayload {
-            message: err.to_string(),
-            code: "open_folder_failed".into(),
-            status: 0,
-        })?;
+        .map_err(|err| command_error(err.to_string(), "open_folder_failed"))?;
     Ok(json!({"ok": true}))
 }
 
@@ -470,11 +425,7 @@ pub async fn apply_deletions(
     photo_ids: Vec<String>,
 ) -> Result<DeleteResponse, ErrorPayload> {
     let Some(id) = sanitize_gallery_id(&gallery_id) else {
-        return Err(ErrorPayload {
-            message: "Invalid gallery".into(),
-            code: "invalid_gallery".into(),
-            status: 0,
-        });
+        return Err(invalid_gallery());
     };
     let result = apply_remote_deletions(&state.api, &state.store, &id, &photo_ids).await?;
     emit_state(&app, &state).await;
@@ -494,37 +445,19 @@ pub async fn rate_files(
     };
 
     let Some(requested) = photos_dir else {
-        return Err(ErrorPayload {
-            message: "No folder selected".into(),
-            code: "no_folder".into(),
-            status: 0,
-        });
+        return Err(command_error("No folder selected", "no_folder"));
     };
 
-    let trusted_path = std::fs::canonicalize(&trusted).map_err(|err| ErrorPayload {
-        message: err.to_string(),
-        code: "folder_error".into(),
-        status: 0,
-    })?;
-    let requested_path = std::fs::canonicalize(&requested).map_err(|err| ErrorPayload {
-        message: err.to_string(),
-        code: "folder_error".into(),
-        status: 0,
-    })?;
+    let trusted_path = std::fs::canonicalize(&trusted)
+        .map_err(|err| command_error(err.to_string(), "folder_error"))?;
+    let requested_path = std::fs::canonicalize(&requested)
+        .map_err(|err| command_error(err.to_string(), "folder_error"))?;
     if trusted_path != requested_path {
-        return Err(ErrorPayload {
-            message: "Folder not accessible".into(),
-            code: "folder_error".into(),
-            status: 0,
-        });
+        return Err(command_error("Folder not accessible", "folder_error"));
     }
 
     if sanitize_file_names(&files).is_none() {
-        return Err(ErrorPayload {
-            message: "Invalid request".into(),
-            code: "invalid_request".into(),
-            status: 0,
-        });
+        return Err(command_error("Invalid request", "invalid_request"));
     }
 
     let _ = state.store.update_config(|config| {
@@ -537,11 +470,10 @@ pub async fn rate_files(
 #[tauri::command]
 pub async fn dev_handle_deep_link(app: AppHandle, url: String) -> Result<Value, ErrorPayload> {
     if !cfg!(debug_assertions) {
-        return Err(ErrorPayload {
-            message: "Deep-link injection is disabled in release builds".into(),
-            code: "not_allowed".into(),
-            status: 0,
-        });
+        return Err(command_error(
+            "Deep-link injection is disabled in release builds",
+            "not_allowed",
+        ));
     }
     crate::deep_link::handle_url(app, url).await;
     Ok(json!({"ok": true}))

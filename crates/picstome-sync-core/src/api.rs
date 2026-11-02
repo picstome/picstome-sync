@@ -6,7 +6,7 @@ use reqwest::header::{HeaderMap, HeaderValue, ACCEPT};
 use reqwest::multipart::{Form, Part};
 use reqwest::{Client, Method, Response};
 use serde::de::DeserializeOwned;
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
 use serde_json::Value;
 use tokio::sync::RwLock;
 use tokio_util::io::ReaderStream;
@@ -17,6 +17,7 @@ use crate::model::{
     DeleteResponse, GallerySummary, Manifest, TokenResponse, UploadResponse, CLIENT_NAME,
     DEFAULT_API_BASE,
 };
+use crate::sanitize::urlencode;
 
 #[derive(Debug, Deserialize)]
 struct ErrorBody {
@@ -221,7 +222,7 @@ impl ApiClient {
         let response = self
             .send(
                 Method::GET,
-                &format!("/api/v1/manifest?gallery={}", urlencoding(gallery_id)),
+                &format!("/api/v1/manifest?gallery={}", urlencode(gallery_id)),
                 None,
             )
             .await?;
@@ -285,9 +286,58 @@ impl ApiClient {
     }
 }
 
-fn urlencoding(value: &str) -> String {
-    url::form_urlencoded::byte_serialize(value.as_bytes()).collect()
-}
+#[cfg(test)]
+mod tests {
+    use super::*;
 
-#[derive(Debug, Serialize, Deserialize)]
-struct _Unused;
+    #[test]
+    fn maps_all_upload_mime_types() {
+        assert_eq!(mime_for("a.jpg"), "image/jpeg");
+        assert_eq!(mime_for("a.jpeg"), "image/jpeg");
+        assert_eq!(mime_for("a.png"), "image/png");
+        assert_eq!(mime_for("a.dng"), "image/x-adobe-dng");
+        assert_eq!(mime_for("a.cr3"), "image/x-canon-cr3");
+        assert_eq!(mime_for("a.cr2"), "image/x-canon-cr2");
+        assert_eq!(mime_for("a.arw"), "image/x-sony-arw");
+        assert_eq!(mime_for("a.nef"), "image/x-nikon-nef");
+        assert_eq!(mime_for("a.raf"), "image/x-fuji-raf");
+        assert_eq!(mime_for("a.orf"), "image/x-olympus-orf");
+        assert_eq!(mime_for("a.rw2"), "image/x-panasonic-rw2");
+        assert_eq!(mime_for("a.mp4"), "video/mp4");
+        assert_eq!(mime_for("a.mov"), "video/quicktime");
+        assert_eq!(mime_for("a.pdf"), "application/pdf");
+        assert_eq!(mime_for("a.bin"), "application/octet-stream");
+    }
+
+    #[test]
+    fn builds_paths_with_and_without_slash() {
+        let api = ApiClient::new(Some("https://example.test/"), None).unwrap();
+        assert_eq!(api.base_url(), "https://example.test");
+        assert_eq!(api.url("/api/v1/me"), "https://example.test/api/v1/me");
+        assert_eq!(api.url("api/v1/me"), "https://example.test/api/v1/me");
+        let default = ApiClient::new(None, None).unwrap();
+        assert_eq!(default.base_url(), DEFAULT_API_BASE);
+    }
+
+    #[test]
+    fn builds_authorize_url_with_nonce_and_client_name() {
+        let api = ApiClient::new(Some("https://devel.picstome.com"), None).unwrap();
+        let url = api.authorize_url("abc_123").unwrap();
+        assert!(url.starts_with("https://devel.picstome.com/authorize?"));
+        assert!(url.contains("nonce=abc_123"));
+        assert!(url.contains("client_name=picstome-sync"));
+    }
+
+    #[tokio::test]
+    async fn tracks_token_state() {
+        let api = ApiClient::new(Some("https://example.test"), None).unwrap();
+        assert!(!api.has_token().await);
+        api.set_token(Some("tok".into())).await;
+        assert!(api.has_token().await);
+        assert_eq!(api.token().await.as_deref(), Some("tok"));
+        api.set_token(Some(String::new())).await;
+        assert!(!api.has_token().await);
+        api.set_token(None).await;
+        assert_eq!(api.token().await, None);
+    }
+}

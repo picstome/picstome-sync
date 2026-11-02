@@ -193,3 +193,48 @@ mod tests {
         );
     }
 }
+
+#[cfg(test)]
+mod extra_tests {
+    use super::*;
+
+    #[test]
+    fn rate_accepts_gallery_hint_and_rejects_oversized_lists() {
+        let link = parse_deep_link("picstome://rate?files=a,b&gallery=G1").unwrap();
+        assert_eq!(
+            link,
+            DeepLink::Rate {
+                files: vec!["a".into(), "b".into()],
+                rating: "1".into(),
+                gallery: Some("G1".into()),
+            }
+        );
+
+        let files = (0..=MAX_FILES)
+            .map(|index| format!("f{index}"))
+            .collect::<Vec<_>>()
+            .join(",");
+        assert!(parse_deep_link(&format!("picstome://rate?files={files}")).is_none());
+    }
+
+    #[test]
+    fn rejects_control_characters_and_bad_tokens() {
+        assert_eq!(
+            parse_deep_link("picstome://sync?gallery=G1&name=bad%00name"),
+            Some(DeepLink::Sync {
+                gallery_id: "G1".into(),
+                name: "Gallery".into(),
+            })
+        );
+        assert!(parse_deep_link("picstome://auth?code=bad%20code&state=ok").is_none());
+        assert!(parse_deep_link("picstome://auth?code=ok&state=bad%20state").is_none());
+    }
+
+    #[test]
+    fn build_deep_link_skips_empty_values() {
+        assert_eq!(
+            build_deep_link("sync", &[("gallery", "G1"), ("name", "")]),
+            "picstome://sync?gallery=G1"
+        );
+    }
+}

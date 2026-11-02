@@ -282,3 +282,106 @@ mod tests {
         assert_eq!(files[0].filename, "photo.JPG");
     }
 }
+
+#[cfg(test)]
+mod extra_tests {
+    use super::*;
+    use crate::model::SnapshotFile;
+    use std::time::SystemTime;
+
+    fn snapshot_for(path: &Path, mtime_ms: i64, hash: &str) -> SnapshotFile {
+        SnapshotFile {
+            id: "p1".into(),
+            filename: path.file_name().unwrap().to_string_lossy().to_string(),
+            identity_key: None,
+            relative_path: Some(path.file_name().unwrap().to_string_lossy().to_string()),
+            hash: Some(hash.into()),
+            hash_algo: Some("sha256".into()),
+            size: Some(std::fs::metadata(path).unwrap().len()),
+            mtime: Some(mtime_ms),
+            version_count: Some(1),
+            version_number: Some(1),
+        }
+    }
+
+    #[test]
+    fn edited_folder_names_are_case_insensitive() {
+        assert!(is_edited_folder_name("EDITS"));
+        assert!(is_edited_folder_name(" Editadas "));
+        assert!(!is_edited_folder_name("editorial"));
+    }
+
+    #[test]
+    fn reports_too_large_files_and_missing_folders() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("big.jpg"), vec![0u8; 32]).unwrap();
+        let (files, errors) = scan_local_photos(dir.path(), 2, true, 16);
+        assert!(files.is_empty());
+        assert_eq!(errors.len(), 1);
+        assert!(errors[0].error.contains("too large"));
+
+        let (_, errors) = scan_local_photos(&dir.path().join("missing"), 2, true, 16);
+        assert_eq!(errors.len(), 1);
+        assert!(!folder_exists("/definitely/not/a/real/folder"));
+    }
+
+    #[tokio::test]
+    async fn hashes_reuse_matching_snapshot_cache() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("a.jpg");
+        std::fs::write(&path, b"hello").unwrap();
+        let metadata = std::fs::metadata(&path).unwrap();
+        let mtime_ms = metadata
+            .modified()
+            .unwrap()
+            .duration_since(SystemTime::UNIX_EPOCH)
+            .unwrap()
+            .as_millis() as i64;
+        let snapshot = snapshot_for(&path, mtime_ms, "cached-hash");
+
+        let records = vec![RawLocalFile {
+            filename: "a.jpg".into(),
+            relative_path: "a.jpg".into(),
+            path: path.clone(),
+            size: metadata.len(),
+            mtime_ms,
+        }];
+        let results = hash_local_records(records, &[snapshot], 1).await;
+        assert_eq!(
+            results[0].as_ref().unwrap().hash.as_deref(),
+            Some("cached-hash")
+        );
+    }
+
+    #[tokio::test]
+    async fn reports_hash_and_scan_errors() {
+        let dir = tempfile::tempdir().unwrap();
+        let missing = dir.path().join("missing.jpg");
+        assert!(hash_file(&missing).await.is_err());
+
+        let records = vec![RawLocalFile {
+            filename: "missing.jpg".into(),
+            relative_path: "missing.jpg".into(),
+            path: missing,
+            size: 1,
+            mtime_ms: 0,
+        }];
+        let results = hash_local_records(records, &[], 1).await;
+        assert!(results[0].is_err());
+
+        assert!(scan_and_hash(&dir.path().join("nope"), &[], 1)
+            .await
+            .is_err());
+    }
+
+    #[tokio::test]
+    async fn scans_files_in_stable_order() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("z.jpg"), b"z").unwrap();
+        std::fs::write(dir.path().join("a.jpg"), b"a").unwrap();
+        let (files, errors) = scan_and_hash(dir.path(), &[], 2).await.unwrap();
+        assert!(errors.is_empty());
+        let names: Vec<&str> = files.iter().map(|file| file.filename.as_str()).collect();
+        assert_eq!(names, vec!["a.jpg", "z.jpg"]);
+    }
+}

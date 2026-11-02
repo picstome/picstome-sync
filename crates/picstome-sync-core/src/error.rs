@@ -90,3 +90,59 @@ impl fmt::Display for ErrorPayload {
 impl std::error::Error for ErrorPayload {}
 
 pub type CoreResult<T> = Result<T, CoreError>;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn api() -> CoreError {
+        CoreError::Api {
+            status: 401,
+            code: "unauthorized".into(),
+            message: "nope".into(),
+        }
+    }
+
+    #[test]
+    fn maps_error_codes_and_statuses() {
+        assert_eq!(api().code(), "unauthorized");
+        assert_eq!(api().status(), 401);
+        assert_eq!(CoreError::Io(std::io::Error::other("x")).code(), "io_error");
+        assert_eq!(CoreError::InvalidData("x".into()).code(), "invalid_data");
+        assert_eq!(CoreError::Network("x".into()).code(), "network_error");
+        assert_eq!(CoreError::HashMismatch("x".into()).code(), "hash_mismatch");
+        assert_eq!(CoreError::Other("x".into()).code(), "error");
+        assert_eq!(CoreError::Other("x".into()).status(), 0);
+    }
+
+    #[test]
+    fn converts_from_json_and_url_errors() {
+        let json: serde_json::Error = serde_json::from_str::<serde_json::Value>("{").unwrap_err();
+        assert!(matches!(CoreError::from(json), CoreError::InvalidData(_)));
+        let url: url::ParseError = url::Url::parse("not a url").unwrap_err();
+        assert!(matches!(CoreError::from(url), CoreError::InvalidData(_)));
+    }
+
+    #[tokio::test]
+    async fn converts_from_reqwest_errors() {
+        let client = reqwest::Client::new();
+        let err = client
+            .get("http://127.0.0.1:1/nope")
+            .send()
+            .await
+            .unwrap_err();
+        assert!(matches!(CoreError::from(err), CoreError::Network(_)));
+    }
+
+    #[test]
+    fn error_payload_preserves_message_code_and_status() {
+        let payload = ErrorPayload::from(api());
+        assert_eq!(payload.message, "api error (unauthorized): nope");
+        assert_eq!(payload.code, "unauthorized");
+        assert_eq!(payload.status, 401);
+        assert_eq!(payload.to_string(), payload.message);
+        let json = serde_json::to_value(&payload).unwrap();
+        assert_eq!(json["code"], "unauthorized");
+        assert_eq!(json["status"], 401);
+    }
+}

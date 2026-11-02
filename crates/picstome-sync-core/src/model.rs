@@ -331,6 +331,32 @@ pub struct ConfigView {
     pub build_profile: String,
 }
 
+impl Photo {
+    pub fn identity(&self) -> Option<String> {
+        self.identity_key
+            .clone()
+            .or_else(|| crate::identity::identity_key(&self.filename))
+    }
+}
+
+impl SnapshotFile {
+    pub fn identity(&self) -> Option<String> {
+        self.identity_key
+            .clone()
+            .or_else(|| crate::identity::identity_key(&self.filename))
+    }
+}
+
+impl LocalFile {
+    pub fn identity(&self) -> Option<String> {
+        if self.identity_key.is_empty() {
+            crate::identity::identity_key(&self.filename)
+        } else {
+            Some(self.identity_key.clone())
+        }
+    }
+}
+
 /// Human-readable classification of the API target shown in the in-app info
 /// panel, so testers can immediately see whether they are on dev or production.
 pub fn api_kind(base_url: &str, mock: bool) -> &'static str {

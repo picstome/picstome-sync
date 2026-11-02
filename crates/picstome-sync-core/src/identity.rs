@@ -37,8 +37,11 @@ pub fn family_of(filename: &str) -> &'static str {
 }
 
 pub fn identity_key(filename: &str) -> Option<String> {
+    if filename.starts_with('.') {
+        return None;
+    }
     let stem = stem_of(filename);
-    if stem.is_empty() {
+    if stem.is_empty() || stem.trim_matches('.').is_empty() {
         return None;
     }
     Some(format!("{}:{}", family_of(filename), stem))
@@ -99,5 +102,26 @@ mod tests {
         let files = ["a.DNG", "a.jpg"];
         let chosen = preferred_file(&files, |f| f).unwrap();
         assert_eq!(chosen.to_ascii_lowercase(), "a.jpg");
+    }
+}
+
+#[cfg(test)]
+mod extra_tests {
+    use super::*;
+
+    #[test]
+    fn handles_empty_and_unknown_names() {
+        assert_eq!(identity_key(""), None);
+        assert_eq!(identity_key(".jpg"), None);
+        assert_eq!(extension_of("noext"), "");
+        assert_eq!(stem_of(""), "");
+        assert!(!is_photo_file("notes.txt"));
+        assert!(is_photo_file("photo.CR3"));
+    }
+
+    #[test]
+    fn preferred_file_handles_empty_lists() {
+        let empty: [&str; 0] = [];
+        assert!(preferred_file(&empty, |file| *file).is_none());
     }
 }

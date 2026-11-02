@@ -19,6 +19,7 @@ use tokio::sync::{oneshot, RwLock};
 use tokio::task::JoinHandle;
 
 use crate::identity::identity_key;
+use crate::sanitize::urlencode;
 
 pub const DEFAULT_TOKEN: &str = "demo-token";
 pub const DEMO_EMAIL: &str = "desktop@picstome.test";
@@ -280,8 +281,8 @@ async fn home(State(state): State<Arc<MockState>>, headers: HeaderMap) -> Respon
     for gallery in galleries.values() {
         let link = format!(
             "picstome://sync?gallery={}&name={}",
-            urlencoding(&gallery.id),
-            urlencoding(&gallery.name)
+            urlencode(&gallery.id),
+            urlencode(&gallery.name)
         );
         rows.push_str(&format!(
             "<tr><td><strong>{}</strong><br><code>{}</code></td><td>{}</td><td><a class=\"btn\" href=\"{}\">Open in Picstome Sync</a></td><td class=\"actions\"><button data-gallery=\"{}\" data-action=\"add\">+ Add remote photo</button><button data-gallery=\"{}\" data-action=\"bump\">~ Change remote photo</button><button data-gallery=\"{}\" data-action=\"remove\">- Delete remote photo</button></td></tr>",
@@ -338,8 +339,8 @@ async fn authorize(
     state.codes.write().await.insert(code.clone(), unix_now());
     let deep_link = format!(
         "picstome://auth?code={}&state={}",
-        urlencoding(&code),
-        urlencoding(&nonce)
+        urlencode(&code),
+        urlencode(&nonce)
     );
     let html = format!(
         r#"<!doctype html><html><head><meta charset="utf-8"><title>Authorize {client}</title></head><body style="font-family:sans-serif;padding:40px;background:#fff9ec;color:#322f30"><h1 style="color:#316d61">Authorize {client} on this PC?</h1><p>This is the fake Picstome authorization page.</p><p><a href="{link}" style="display:inline-block;padding:14px 18px;border-radius:12px;background:#316d61;color:#fff;text-decoration:none;font-weight:700">Authorize and open Picstome Sync</a></p><p style="color:#5f5b5c">If nothing happens, the app is not registered for the <code>picstome://</code> protocol.</p></body></html>"#,
@@ -802,10 +803,6 @@ async fn dev_remove(State(state): State<Arc<MockState>>, Json(body): Json<Value>
         StatusCode::OK,
         json!({"ok": true, "photo": {"id": removed.id, "filename": removed.filename}}),
     )
-}
-
-fn urlencoding(value: &str) -> String {
-    url::form_urlencoded::byte_serialize(value.as_bytes()).collect()
 }
 
 pub async fn start_mock_server(options: MockServerOptions) -> std::io::Result<MockServer> {

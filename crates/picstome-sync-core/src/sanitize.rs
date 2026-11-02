@@ -84,6 +84,10 @@ pub fn escape_header_value(value: &str) -> String {
     value.replace(['"', '\r', '\n'], "_")
 }
 
+pub fn urlencode(value: &str) -> String {
+    url::form_urlencoded::byte_serialize(value.as_bytes()).collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -125,5 +129,27 @@ mod tests {
         assert!(!is_inside(base, &base.join("../a.jpg")));
         assert_eq!(safe_join(base, "a.jpg"), Some(base.join("a.jpg")));
         assert!(safe_join(base, "../a.jpg").is_none());
+    }
+}
+
+#[cfg(test)]
+mod extra_tests {
+    use super::*;
+
+    #[test]
+    fn lexical_absolute_normalizes_relative_paths() {
+        let path = lexical_absolute(Path::new("a/./b/../c"));
+        assert!(path.is_absolute());
+        assert!(path.ends_with("a/c"));
+    }
+
+    #[test]
+    fn escapes_header_values() {
+        assert_eq!(escape_header_value("a\"b\r\nc"), "a_b__c");
+    }
+
+    #[test]
+    fn urlencode_escapes_reserved_characters() {
+        assert_eq!(urlencode("a b/c"), "a+b%2Fc");
     }
 }

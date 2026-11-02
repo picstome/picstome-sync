@@ -269,6 +269,14 @@ function renderGalleryList() {
     row.className = "gallery-row";
     row.dataset.galleryId = gallery.galleryId;
 
+    const main = document.createElement("div");
+    main.className = "gallery-main";
+
+    const avatar = document.createElement("div");
+    avatar.className = "gallery-avatar";
+    avatar.textContent = (gallery.name || "?").trim().charAt(0).toUpperCase() || "?";
+    main.appendChild(avatar);
+
     const info = document.createElement("div");
     info.className = "gallery-info";
 
@@ -318,7 +326,8 @@ function renderGalleryList() {
     btnUnlink.dataset.action = "unlink";
     actions.appendChild(btnUnlink);
 
-    row.appendChild(info);
+    main.appendChild(info);
+    row.appendChild(main);
     row.appendChild(actions);
     els.galleryList.appendChild(row);
   }

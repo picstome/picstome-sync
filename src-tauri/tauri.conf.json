@@ -1,7 +1,7 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
   "productName": "Picstome Sync",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "identifier": "com.picstome.sync",
   "build": {
     "frontendDist": "../ui"
@@ -46,7 +46,10 @@
     },
     "category": "Photography",
     "shortDescription": "Sync Picstome galleries with local photo folders",
-    "longDescription": "Picstome Sync keeps Picstome galleries and local photo folders in sync, with the Picstome rating workflow built in."
+    "longDescription": "Picstome Sync keeps Picstome galleries and local photo folders in sync, with the Picstome rating workflow built in.",
+    "macOS": {
+      "signingIdentity": "-"
+    }
   },
   "plugins": {
     "deep-link": {

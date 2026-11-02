@@ -334,3 +334,80 @@ mod tests {
         assert_eq!(values, vec!["4", "75"], "{text:?}");
     }
 }
+
+#[cfg(test)]
+mod extra_tests {
+    use super::*;
+
+    fn bundled_exiftool() -> PathBuf {
+        PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("..")
+            .join("resources")
+            .join(if cfg!(windows) {
+                "exiftool.exe"
+            } else {
+                "exiftool"
+            })
+    }
+
+    #[test]
+    fn maps_ratings_and_percentages() {
+        assert_eq!(normalize_rating("5"), "5");
+        assert_eq!(normalize_rating("9"), "1");
+        assert_eq!(rating_percent("1"), "1");
+        assert_eq!(rating_percent("2"), "25");
+        assert_eq!(rating_percent("3"), "50");
+        assert_eq!(rating_percent("4"), "75");
+        assert_eq!(rating_percent("5"), "99");
+        assert_eq!(rating_percent("0"), "0");
+    }
+
+    #[tokio::test]
+    async fn reports_missing_tool_and_invalid_requests() {
+        let dir = tempfile::tempdir().unwrap();
+        let no_tool = rate_files(None, &["a".into()], "1", dir.path()).await;
+        assert_eq!(no_tool.errors, 1);
+        assert_eq!(
+            no_tool.details[0].msg.as_deref(),
+            Some("Photo tool unavailable")
+        );
+
+        let invalid = rate_files(None, &["../bad".into()], "1", dir.path()).await;
+        assert_eq!(invalid.errors, 1);
+        assert_eq!(invalid.details[0].msg.as_deref(), Some("Invalid request"));
+
+        let many: Vec<String> = (0..=MAX_FILES).map(|i| format!("f{i}")).collect();
+        let too_many = rate_files(None, &many, "1", dir.path()).await;
+        assert_eq!(too_many.errors, many.len());
+        assert!(too_many.details[0]
+            .msg
+            .as_deref()
+            .unwrap()
+            .contains("Too many files"));
+    }
+
+    #[tokio::test]
+    async fn reports_missing_files_and_accessible_folder_errors() {
+        let exiftool = bundled_exiftool();
+        if !exiftool.is_file() {
+            return;
+        }
+        let dir = tempfile::tempdir().unwrap();
+        let missing = rate_files(Some(&exiftool), &["nope".into()], "1", dir.path()).await;
+        assert_eq!(missing.not_found, 1);
+        assert_eq!(missing.details[0].status, "notfound");
+
+        let inaccessible = rate_files(
+            Some(&exiftool),
+            &["a".into()],
+            "1",
+            &dir.path().join("missing-folder"),
+        )
+        .await;
+        assert_eq!(inaccessible.errors, 1);
+        assert_eq!(
+            inaccessible.details[0].msg.as_deref(),
+            Some("Folder not accessible")
+        );
+    }
+}

@@ -111,9 +111,10 @@ def js_invoke(session, command, args):
     return result["value"]
 
 
-def prepare_state(user_data, photos, gallery):
+def prepare_state(user_data, photos, gallery, rating_dir):
     os.makedirs(user_data, exist_ok=True)
     os.makedirs(photos, exist_ok=True)
+    os.makedirs(rating_dir, exist_ok=True)
     with open(os.path.join(user_data, "index.json"), "w", encoding="utf-8") as handle:
         json.dump(
             [
@@ -125,6 +126,8 @@ def prepare_state(user_data, photos, gallery):
             ],
             handle,
         )
+    with open(os.path.join(user_data, "config.json"), "w", encoding="utf-8") as handle:
+        json.dump({"photosDir": rating_dir}, handle)
 
 
 def start_mock():
@@ -148,6 +151,7 @@ def main():
     root = tempfile.mkdtemp(prefix="picstome-e2e-")
     user_data = os.path.join(root, "userData")
     photos = os.path.join(root, "photos")
+    rating_dir = os.path.join(root, "rating")
     gallery = GALLERY
     mock_process = None
     env = {**os.environ}
@@ -173,7 +177,7 @@ def main():
         env["PICSTOME_USER_DATA_DIR"] = user_data
         log("real API:", api_base)
 
-    prepare_state(user_data, photos, gallery)
+    prepare_state(user_data, photos, gallery, rating_dir)
     env.setdefault("WEBKIT_DISABLE_COMPOSITING_MODE", "1")
     env.setdefault("LIBGL_ALWAYS_SOFTWARE", "1")
 
@@ -321,6 +325,46 @@ def main():
             final = js_invoke(session, "sync_gallery", {"galleryId": gallery})
             log("final:", final["counts"], "skipped:", final["skipped"])
             assert final["skipped"], final["counts"]
+
+        # Rate tab: deep link + real exiftool write on a separate folder.
+        rating_name = "rating-photo.jpg"
+        fixture = os.path.join(ROOT, "src-tauri", "tests", "fixtures", "pixel.jpg")
+        with open(fixture, "rb") as src, open(
+            os.path.join(rating_dir, rating_name), "wb"
+        ) as out:
+            out.write(src.read())
+        js_invoke(
+            session,
+            "dev_handle_deep_link",
+            {"url": "picstome://rate?files=rating-photo&rating=4"},
+        )
+        rate_result = run_async(
+            session,
+            """
+            const done = arguments[arguments.length - 1];
+            document.querySelector('.tab[data-tab="rate"]').click();
+            const btn = document.getElementById('btnRate');
+            if (btn.disabled) { done('DISABLED'); }
+            else {
+              btn.click();
+              const deadline = Date.now() + 30000;
+              const timer = setInterval(() => {
+                const summary = document.getElementById('resultSummary');
+                const visible = !document.getElementById('results').classList.contains('hidden');
+                if (visible && summary.textContent) {
+                  clearInterval(timer);
+                  done(summary.textContent + ' | ' + document.getElementById('detailList').textContent);
+                } else if (Date.now() > deadline) {
+                  clearInterval(timer);
+                  done('TIMEOUT ' + summary.textContent);
+                }
+              }, 200);
+            }
+            """,
+        )
+        log("rate:", rate_result)
+        assert not rate_result.startswith("DISABLED"), rate_result
+        assert "1 file" in rate_result.lower() and "rated" in rate_result.lower(), rate_result
 
         logout = js_invoke(session, "logout", {})
         assert logout.get("ok"), logout

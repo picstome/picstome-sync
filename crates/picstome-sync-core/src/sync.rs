@@ -9,7 +9,7 @@ use crate::api::ApiClient;
 use crate::config::Store;
 use crate::diff::compute_diff;
 use crate::error::CoreResult;
-use crate::identity::{identity_key, preferred_file};
+use crate::identity::preferred_file;
 use crate::localfiles::{folder_exists as path_is_dir, scan_and_hash};
 use crate::model::{
     DeleteProposal, DeleteProposals, DeleteResponse, Diff, DownloadedItem, GalleryEntry, Manifest,
@@ -48,13 +48,6 @@ fn now_millis() -> i64 {
         .unwrap_or(0)
 }
 
-fn key_of_photo(photo: &Photo) -> Option<String> {
-    photo
-        .identity_key
-        .clone()
-        .or_else(|| identity_key(&photo.filename))
-}
-
 fn build_snapshot(
     gallery: &GalleryEntry,
     manifest: &Manifest,
@@ -63,11 +56,7 @@ fn build_snapshot(
 ) -> Snapshot {
     let mut groups: HashMap<String, Vec<&crate::model::LocalFile>> = HashMap::new();
     for file in local_files {
-        let key = if file.identity_key.is_empty() {
-            identity_key(&file.filename)
-        } else {
-            Some(file.identity_key.clone())
-        };
+        let key = file.identity();
         if let Some(key) = key {
             groups.entry(key).or_default().push(file);
         }
@@ -84,7 +73,7 @@ fn build_snapshot(
         .photos
         .iter()
         .map(|photo| {
-            let key = key_of_photo(photo);
+            let key = photo.identity();
             let local = key.as_ref().and_then(|key| local_by_key.get(key)).copied();
             SnapshotFile {
                 id: photo.id.clone(),
@@ -131,7 +120,7 @@ fn download_proposals(diff: &Diff) -> Vec<DeleteProposal> {
         .map(|photo| DeleteProposal {
             id: photo.id.clone(),
             filename: photo.filename.clone(),
-            identity_key: key_of_photo(photo),
+            identity_key: photo.identity(),
         })
         .collect()
 }

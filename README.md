@@ -29,7 +29,8 @@ against the backend contract in
   inside the linked folder, and remote `DELETE` only runs after an explicit
   confirmation with checkboxes.
 - **Auth**: browser flow `/authorize` → `picstome://auth` → token exchange,
-  token stored in the OS keychain (`keyring`). Dev override: `PICSTOME_TOKEN`.
+  token stored in the OS keychain (`keyring`). Dev override: `PICSTOME_TOKEN`
+  (debug builds only).
 - **Deep links**: `picstome://rate`, `picstome://sync`, `picstome://auth`, with
   single-instance forwarding on Windows/Linux.
 - **Rate tab**: same star flow as Picstome Rater, EXIF/XMP in batches of 20
@@ -128,13 +129,25 @@ state and logs out.
 
 | Workflow | Trigger | What it does |
 | --- | --- | --- |
-| `ci.yml` | push/PR/manual | Rustfmt + Clippy + engine tests on Linux/macOS/Windows; workspace tests + app `--smoke` + full UI E2E (auth, sync, upload, delete, info panel) on Linux |
+| `ci.yml` | push/PR/manual | Rustfmt + Clippy + engine tests on Linux/macOS/Windows; workspace tests + app `--smoke` + full UI E2E (auth, sync, upload, delete, rate, info panel) on Linux; core coverage report (`lcov`) as an artifact |
 | `build.yml` | push to `main`/manual | unsigned Linux, universal macOS and Windows installers uploaded as workflow artifacts |
 | `release.yml` | version tag/manual | builds and attaches installers to a **draft** GitHub release |
 | `real-api.yml` | manual | engine + UI E2E against a real API (`PICSTOME_REAL_API`, `PICSTOME_REAL_TOKEN`, `PICSTOME_REAL_GALLERY`; optional write round-trip) |
 
 To test an app build without tagging: **Actions → build → Run workflow** and
-download the `picstome-sync-*` artifact. Builds are unsigned.
+download the `picstome-sync-*` artifact.
+
+### macOS install note
+
+Builds are **ad-hoc signed** (no Apple Developer ID), so Gatekeeper may still
+ask for confirmation:
+
+1. Open the DMG and drag **Picstome Sync** to Applications.
+2. Right-click the app in Finder and choose **Open** (or run
+   `xattr -cr "/Applications/Picstome Sync.app"`).
+3. If macOS still blocks it, allow it in **System Settings → Privacy & Security**.
+
+The release draft body repeats these steps.
 
 ## Sync model
 

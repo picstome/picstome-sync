@@ -63,7 +63,7 @@ fn sleep_ms(ms: u64) -> tokio::time::Sleep {
     tokio::time::sleep(Duration::from_millis(ms))
 }
 
-async fn probe(client: &Client, url: &str) -> CoreResult<Probe> {
+async fn probe_once(client: &Client, url: &str) -> CoreResult<Probe> {
     let response = client.get(url).header(RANGE, "bytes=0-0").send().await?;
     let status = response.status();
     if status.as_u16() == 206 {
@@ -89,6 +89,22 @@ async fn probe(client: &Client, url: &str) -> CoreResult<Probe> {
         "cannot probe download (HTTP {})",
         status.as_u16()
     )))
+}
+
+async fn probe(client: &Client, url: &str, retries: usize) -> CoreResult<Probe> {
+    let mut last_error = None;
+    for attempt in 0..=retries {
+        match probe_once(client, url).await {
+            Ok(probe) => return Ok(probe),
+            Err(err) => {
+                last_error = Some(err);
+                if attempt < retries {
+                    sleep_ms(150 * (attempt as u64 + 1)).await;
+                }
+            }
+        }
+    }
+    Err(last_error.unwrap_or_else(|| CoreError::Network("cannot probe download".into())))
 }
 
 async fn fetch_range(
@@ -380,7 +396,7 @@ pub async fn download_file(
         }
     }
 
-    let probe = probe(client, url).await?;
+    let probe = probe(client, url, options.retries).await?;
     if probe.total == Some(0) {
         tokio::fs::write(dest, b"").await?;
         return Ok(DownloadResult {

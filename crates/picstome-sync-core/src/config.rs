@@ -297,3 +297,122 @@ mod tests {
         assert!(store.load_snapshot("G123").is_none());
     }
 }
+
+#[cfg(test)]
+mod extra_tests {
+    use super::*;
+
+    fn entry(id: &str, name: &str, path: &str) -> GalleryEntry {
+        GalleryEntry {
+            gallery_id: id.into(),
+            name: name.into(),
+            local_path: path.into(),
+            last_sync_at: None,
+            remote_rev: None,
+            parent_gallery_id: None,
+        }
+    }
+
+    #[test]
+    fn exposes_paths_and_updates_config() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::new(dir.path()).unwrap();
+        assert_eq!(store.root(), dir.path());
+        assert_eq!(store.config_path(), dir.path().join("config.json"));
+        assert_eq!(store.index_path(), dir.path().join("index.json"));
+        let cfg = store
+            .update_config(|config| config.last_rating = Some("5".into()))
+            .unwrap();
+        assert_eq!(cfg.last_rating.as_deref(), Some("5"));
+    }
+
+    #[test]
+    fn normalizes_entries_and_rejects_invalid_ones() {
+        let normalized = normalize_entry(entry("G1", "  ", "/tmp/a")).unwrap();
+        assert_eq!(normalized.name, "Gallery");
+        assert!(normalize_entry(entry("../bad", "x", "/tmp/a")).is_none());
+        assert!(normalize_entry(entry("G1", "x", "   ")).is_none());
+        let mut parent = entry("G1", "x", "/tmp/a");
+        parent.parent_gallery_id = Some("../bad".into());
+        assert!(normalize_entry(parent).unwrap().parent_gallery_id.is_none());
+    }
+
+    #[test]
+    fn invalid_json_falls_back_to_defaults() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::new(dir.path()).unwrap();
+        std::fs::write(store.config_path(), "{ broken").unwrap();
+        std::fs::write(store.index_path(), "[] trailing").unwrap();
+        assert_eq!(store.load_config().last_rating, None);
+        assert!(store.load_index().is_empty());
+        std::fs::write(store.index_path(), "not an array").unwrap();
+        assert!(store.load_index().is_empty());
+    }
+
+    #[test]
+    fn filters_duplicate_and_invalid_index_entries() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::new(dir.path()).unwrap();
+        let raw = vec![
+            entry("G1", "one", "/tmp/a"),
+            entry("G1", "duplicate", "/tmp/b"),
+            entry("../bad", "bad", "/tmp/c"),
+        ];
+        std::fs::write(store.index_path(), serde_json::to_vec(&raw).unwrap()).unwrap();
+        let entries = store.load_index();
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].name, "one");
+
+        let saved = store
+            .save_index(&[
+                entry("G2", "two", "/tmp/x"),
+                entry("../bad", "bad", "/tmp/y"),
+            ])
+            .unwrap();
+        assert_eq!(saved.len(), 1);
+    }
+
+    #[test]
+    fn patch_and_remove_handle_missing_or_invalid_entries() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::new(dir.path()).unwrap();
+        assert!(store.patch_gallery("../bad", |_| {}).unwrap().is_none());
+        assert!(store.patch_gallery("missing", |_| {}).unwrap().is_none());
+        assert!(!store.remove_gallery("../bad").unwrap());
+        assert!(!store.remove_gallery("missing").unwrap());
+
+        store.upsert_gallery(entry("G1", "one", "/tmp/a")).unwrap();
+        assert!(store
+            .patch_gallery("G1", |entry| entry.local_path.clear())
+            .unwrap()
+            .is_none());
+    }
+
+    #[test]
+    fn snapshot_helpers_validate_ids_and_missing_files() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::new(dir.path()).unwrap();
+        assert!(store.load_snapshot("../bad").is_none());
+        assert!(store.delete_snapshot("../bad").is_err());
+        assert!(!store.delete_snapshot("G1").unwrap());
+        let bad = Snapshot {
+            gallery_id: "../bad".into(),
+            name: "x".into(),
+            local_path: "/tmp".into(),
+            last_sync_at: 0,
+            remote_rev: None,
+            files: vec![],
+        };
+        assert!(store.save_snapshot(&bad).is_err());
+    }
+
+    #[test]
+    fn store_creation_is_idempotent() {
+        let dir = tempfile::tempdir().unwrap();
+        let nested = dir.path().join("a").join("b");
+        let store = Store::new(&nested).unwrap();
+        assert!(nested.is_dir());
+        Store::new(&nested).unwrap();
+        assert_eq!(store.root(), nested);
+    }
+}

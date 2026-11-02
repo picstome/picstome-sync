@@ -1,28 +1,7 @@
 use std::collections::{HashMap, HashSet};
 
-use crate::identity::{identity_key, preferred_file};
+use crate::identity::preferred_file;
 use crate::model::{Conflict, ConflictPhoto, Diff, DiffCounts, LocalFile, Photo, SnapshotFile};
-
-fn photo_key(photo: &Photo) -> Option<String> {
-    photo
-        .identity_key
-        .clone()
-        .or_else(|| identity_key(&photo.filename))
-}
-
-fn snapshot_key(file: &SnapshotFile) -> Option<String> {
-    file.identity_key
-        .clone()
-        .or_else(|| identity_key(&file.filename))
-}
-
-fn local_key(file: &LocalFile) -> Option<String> {
-    if file.identity_key.is_empty() {
-        identity_key(&file.filename)
-    } else {
-        Some(file.identity_key.clone())
-    }
-}
 
 fn content_equal(
     a_hash: Option<&str>,
@@ -74,21 +53,21 @@ pub fn compute_diff(
 ) -> Diff {
     let mut previous: HashMap<String, &SnapshotFile> = HashMap::new();
     for file in snapshot_files {
-        if let Some(key) = snapshot_key(file) {
+        if let Some(key) = file.identity() {
             previous.entry(key).or_insert(file);
         }
     }
 
     let mut remote: HashMap<String, &Photo> = HashMap::new();
     for photo in remote_photos {
-        if let Some(key) = photo_key(photo) {
+        if let Some(key) = photo.identity() {
             remote.entry(key).or_insert(photo);
         }
     }
 
     let mut local_groups: HashMap<String, Vec<&LocalFile>> = HashMap::new();
     for file in local_files {
-        if let Some(key) = local_key(file) {
+        if let Some(key) = file.identity() {
             local_groups.entry(key).or_default().push(file);
         }
     }
@@ -208,6 +187,7 @@ pub fn compute_diff(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::identity::identity_key;
 
     fn remote(id: &str, filename: &str, hash: &str, version: u64) -> Photo {
         Photo {
@@ -333,5 +313,117 @@ mod tests {
         );
         assert_eq!(diff.counts.in_sync, 1);
         assert_eq!(diff.counts.local_new, 0);
+    }
+}
+
+#[cfg(test)]
+mod extra_tests {
+    use super::*;
+    use crate::identity::identity_key;
+
+    fn photo_with(
+        id: &str,
+        filename: &str,
+        hash: Option<&str>,
+        size: Option<u64>,
+        version: Option<u64>,
+    ) -> Photo {
+        Photo {
+            id: id.into(),
+            filename: filename.into(),
+            size,
+            hash: hash.map(str::to_string),
+            hash_algo: Some("sha256".into()),
+            url: String::new(),
+            updated_at: None,
+            version_count: version,
+            version_number: version,
+            identity_key: None,
+        }
+    }
+
+    fn local_with(filename: &str, hash: Option<&str>, size: u64) -> LocalFile {
+        LocalFile {
+            filename: filename.into(),
+            relative_path: filename.into(),
+            path: std::path::PathBuf::from(filename),
+            size,
+            mtime_ms: 1,
+            hash: hash.map(str::to_string),
+            identity_key: identity_key(filename).unwrap_or_default(),
+        }
+    }
+
+    fn snapshot_with(
+        id: &str,
+        filename: &str,
+        hash: Option<&str>,
+        size: Option<u64>,
+        version: Option<u64>,
+    ) -> SnapshotFile {
+        SnapshotFile {
+            id: id.into(),
+            filename: filename.into(),
+            identity_key: None,
+            relative_path: None,
+            hash: hash.map(str::to_string),
+            hash_algo: Some("sha256".into()),
+            size,
+            mtime: None,
+            version_count: version,
+            version_number: version,
+        }
+    }
+
+    #[test]
+    fn compares_by_size_when_hashes_are_missing() {
+        let diff = compute_diff(
+            &[snapshot_with("p1", "a.jpg", None, Some(10), None)],
+            &[photo_with("p1", "a.jpg", None, Some(10), None)],
+            &[local_with("a.jpg", None, 10)],
+        );
+        assert_eq!(diff.counts.in_sync, 1);
+
+        let changed = compute_diff(
+            &[snapshot_with("p1", "a.jpg", None, Some(10), None)],
+            &[photo_with("p1", "a.jpg", None, Some(10), None)],
+            &[local_with("a.jpg", None, 11)],
+        );
+        assert_eq!(changed.counts.local_modified, 1);
+    }
+
+    #[test]
+    fn unknown_baseline_with_both_sides_is_a_conflict() {
+        let diff = compute_diff(
+            &[],
+            &[photo_with("p1", "a.jpg", Some("remote"), Some(10), None)],
+            &[local_with("a.jpg", Some("local"), 10)],
+        );
+        assert_eq!(diff.counts.conflicts, 1);
+    }
+
+    #[test]
+    fn version_metadata_without_a_base_does_not_force_a_conflict() {
+        let diff = compute_diff(
+            &[],
+            &[photo_with("p1", "a.jpg", Some("same"), Some(10), Some(2))],
+            &[local_with("a.jpg", Some("same"), 10)],
+        );
+        assert_eq!(diff.counts.in_sync, 1);
+    }
+
+    #[test]
+    fn uses_explicit_identity_keys_and_ignores_unkeyed_items() {
+        let mut remote = photo_with("p1", "a.jpg", Some("h1"), Some(10), Some(1));
+        remote.identity_key = Some("image:explicit".into());
+        let mut local = local_with("b.jpg", Some("h1"), 10);
+        local.identity_key = "image:explicit".into();
+        let diff = compute_diff(&[], &[remote], &[local]);
+        assert_eq!(diff.counts.in_sync, 1);
+
+        let mut no_key = local_with("c.jpg", Some("h"), 10);
+        no_key.identity_key.clear();
+        let diff = compute_diff(&[], &[], &[no_key]);
+        assert_eq!(diff.counts.remote_new + diff.counts.local_new, 1);
     }
 }
