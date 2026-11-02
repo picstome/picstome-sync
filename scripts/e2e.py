@@ -44,6 +44,8 @@ GALLERY = os.environ.get("E2E_GALLERY", "G123")
 DEBUG_PORT = int(os.environ.get("E2E_DRIVER_PORT", "4444"))
 
 BASE = f"http://127.0.0.1:{DEBUG_PORT}"
+DRIVER_LOG_PATH = None
+DRIVER_PROCESS = None
 
 
 def log(*args):
@@ -84,9 +86,13 @@ def request(method, path, body=None):
         raise RuntimeError(
             f"{method} {path} -> {err.code}: {err.read().decode('utf-8', 'replace')}"
         )
+    except Exception as err:
+        code = DRIVER_PROCESS.poll() if DRIVER_PROCESS else None
+        raise RuntimeError(f"{method} {path} failed: {err} (driver exit: {code})")
 
 
 def run_async(session, script):
+    time.sleep(0.05)
     result = request(
         "POST",
         f"/session/{session}/execute/async",
@@ -181,15 +187,18 @@ def main():
     env.setdefault("WEBKIT_DISABLE_COMPOSITING_MODE", "1")
     env.setdefault("LIBGL_ALWAYS_SOFTWARE", "1")
     env.setdefault("PICSTOME_DISABLE_BROWSER_OPEN", "1")
+    env.setdefault("RUST_BACKTRACE", "1")
 
-    driver_log_path = os.path.join(root, "driver.log")
-    driver_log = open(driver_log_path, "w", encoding="utf-8")
+    global DRIVER_LOG_PATH, DRIVER_PROCESS
+    DRIVER_LOG_PATH = os.path.join(root, "driver.log")
+    driver_log = open(DRIVER_LOG_PATH, "w", encoding="utf-8")
     driver = subprocess.Popen(
         [DRIVER, "--port", str(DEBUG_PORT), "--native-driver", NATIVE_DRIVER],
         env=env,
         stdout=driver_log,
         stderr=subprocess.STDOUT,
     )
+    DRIVER_PROCESS = driver
     session = None
     try:
         wait_http(BASE + "/status")
@@ -426,10 +435,14 @@ if __name__ == "__main__":
     except Exception as err:
         log("E2E FAILED:", err)
         try:
-            with open(driver_log_path, "r", encoding="utf-8", errors="replace") as handle:
-                tail = handle.read().splitlines()[-20:]
-            if tail:
-                log("driver log:\n" + "\n".join(tail))
+            code = DRIVER_PROCESS.poll() if DRIVER_PROCESS else None
+            log("driver exit:", code)
+            path = DRIVER_LOG_PATH
+            if path:
+                with open(path, "r", encoding="utf-8", errors="replace") as handle:
+                    tail = handle.read().splitlines()[-30:]
+                if tail:
+                    log("driver log:\n" + "\n".join(tail))
         except Exception:
             pass
         sys.exit(1)
