@@ -1,0 +1,25 @@
+# Rust
+/target/
+src-tauri/gen/
+
+# Node / frontend tooling (only npx tauri CLI may create it)
+node_modules/
+dist/
+
+# Download scratch files
+*.part
+*.part.json
+*.parts/
+
+# OS / editor
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Local env / credentials
+.env
+.env.local
+/tmp/

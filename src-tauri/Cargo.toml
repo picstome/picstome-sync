@@ -1,0 +1,35 @@
+[package]
+name = "picstome-sync"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+rust-version.workspace = true
+description = "Picstome Sync desktop app"
+
+[lib]
+name = "picstome_sync_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+picstome-sync-core = { path = "../crates/picstome-sync-core" }
+tauri = { version = "2", features = [] }
+tauri-plugin-dialog = "2"
+tauri-plugin-shell = "2"
+tauri-plugin-opener = "2"
+tauri-plugin-deep-link = "2"
+tauri-plugin-single-instance = "2"
+tauri-plugin-updater = "2"
+serde.workspace = true
+serde_json.workspace = true
+tokio.workspace = true
+reqwest.workspace = true
+keyring = "3"
+sys-locale = "0.3"
+hex.workspace = true
+tempfile = "3"
+rand.workspace = true
+url.workspace = true

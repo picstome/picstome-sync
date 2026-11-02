@@ -1,0 +1,300 @@
+use std::sync::Arc;
+
+use picstome_sync_core::api::ApiClient;
+use picstome_sync_core::config::Store;
+use picstome_sync_core::localfiles::hash_file;
+use picstome_sync_core::mock::{start_mock_server, MockServerOptions};
+use picstome_sync_core::model::GalleryEntry;
+use picstome_sync_core::sync::{apply_remote_deletions, run_gallery_sync, SyncOptions};
+use picstome_sync_core::transfer::{download_file, DownloadOptions};
+
+async fn mock() -> picstome_sync_core::mock::MockServer {
+    start_mock_server(MockServerOptions {
+        photo_size: 4096,
+        ..Default::default()
+    })
+    .await
+    .expect("mock server")
+}
+
+async fn login(url: &str) -> ApiClient {
+    let api = ApiClient::new(Some(url), None).unwrap();
+    api.dev_login().await.expect("demo login");
+    api
+}
+
+#[tokio::test]
+async fn api_manifest_and_range_download() {
+    let mock = mock().await;
+    let api = login(&mock.url).await;
+
+    let galleries = api.galleries().await.unwrap();
+    assert_eq!(galleries.len(), 2);
+    assert_eq!(
+        galleries.iter().find(|g| g.id == "G123").unwrap().name,
+        "MiBoda"
+    );
+
+    let manifest = api.manifest("G123").await.unwrap();
+    assert_eq!(manifest.photos.len(), 50);
+    let photo = &manifest.photos[0];
+
+    let dir = tempfile::tempdir().unwrap();
+    let dest = dir.path().join("downloaded.jpg");
+    let result = download_file(
+        &api.http(),
+        &photo.url,
+        &dest,
+        DownloadOptions {
+            expected_hash: photo.hash.clone(),
+            chunk_bytes: 512,
+            ..Default::default()
+        },
+        Arc::new(|_, _| {}),
+    )
+    .await
+    .unwrap();
+
+    assert_eq!(result.hash, photo.hash.clone().unwrap());
+    assert_eq!(hash_file(&dest).await.unwrap(), photo.hash.clone().unwrap());
+    mock.close().await;
+}
+
+#[tokio::test]
+async fn api_upload_versions_and_delete() {
+    let mock = mock().await;
+    let api = login(&mock.url).await;
+    let dir = tempfile::tempdir().unwrap();
+    let file = dir.path().join("NEW_0001.jpg");
+    tokio::fs::write(&file, vec![1u8; 900]).await.unwrap();
+
+    let first = api
+        .upload_photo("G123", "NEW_0001.jpg", &file, 900)
+        .await
+        .unwrap();
+    assert_eq!(first.version_count, Some(1));
+
+    let second = api
+        .upload_photo("G123", "NEW_0001.jpg", &file, 900)
+        .await
+        .unwrap();
+    assert_eq!(second.version_count, Some(1));
+    assert!(second.unchanged);
+
+    tokio::fs::write(&file, vec![2u8; 901]).await.unwrap();
+    let third = api
+        .upload_photo("G123", "NEW_0001.jpg", &file, 901)
+        .await
+        .unwrap();
+    assert_eq!(third.version_count, Some(2));
+
+    let manifest = api.manifest("G123").await.unwrap();
+    assert_eq!(manifest.photos.len(), 51);
+
+    let target = manifest
+        .photos
+        .iter()
+        .find(|p| p.identity_key.as_deref() == Some("image:new_0001"))
+        .unwrap();
+    let deleted = api
+        .delete_photos("G123", &[target.id.clone(), "missing".into()])
+        .await
+        .unwrap();
+    assert_eq!(deleted.deleted, vec![target.id.clone()]);
+    assert_eq!(deleted.not_found, vec!["missing".to_string()]);
+    assert_eq!(api.manifest("G123").await.unwrap().photos.len(), 50);
+    mock.close().await;
+}
+
+#[tokio::test]
+async fn api_authorization_code_exchange() {
+    let mock = mock().await;
+    let page = reqwest::get(format!(
+        "{}/authorize?nonce=abc123&client_name=picstome-sync",
+        mock.url
+    ))
+    .await
+    .unwrap()
+    .text()
+    .await
+    .unwrap();
+    let start = page.find("code=").expect("code in page") + 5;
+    let code: String = page[start..]
+        .chars()
+        .take_while(|c| c.is_ascii_alphanumeric())
+        .collect();
+
+    let api = ApiClient::new(Some(&mock.url), None).unwrap();
+    let token = api.exchange_code(&code).await.unwrap();
+    assert_eq!(token.token, mock.token);
+    assert_eq!(api.me().await.unwrap().email, "desktop@picstome.test");
+    api.revoke().await.unwrap();
+    assert!(api.me().await.is_err());
+    mock.close().await;
+}
+
+async fn setup_sync() -> (
+    picstome_sync_core::mock::MockServer,
+    ApiClient,
+    tempfile::TempDir,
+    Store,
+    GalleryEntry,
+) {
+    let mock = mock().await;
+    let api = login(&mock.url).await;
+    let dir = tempfile::tempdir().unwrap();
+    let local_path = dir.path().join("MiBoda");
+    tokio::fs::create_dir_all(&local_path).await.unwrap();
+    let store = Store::new(dir.path().join("state")).unwrap();
+    let gallery = store
+        .upsert_gallery(GalleryEntry {
+            gallery_id: "G123".into(),
+            name: "MiBoda".into(),
+            local_path: local_path.to_string_lossy().to_string(),
+            last_sync_at: None,
+            remote_rev: None,
+            parent_gallery_id: None,
+        })
+        .unwrap()
+        .unwrap();
+    (mock, api, dir, store, gallery)
+}
+
+fn silence() -> Arc<dyn Fn(picstome_sync_core::model::Progress) + Send + Sync> {
+    Arc::new(|_| {})
+}
+
+#[tokio::test]
+async fn sync_downloads_then_is_a_noop() {
+    let (mock, api, _dir, store, gallery) = setup_sync().await;
+    let report = run_gallery_sync(
+        &api,
+        &store,
+        &gallery,
+        SyncOptions {
+            chunk_bytes: 1024,
+            ..Default::default()
+        },
+        silence(),
+    )
+    .await
+    .unwrap();
+
+    assert_eq!(report.downloaded.len(), 50);
+    assert_eq!(report.errors.len(), 0);
+    assert_eq!(report.counts.remote_new, 50);
+    let snapshot = store.load_snapshot("G123").unwrap();
+    assert_eq!(snapshot.files.len(), 50);
+    assert_eq!(
+        std::fs::read_dir(&gallery.local_path)
+            .unwrap()
+            .filter_map(Result::ok)
+            .filter(|entry| entry.file_name().to_string_lossy().ends_with(".jpg"))
+            .count(),
+        50
+    );
+
+    let second = run_gallery_sync(&api, &store, &gallery, SyncOptions::default(), silence())
+        .await
+        .unwrap();
+    assert_eq!(second.downloaded.len(), 0);
+    assert_eq!(second.uploaded.len(), 0);
+    assert!(second.skipped);
+    mock.close().await;
+}
+
+#[tokio::test]
+async fn sync_handles_remote_and_local_changes() {
+    let (mock, api, _dir, store, gallery) = setup_sync().await;
+    run_gallery_sync(&api, &store, &gallery, SyncOptions::default(), silence())
+        .await
+        .unwrap();
+
+    let client = reqwest::Client::new();
+    client
+        .post(format!("{}/api/v1/dev/bump", mock.url))
+        .bearer_auth(&mock.token)
+        .json(&serde_json::json!({"gallery_id": "G123"}))
+        .send()
+        .await
+        .unwrap();
+
+    let report = run_gallery_sync(&api, &store, &gallery, SyncOptions::default(), silence())
+        .await
+        .unwrap();
+    assert_eq!(report.counts.remote_modified, 1);
+    assert_eq!(report.downloaded.len(), 1);
+
+    let mut files: Vec<_> = std::fs::read_dir(&gallery.local_path)
+        .unwrap()
+        .filter_map(Result::ok)
+        .map(|entry| entry.path())
+        .collect();
+    files.sort();
+    std::fs::write(&files[0], vec![9u8; 1234]).unwrap();
+    std::fs::write(
+        format!("{}/LOCAL_NEW.jpg", gallery.local_path),
+        vec![7u8; 777],
+    )
+    .unwrap();
+
+    let report = run_gallery_sync(&api, &store, &gallery, SyncOptions::default(), silence())
+        .await
+        .unwrap();
+    assert_eq!(report.counts.local_modified, 1);
+    assert_eq!(report.counts.local_new, 1);
+    assert_eq!(report.uploaded.len(), 2);
+    assert_eq!(api.manifest("G123").await.unwrap().photos.len(), 51);
+
+    std::fs::remove_file(format!("{}/LOCAL_NEW.jpg", gallery.local_path)).unwrap();
+    let report = run_gallery_sync(&api, &store, &gallery, SyncOptions::default(), silence())
+        .await
+        .unwrap();
+    assert_eq!(report.proposals.delete_remote.len(), 1);
+
+    let ids: Vec<String> = report
+        .proposals
+        .delete_remote
+        .iter()
+        .map(|proposal| proposal.id.clone())
+        .collect();
+    let deleted = apply_remote_deletions(&api, &store, "G123", &ids)
+        .await
+        .unwrap();
+    assert_eq!(deleted.deleted.len(), 1);
+    assert_eq!(api.manifest("G123").await.unwrap().photos.len(), 50);
+    mock.close().await;
+}
+
+#[tokio::test]
+async fn sync_reports_conflicts_without_overwriting() {
+    let (mock, api, _dir, store, gallery) = setup_sync().await;
+    run_gallery_sync(&api, &store, &gallery, SyncOptions::default(), silence())
+        .await
+        .unwrap();
+
+    reqwest::Client::new()
+        .post(format!("{}/api/v1/dev/bump", mock.url))
+        .bearer_auth(&mock.token)
+        .json(&serde_json::json!({"gallery_id": "G123"}))
+        .send()
+        .await
+        .unwrap();
+
+    let mut files: Vec<_> = std::fs::read_dir(&gallery.local_path)
+        .unwrap()
+        .filter_map(Result::ok)
+        .map(|entry| entry.path())
+        .collect();
+    files.sort();
+    std::fs::write(&files[0], vec![5u8; 999]).unwrap();
+
+    let report = run_gallery_sync(&api, &store, &gallery, SyncOptions::default(), silence())
+        .await
+        .unwrap();
+    assert_eq!(report.counts.conflicts, 1);
+    assert_eq!(report.downloaded.len(), 0);
+    assert_eq!(report.uploaded.len(), 0);
+    assert_eq!(std::fs::read(&files[0]).unwrap(), vec![5u8; 999]);
+    mock.close().await;
+}

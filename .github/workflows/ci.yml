@@ -1,0 +1,91 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  core:
+    name: core tests (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+      - name: Format check
+        run: cargo fmt --all -- --check
+      - name: Clippy (engine crate)
+        run: cargo clippy -p picstome-sync-core --all-targets -- -D warnings
+      - name: Unit + integration tests (fake API)
+        run: cargo test -p picstome-sync-core
+
+  app:
+    name: app build + engine smoke (linux)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+      - name: Install Tauri Linux dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libgtk-3-dev libayatana-appindicator3-dev \
+            librsvg2-dev patchelf libxdo-dev libssl-dev build-essential \
+            xvfb xauth webkit2gtk-driver libgbm1 libasound2t64 libimage-exiftool-perl \
+            || sudo apt-get install -y libwebkit2gtk-4.1-dev libgtk-3-dev libayatana-appindicator3-dev \
+              librsvg2-dev patchelf libxdo-dev libssl-dev build-essential \
+              xvfb xauth webkit2gtk-driver libgbm1 libasound2 libimage-exiftool-perl
+      - name: Clippy (workspace)
+        run: cargo clippy --workspace --all-targets -- -D warnings
+      - name: Workspace tests (core + app)
+        run: cargo test --workspace --all-targets
+      - name: App self-test against the fake API
+        run: cargo run --quiet -p picstome-sync -- --smoke
+
+  e2e:
+    name: Electron-free UI E2E (WebDriver)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Install runtime dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libgtk-3-dev libayatana-appindicator3-dev \
+            librsvg2-dev patchelf libxdo-dev libssl-dev build-essential \
+            xvfb xauth webkit2gtk-driver libgbm1 libasound2t64 libimage-exiftool-perl \
+            || sudo apt-get install -y libwebkit2gtk-4.1-dev libgtk-3-dev libayatana-appindicator3-dev \
+              librsvg2-dev patchelf libxdo-dev libssl-dev build-essential \
+              xvfb xauth webkit2gtk-driver libgbm1 libasound2 libimage-exiftool-perl
+      - name: Install tauri-driver
+        run: cargo install tauri-driver --locked
+      - name: Build app and fake API
+        run: |
+          cargo build -p picstome-sync
+          cargo build -p picstome-sync-core --bin picstome-sync-mock
+      - name: Run real UI E2E against the fake API
+        run: xvfb-run -a --server-args="-screen 0 1280x1024x24" python3 scripts/e2e.py
+        env:
+          E2E_MOCK: "1"
+          E2E_WRITE: "1"

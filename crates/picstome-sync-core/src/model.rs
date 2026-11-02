@@ -1,0 +1,387 @@
+use serde::{Deserialize, Serialize};
+use serde_json::Value;
+
+pub const DEFAULT_API_BASE: &str = "https://picstome.com";
+pub const CLIENT_NAME: &str = "picstome-sync";
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(rename_all = "camelCase", default)]
+pub struct Config {
+    pub photos_dir: Option<String>,
+    pub last_rating: Option<String>,
+    pub last_update_check_at: Option<i64>,
+    pub account_email: Option<String>,
+    pub api_base: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct GalleryEntry {
+    pub gallery_id: String,
+    pub name: String,
+    pub local_path: String,
+    #[serde(default)]
+    pub last_sync_at: Option<i64>,
+    #[serde(default)]
+    pub remote_rev: Option<Value>,
+    #[serde(default)]
+    pub parent_gallery_id: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Snapshot {
+    pub gallery_id: String,
+    pub name: String,
+    pub local_path: String,
+    pub last_sync_at: i64,
+    #[serde(default)]
+    pub remote_rev: Option<Value>,
+    #[serde(default)]
+    pub files: Vec<SnapshotFile>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SnapshotFile {
+    pub id: String,
+    pub filename: String,
+    #[serde(default)]
+    pub identity_key: Option<String>,
+    #[serde(default)]
+    pub relative_path: Option<String>,
+    #[serde(default)]
+    pub hash: Option<String>,
+    #[serde(default)]
+    pub hash_algo: Option<String>,
+    #[serde(default)]
+    pub size: Option<u64>,
+    #[serde(default)]
+    pub mtime: Option<i64>,
+    #[serde(default)]
+    pub version_count: Option<u64>,
+    #[serde(default)]
+    pub version_number: Option<u64>,
+}
+
+#[derive(Debug, Clone)]
+pub struct LocalFile {
+    pub filename: String,
+    pub relative_path: String,
+    pub path: std::path::PathBuf,
+    pub size: u64,
+    pub mtime_ms: i64,
+    pub hash: Option<String>,
+    pub identity_key: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Photo {
+    pub id: String,
+    pub filename: String,
+    #[serde(default)]
+    pub size: Option<u64>,
+    #[serde(default)]
+    pub hash: Option<String>,
+    #[serde(default)]
+    pub hash_algo: Option<String>,
+    #[serde(default)]
+    pub url: String,
+    #[serde(default)]
+    pub updated_at: Option<String>,
+    #[serde(default)]
+    pub version_count: Option<u64>,
+    #[serde(default)]
+    pub version_number: Option<u64>,
+    #[serde(default)]
+    pub identity_key: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Manifest {
+    pub gallery_id: String,
+    #[serde(default)]
+    pub name: String,
+    #[serde(default)]
+    pub rev: Option<Value>,
+    #[serde(default)]
+    pub photos: Vec<Photo>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct GallerySummary {
+    pub id: String,
+    pub name: String,
+    #[serde(default)]
+    pub cover_url: Option<String>,
+    #[serde(default)]
+    pub updated_at: Option<String>,
+    #[serde(default)]
+    pub photo_count: Option<u64>,
+    #[serde(default)]
+    pub rev: Option<Value>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TokenResponse {
+    pub token: String,
+    #[serde(default)]
+    pub email: Option<String>,
+    #[serde(default)]
+    pub expires_at: Option<String>,
+    #[serde(default)]
+    pub display_name: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct UploadResponse {
+    #[serde(default)]
+    pub id: Option<String>,
+    #[serde(default)]
+    pub filename: Option<String>,
+    #[serde(default)]
+    pub rev: Option<Value>,
+    #[serde(default)]
+    pub version_count: Option<u64>,
+    #[serde(default)]
+    pub version_number: Option<u64>,
+    #[serde(default)]
+    pub unchanged: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DeleteResponse {
+    #[serde(default)]
+    pub deleted: Vec<String>,
+    #[serde(default)]
+    pub not_found: Vec<String>,
+    #[serde(default)]
+    pub rev: Option<Value>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct DiffCounts {
+    pub remote_new: usize,
+    pub remote_modified: usize,
+    pub local_new: usize,
+    pub local_modified: usize,
+    pub local_deleted: usize,
+    pub remote_deleted: usize,
+    pub conflicts: usize,
+    pub in_sync: usize,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct Diff {
+    pub remote_new: Vec<Photo>,
+    pub remote_modified: Vec<Photo>,
+    pub local_new: Vec<LocalFile>,
+    pub local_modified: Vec<LocalFile>,
+    pub local_deleted: Vec<Photo>,
+    pub remote_deleted: Vec<LocalFile>,
+    pub conflicts: Vec<Conflict>,
+    pub in_sync: Vec<Photo>,
+    pub counts: DiffCounts,
+}
+
+impl Diff {
+    pub fn has_changes(&self) -> bool {
+        self.counts.remote_new
+            + self.counts.remote_modified
+            + self.counts.local_new
+            + self.counts.local_modified
+            + self.counts.local_deleted
+            + self.counts.remote_deleted
+            + self.counts.conflicts
+            > 0
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ConflictPhoto {
+    pub filename: String,
+    #[serde(default)]
+    pub version_count: Option<u64>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Conflict {
+    pub identity_key: String,
+    pub remote: ConflictPhoto,
+    pub local: ConflictPhoto,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SyncErrorItem {
+    pub phase: String,
+    #[serde(default)]
+    pub filename: Option<String>,
+    #[serde(default)]
+    pub path: Option<String>,
+    pub message: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DownloadedItem {
+    pub id: String,
+    pub filename: String,
+    pub size: u64,
+    pub skipped: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UploadedItem {
+    pub id: Option<String>,
+    pub filename: String,
+    pub version_count: Option<u64>,
+    pub version_number: Option<u64>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DeleteProposal {
+    pub id: String,
+    pub filename: String,
+    #[serde(default)]
+    pub identity_key: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct DeleteProposals {
+    pub delete_remote: Vec<DeleteProposal>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SyncReport {
+    pub gallery_id: String,
+    pub name: String,
+    pub local_path: String,
+    #[serde(default)]
+    pub rev: Option<Value>,
+    pub counts: DiffCounts,
+    pub downloaded: Vec<DownloadedItem>,
+    pub uploaded: Vec<UploadedItem>,
+    pub conflicts: Vec<Conflict>,
+    pub remote_deleted: Vec<DeleteProposal>,
+    pub proposals: DeleteProposals,
+    pub errors: Vec<SyncErrorItem>,
+    pub skipped: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct Progress {
+    pub gallery_id: String,
+    pub phase: String,
+    #[serde(default)]
+    pub file: Option<String>,
+    #[serde(default)]
+    pub done: u64,
+    #[serde(default)]
+    pub total: u64,
+    #[serde(default)]
+    pub file_done: Option<u64>,
+    #[serde(default)]
+    pub file_total: Option<u64>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AuthState {
+    pub connected: bool,
+    pub email: Option<String>,
+    pub account_email: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GalleryView {
+    #[serde(flatten)]
+    pub entry: GalleryEntry,
+    pub exists: bool,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AppState {
+    pub lang: String,
+    pub strings: Value,
+    pub config: ConfigView,
+    pub mock: bool,
+    pub auth: AuthState,
+    pub galleries: Vec<GalleryView>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ConfigView {
+    pub api_base: String,
+    pub api_kind: String,
+    pub photos_dir: Option<String>,
+    pub last_rating: String,
+    pub app_version: String,
+    pub build_profile: String,
+}
+
+/// Human-readable classification of the API target shown in the in-app info
+/// panel, so testers can immediately see whether they are on dev or production.
+pub fn api_kind(base_url: &str, mock: bool) -> &'static str {
+    if mock {
+        return "demo";
+    }
+    let normalized = base_url.trim().trim_end_matches('/').to_ascii_lowercase();
+    if normalized == DEFAULT_API_BASE {
+        "production"
+    } else if normalized.contains("devel.") || normalized.contains("staging.") {
+        "development"
+    } else if normalized.contains("localhost") || normalized.contains("127.0.0.1") {
+        "local"
+    } else {
+        "custom"
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn classifies_api_targets() {
+        assert_eq!(api_kind("https://picstome.com", false), "production");
+        assert_eq!(api_kind("https://picstome.com/", false), "production");
+        assert_eq!(api_kind("https://devel.picstome.com", false), "development");
+        assert_eq!(
+            api_kind("https://staging.picstome.com", false),
+            "development"
+        );
+        assert_eq!(api_kind("http://127.0.0.1:8000", false), "local");
+        assert_eq!(api_kind("http://localhost:8787", false), "local");
+        assert_eq!(api_kind("https://sync.example.test", false), "custom");
+        assert_eq!(api_kind("https://anywhere", true), "demo");
+    }
+
+    #[test]
+    fn config_view_serializes_runtime_info_as_camel_case() {
+        let view = ConfigView {
+            api_base: "https://devel.picstome.com".into(),
+            api_kind: "development".into(),
+            photos_dir: None,
+            last_rating: "1".into(),
+            app_version: "0.1.0".into(),
+            build_profile: "debug".into(),
+        };
+        let json = serde_json::to_value(view).unwrap();
+        assert_eq!(json["apiBase"], "https://devel.picstome.com");
+        assert_eq!(json["apiKind"], "development");
+        assert_eq!(json["appVersion"], "0.1.0");
+        assert_eq!(json["buildProfile"], "debug");
+    }
+}
