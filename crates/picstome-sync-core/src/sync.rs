@@ -71,6 +71,11 @@ fn build_snapshot(
         }
     }
 
+    let previous_by_key: HashMap<String, &SnapshotFile> = previous
+        .iter()
+        .filter_map(|file| file.identity().map(|key| (key, file)))
+        .collect();
+
     let mut files: Vec<SnapshotFile> = manifest
         .photos
         .iter()
@@ -82,7 +87,7 @@ fn build_snapshot(
                 filename: local
                     .map(|file| file.filename.clone())
                     .unwrap_or_else(|| photo.filename.clone()),
-                identity_key: key,
+                identity_key: key.clone(),
                 relative_path: local
                     .map(|file| file.relative_path.clone())
                     .or_else(|| Some(photo.filename.clone())),
@@ -100,6 +105,10 @@ fn build_snapshot(
                 version_number: photo.version_number.or(photo.version_count),
                 remote_deleted: false,
                 keep_local: false,
+                favorite_rated_for: key
+                    .as_ref()
+                    .and_then(|key| previous_by_key.get(key))
+                    .and_then(|file| file.favorite_rated_for.clone()),
             }
         })
         .collect();
@@ -135,6 +144,7 @@ fn build_snapshot(
             version_number: previous_file.version_number,
             remote_deleted: true,
             keep_local: previous_file.keep_local,
+            favorite_rated_for: previous_file.favorite_rated_for.clone(),
         });
     }
 
@@ -186,6 +196,35 @@ fn local_path_for(gallery: &GalleryEntry, file: &SnapshotFile) -> Option<PathBuf
         return Some(candidate);
     }
     safe_join(root, &file.filename).filter(|path| path.is_file())
+}
+
+pub fn mark_favorites_rated(
+    store: &Store,
+    gallery_id: &str,
+    marks: &[(String, String)],
+) -> CoreResult<usize> {
+    if marks.is_empty() {
+        return Ok(0);
+    }
+    let mut snapshot = store
+        .load_snapshot(gallery_id)
+        .ok_or_else(|| CoreError::InvalidData("gallery snapshot not found".into()))?;
+    let by_key: HashMap<&str, &str> = marks
+        .iter()
+        .map(|(key, favorited_at)| (key.as_str(), favorited_at.as_str()))
+        .collect();
+    let mut updated = 0;
+    for file in &mut snapshot.files {
+        let Some(key) = file.identity() else {
+            continue;
+        };
+        if let Some(favorited_at) = by_key.get(key.as_str()) {
+            file.favorite_rated_for = Some((*favorited_at).to_string());
+            updated += 1;
+        }
+    }
+    store.save_snapshot(&snapshot)?;
+    Ok(updated)
 }
 
 pub async fn resolve_remote_deletions(
@@ -538,10 +577,25 @@ pub async fn run_gallery_sync(
         manifest
     };
 
+    let previous_by_key: HashMap<String, &SnapshotFile> = previous_files
+        .iter()
+        .filter_map(|file| file.identity().map(|key| (key, file)))
+        .collect();
     report.favorites = final_manifest
         .photos
         .iter()
         .filter(|photo| photo.favorited_at.is_some())
+        .filter(|photo| {
+            let already_rated = photo
+                .identity()
+                .and_then(|key| previous_by_key.get(&key))
+                .map(|file| {
+                    file.favorite_rated_for.is_some()
+                        && file.favorite_rated_for == photo.favorited_at
+                })
+                .unwrap_or(false);
+            !already_rated
+        })
         .map(|photo| FavoritePhoto {
             id: photo.id.clone(),
             filename: photo.filename.clone(),

@@ -27,6 +27,7 @@ const state = {
         galleryId: null,
         photosDir: null,
         source: "link",
+        favorites: [],
         busy: false,
         result: null,
     },
@@ -753,6 +754,7 @@ function openFavoritesPrompt(report) {
         galleryId: report.galleryId,
         photosDir: null,
         source: "favorites",
+        favorites: favorites,
         busy: false,
         result: null,
     };
@@ -772,6 +774,7 @@ function openRateLink({ files, rating, gallery }) {
         galleryId: targetGallery?.galleryId || null,
         photosDir: targetGallery ? null : state.config.photosDir || null,
         source: "link",
+        favorites: [],
         busy: false,
         result: null,
     };
@@ -840,27 +843,37 @@ async function startSync(galleryId, name) {
 
 async function applyRating() {
     if (state.rating.busy || state.rating.files.length === 0) return;
-    state.rating.busy = true;
-    state.rating.result = null;
+    const appliedState = state.rating;
+    appliedState.busy = true;
+    appliedState.result = null;
     renderRating();
     try {
         const result = await invoke("rate_files", {
-            files: state.rating.files,
-            rating: state.rating.value,
-            photosDir: state.rating.photosDir,
-            galleryId: state.rating.galleryId,
+            files: appliedState.files,
+            rating: appliedState.value,
+            photosDir: appliedState.photosDir,
+            galleryId: appliedState.galleryId,
+            favorites: appliedState.favorites,
         });
-        state.rating.result = result;
-        state.config.lastRating = state.rating.value;
+        appliedState.result = result;
+        state.config.lastRating = appliedState.value;
+        if (result.errors === 0 && result.rated > 0) {
+            setTimeout(() => {
+                if (state.rating === appliedState) {
+                    state.rating.open = false;
+                    renderRating();
+                }
+            }, 1100);
+        }
     } catch (err) {
-        state.rating.result = {
+        appliedState.result = {
             rated: 0,
             notFound: 0,
             errors: 1,
             details: [{ name: "—", status: "error", msg: err?.message || String(err) }],
         };
     } finally {
-        state.rating.busy = false;
+        appliedState.busy = false;
         renderRating();
     }
 }

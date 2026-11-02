@@ -67,6 +67,8 @@ pub struct SnapshotFile {
     pub remote_deleted: bool,
     #[serde(default)]
     pub keep_local: bool,
+    #[serde(default)]
+    pub favorite_rated_for: Option<String>,
 }
 
 #[derive(Debug, Clone)]

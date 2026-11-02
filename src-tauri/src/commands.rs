@@ -12,12 +12,12 @@ use picstome_sync_core::config::Store;
 use picstome_sync_core::error::ErrorPayload;
 use picstome_sync_core::mock::MockServer;
 use picstome_sync_core::model::{
-    AppState as AppStateView, AuthState, ConfigView, DeleteResponse, GalleryEntry, GallerySummary,
-    GalleryView, Progress, SyncReport, DEFAULT_API_BASE,
+    AppState as AppStateView, AuthState, ConfigView, DeleteResponse, FavoritePhoto, GalleryEntry,
+    GallerySummary, GalleryView, Progress, SyncReport, DEFAULT_API_BASE,
 };
 use picstome_sync_core::sanitize::{sanitize_file_names, sanitize_gallery_id};
 use picstome_sync_core::sync::{
-    apply_remote_deletions, folder_exists,
+    apply_remote_deletions, folder_exists, mark_favorites_rated,
     resolve_remote_deletions as resolve_remote_deletions_core, run_gallery_sync,
     RemoteDeleteAction, SyncOptions,
 };
@@ -516,9 +516,11 @@ pub async fn rate_files(
     rating: String,
     photos_dir: Option<String>,
     gallery_id: Option<String>,
+    favorites: Option<Vec<FavoritePhoto>>,
 ) -> Result<RateResult, ErrorPayload> {
     let config = state.store.load_config();
     let has_gallery = gallery_id.is_some();
+    let gallery_for_marks = gallery_id.clone();
     let trusted = match gallery_id {
         Some(gallery_id) => {
             let Some(id) = sanitize_gallery_id(&gallery_id) else {
@@ -554,7 +556,39 @@ pub async fn rate_files(
         config.last_rating = Some(rating.clone());
     });
 
-    Ok(rate::rate_files(state.exiftool.as_deref(), &files, &rating, &trusted_path).await)
+    let result = rate::rate_files(state.exiftool.as_deref(), &files, &rating, &trusted_path).await;
+
+    if let (Some(gallery_id), Some(favorites)) = (gallery_for_marks, favorites) {
+        let successful: std::collections::HashSet<String> = result
+            .details
+            .iter()
+            .filter(|detail| detail.status == "ok")
+            .filter_map(|detail| detail.file.as_deref())
+            .map(|filename| {
+                Path::new(filename)
+                    .file_stem()
+                    .and_then(|stem| stem.to_str())
+                    .unwrap_or("")
+                    .to_lowercase()
+            })
+            .collect();
+        let marks: Vec<(String, String)> = favorites
+            .into_iter()
+            .filter_map(|favorite| {
+                let key = favorite.identity_key?;
+                let favorited_at = favorite.favorited_at?;
+                let stem = Path::new(&favorite.filename)
+                    .file_stem()
+                    .and_then(|stem| stem.to_str())
+                    .unwrap_or("")
+                    .to_lowercase();
+                successful.contains(&stem).then_some((key, favorited_at))
+            })
+            .collect();
+        let _ = mark_favorites_rated(&state.store, &gallery_id, &marks);
+    }
+
+    Ok(result)
 }
 #[tauri::command]
 pub async fn open_galleries_page(

@@ -6,8 +6,8 @@ use picstome_sync_core::localfiles::hash_file;
 use picstome_sync_core::mock::{start_mock_server, MockServerOptions};
 use picstome_sync_core::model::GalleryEntry;
 use picstome_sync_core::sync::{
-    apply_remote_deletions, resolve_remote_deletions, run_gallery_sync, RemoteDeleteAction,
-    SyncOptions,
+    apply_remote_deletions, mark_favorites_rated, resolve_remote_deletions, run_gallery_sync,
+    RemoteDeleteAction, SyncOptions,
 };
 use picstome_sync_core::transfer::{download_file, DownloadOptions};
 
@@ -417,6 +417,39 @@ async fn remote_deletions_are_reported_and_resolved_explicitly() {
             .any(|photo| photo.filename == restored.filename),
         "uploaded photo should be back in the manifest"
     );
+
+    mock.close().await;
+}
+
+#[tokio::test]
+async fn favorite_ratings_are_not_asked_again() {
+    let (mock, api, _dir, store, gallery) = setup_sync().await;
+    let report = run_gallery_sync(&api, &store, &gallery, SyncOptions::default(), silence())
+        .await
+        .unwrap();
+    assert_eq!(report.favorites.len(), 5);
+    let marks: Vec<(String, String)> = report
+        .favorites
+        .iter()
+        .filter_map(|photo| Some((photo.identity_key.clone()?, photo.favorited_at.clone()?)))
+        .collect();
+    assert_eq!(marks.len(), 5);
+
+    assert_eq!(
+        mark_favorites_rated(&store, "G123", &marks[..1]).unwrap(),
+        1
+    );
+    let after_one = run_gallery_sync(&api, &store, &gallery, SyncOptions::default(), silence())
+        .await
+        .unwrap();
+    assert_eq!(after_one.favorites.len(), 4);
+
+    assert_eq!(mark_favorites_rated(&store, "G123", &marks).unwrap(), 5);
+    let after_all = run_gallery_sync(&api, &store, &gallery, SyncOptions::default(), silence())
+        .await
+        .unwrap();
+    assert!(after_all.favorites.is_empty());
+    assert!(after_all.skipped);
 
     mock.close().await;
 }

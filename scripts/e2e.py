@@ -507,10 +507,15 @@ def main():
         log("rate:", rate_result.splitlines()[0] if rate_result else rate_result)
         assert not rate_result.startswith("DISABLED"), rate_result
         assert "1 file" in rate_result.lower() and "rated" in rate_result.lower(), rate_result
-        run_async(
-            session,
-            "const done = arguments[arguments.length - 1]; document.getElementById('btnRatingClose').click(); done('closed');",
-        )
+        deadline = time.time() + 10
+        while time.time() < deadline:
+            modal_state = run_async(
+                session,
+                "const done = arguments[arguments.length - 1]; done(JSON.stringify({ hidden: document.getElementById('ratingModal').classList.contains('hidden') }));",
+            )
+            if json.loads(modal_state)["hidden"]:
+                break
+            time.sleep(0.2)
 
         # Favorites: Sync from the UI, detect remote favorites and apply a rating.
         run_async(
@@ -562,10 +567,26 @@ def main():
         )
         log("favorites rating:", favorites_result.splitlines()[0] if favorites_result else favorites_result)
         assert "5 file" in favorites_result.lower() and "rated" in favorites_result.lower(), favorites_result
-        run_async(
-            session,
-            "const done = arguments[arguments.length - 1]; document.getElementById('btnRatingClose').click(); done('closed');",
-        )
+        deadline = time.time() + 10
+        while time.time() < deadline:
+            modal_state = run_async(
+                session,
+                "const done = arguments[arguments.length - 1]; done(JSON.stringify({ hidden: document.getElementById('ratingModal').classList.contains('hidden') }));",
+            )
+            if json.loads(modal_state)["hidden"]:
+                break
+            time.sleep(0.2)
+        assert json.loads(modal_state)["hidden"], "favorites modal should close automatically"
+
+        with open(os.path.join(user_data, f"{gallery}.json"), encoding="utf-8") as handle:
+            snapshot = json.load(handle)
+        rated_favorites = [
+            file for file in snapshot["files"] if file.get("favoriteRatedFor")
+        ]
+        assert len(rated_favorites) >= 5, rated_favorites
+        after_rating = js_invoke(session, "sync_gallery", {"galleryId": gallery})
+        log("after favorites:", after_rating["counts"], "favorites:", len(after_rating["favorites"]))
+        assert not after_rating["favorites"], after_rating["favorites"]
 
         logout = js_invoke(session, "logout", {})
         assert logout.get("ok"), logout

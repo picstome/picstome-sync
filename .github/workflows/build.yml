@@ -1,0 +1,52 @@
+name: build
+
+# macOS-only test build. Windows/Linux test builds are produced locally with
+# scripts/release-local.sh; final releases use release.yml for all platforms.
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Draft tag to build/upload (e.g. v0.1.7)"
+        required: true
+        default: "v0.1.7"
+
+permissions:
+  contents: write
+
+concurrency:
+  group: build-macos-${{ inputs.tag }}
+  cancel-in-progress: false
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  macos:
+    name: macOS universal test build
+    runs-on: macos-15-intel
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Install macOS targets
+        run: rustup target add aarch64-apple-darwin x86_64-apple-darwin
+      - name: Build unsigned universal app
+        env:
+          CSC_IDENTITY_AUTO_DISCOVERY: "false"
+        run: npx --yes @tauri-apps/cli@2 build --target universal-apple-darwin
+      - name: Create/update draft release and upload DMG
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          TAG="${{ inputs.tag }}"
+          if ! gh release view "$TAG" >/dev/null 2>&1; then
+            gh release create "$TAG" \
+              --draft \
+              --title "Picstome Sync $TAG" \
+              --notes "macOS test build (universal, ad-hoc signed). Other platforms are built locally."
+          fi
+          gh release upload "$TAG" target/universal-apple-darwin/release/bundle/dmg/*.dmg --clobber

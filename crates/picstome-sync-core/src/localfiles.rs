@@ -303,6 +303,7 @@ mod extra_tests {
             version_number: Some(1),
             remote_deleted: false,
             keep_local: false,
+            favorite_rated_for: None,
         }
     }
 

@@ -238,6 +238,7 @@ mod tests {
             version_number: Some(version),
             remote_deleted: false,
             keep_local: false,
+            favorite_rated_for: None,
         }
     }
 
@@ -386,6 +387,7 @@ mod extra_tests {
             version_number: version,
             remote_deleted: false,
             keep_local: false,
+            favorite_rated_for: None,
         }
     }
 
