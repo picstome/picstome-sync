@@ -35,8 +35,10 @@ against the backend contract in
   inside the linked folder, and remote `DELETE` only runs after an explicit
   confirmation with checkboxes.
 - **Auth**: browser flow `/authorize` → `picstome://auth` → token exchange,
-  token stored in the OS keychain (`keyring`). Dev override: `PICSTOME_TOKEN`
-  (debug builds only).
+  token stored in the OS keychain (`keyring`) and reused across launches. Dev
+  override: `PICSTOME_TOKEN` (debug builds only). The API issues tokens with
+  `EXTERNAL_TOKEN_DAYS` (default 365); there is no refresh token in v1, so an
+  expired/revoked token asks to reconnect.
 - **Deep links**: `picstome://rate`, `picstome://sync`, `picstome://auth`, with
   single-instance forwarding on Windows/Linux.
 - **Rating integrated in Sync**: the old Rate tab is gone. `picstome://rate`
@@ -86,7 +88,7 @@ PICSTOME_API_BASE=http://127.0.0.1:8787 PICSTOME_MOCK=1 cargo run -p picstome-sy
 
 1. Open **GitHub → Releases** and download the latest **draft** asset (maintainers
    see drafts on the releases page), e.g. `Picstome.Sync_<version>_universal.dmg`.
-   With the CLI: `gh release download v0.1.7 --pattern '*.dmg'`.
+   With the CLI: `gh release download v0.1.8 --pattern '*.dmg'`.
    New test builds are produced locally with `scripts/release-local.sh`.
 2. Install it, open **Info** in the header and check **Version**, **Build**,
    **Mode** and **API target**.
@@ -184,7 +186,8 @@ scripts/release-local.sh --no-build # upload already-built bundles
 scripts/release-local.sh v0.1.7     # explicit draft tag
 ```
 
-- On **Linux** it builds `.deb` + `.AppImage`.
+- On **Linux** it builds `.deb` + `.AppImage`. Linux needs `libdbus-1-dev` for
+  the keychain backend (`secret-service`).
 - On **macOS** it builds a universal `.dmg` (run it on the Mac), or trigger the
   manual **build** workflow and pass the draft tag (e.g. `v0.1.7`).
 - Windows builds are intentionally reserved for the final `release.yml` run.
