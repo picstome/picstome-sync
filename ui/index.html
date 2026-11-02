@@ -311,6 +311,50 @@
             </div>
         </div>
 
+        <div class="modal-backdrop hidden" id="remoteDeletedModal">
+            <div class="modal" role="dialog" aria-modal="true">
+                <div class="modal-head">
+                    <h2 id="remoteDeletedTitle">Deleted in Picstome</h2>
+                    <button
+                        type="button"
+                        class="ghost small"
+                        id="btnRemoteClose"
+                    >
+                        Close
+                    </button>
+                </div>
+                <p class="hint" id="remoteDeletedHint"></p>
+                <div class="delete-list" id="remoteDeletedList"></div>
+                <div class="btn-row">
+                    <button
+                        type="button"
+                        class="danger"
+                        id="btnRemoteDeleteLocal"
+                    >
+                        Delete locally
+                    </button>
+                    <button
+                        type="button"
+                        class="secondary"
+                        id="btnRemoteKeepLocal"
+                    >
+                        Keep local
+                    </button>
+                    <button
+                        type="button"
+                        class="primary"
+                        id="btnRemoteUploadAgain"
+                    >
+                        Upload again
+                    </button>
+                </div>
+                <div
+                    class="rating-result hidden"
+                    id="remoteDeletedResult"
+                ></div>
+            </div>
+        </div>
+
         <script src="./renderer.js"></script>
     </body>
 </html>

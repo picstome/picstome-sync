@@ -338,6 +338,90 @@ def main():
             log("final:", final["counts"], "skipped:", final["skipped"])
             assert final["skipped"], final["counts"]
 
+        # Remote deletion: Sync must ask what to do and never re-upload silently.
+        manifest_request = urllib.request.Request(
+            f"{api_base}/api/v1/manifest?gallery=G123",
+            headers={
+                "Accept": "application/json",
+                "Authorization": "Bearer demo-token",
+            },
+        )
+        with urllib.request.urlopen(manifest_request, timeout=30) as response:
+            remote_manifest = json.loads(response.read())
+        removed = remote_manifest["photos"][0]
+        remove_request = urllib.request.Request(
+            f"{api_base}/api/v1/dev/remove",
+            data=json.dumps(
+                {"gallery_id": "G123", "photo_id": removed["id"]}
+            ).encode(),
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        urllib.request.urlopen(remove_request, timeout=30).read()
+
+        run_async(
+            session,
+            "const done = arguments[arguments.length - 1]; document.getElementById('btnSync').click(); done('clicked');",
+        )
+        deadline = time.time() + 60
+        remote_prompt = None
+        while time.time() < deadline:
+            remote_prompt = json.loads(
+                run_async(
+                    session,
+                    """
+                    const done = arguments[arguments.length - 1];
+                    const modal = document.getElementById('remoteDeletedModal');
+                    done(JSON.stringify({
+                      visible: !modal.classList.contains('hidden'),
+                      title: document.getElementById('remoteDeletedTitle').textContent,
+                      hint: document.getElementById('remoteDeletedHint').textContent,
+                      list: document.getElementById('remoteDeletedList').textContent
+                    }));
+                    """,
+                )
+            )
+            if remote_prompt["visible"]:
+                break
+            time.sleep(0.4)
+        log("remote deletion prompt:", remote_prompt)
+        assert remote_prompt and remote_prompt["visible"], "remote deletion prompt did not open"
+        assert "deleted" in remote_prompt["title"].lower(), remote_prompt
+        assert removed["filename"] in remote_prompt["list"], remote_prompt
+
+        removed_path = os.path.join(photos, removed["filename"])
+        assert os.path.exists(removed_path), "photo should exist before resolving"
+        run_async(
+            session,
+            "const done = arguments[arguments.length - 1]; document.getElementById('btnRemoteDeleteLocal').click(); done('clicked');",
+        )
+        deadline = time.time() + 30
+        while time.time() < deadline:
+            state_after = json.loads(
+                run_async(
+                    session,
+                    """
+                    const done = arguments[arguments.length - 1];
+                    done(JSON.stringify({
+                      remote: !document.getElementById('remoteDeletedModal').classList.contains('hidden'),
+                      rating: !document.getElementById('ratingModal').classList.contains('hidden')
+                    }));
+                    """,
+                )
+            )
+            if not state_after["remote"]:
+                break
+            time.sleep(0.2)
+        assert not os.path.exists(removed_path), "Delete locally should remove the file"
+        run_async(
+            session,
+            "const done = arguments[arguments.length - 1]; if (!document.getElementById('ratingModal').classList.contains('hidden')) document.getElementById('btnRatingClose').click(); done('closed');",
+        )
+        after_remote = js_invoke(session, "sync_gallery", {"galleryId": gallery})
+        log("after remote delete:", after_remote["counts"], "skipped:", after_remote["skipped"])
+        assert not after_remote["uploaded"], "remote-deleted photo must not be uploaded"
+        assert not after_remote["remoteDeleted"], after_remote["remoteDeleted"]
+
         # Rating modal: deep link + real exiftool write on a separate folder.
         rating_name = "rating-photo.jpg"
         fixture = os.path.join(ROOT, "src-tauri", "tests", "fixtures", "pixel.jpg")

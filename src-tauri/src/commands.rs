@@ -17,7 +17,9 @@ use picstome_sync_core::model::{
 };
 use picstome_sync_core::sanitize::{sanitize_file_names, sanitize_gallery_id};
 use picstome_sync_core::sync::{
-    apply_remote_deletions, folder_exists, run_gallery_sync, SyncOptions,
+    apply_remote_deletions, folder_exists,
+    resolve_remote_deletions as resolve_remote_deletions_core, run_gallery_sync,
+    RemoteDeleteAction, SyncOptions,
 };
 use picstome_sync_core::ApiClient;
 
@@ -452,6 +454,43 @@ pub fn open_folder(
         .open_path(gallery.local_path, None::<&str>)
         .map_err(|err| command_error(err.to_string(), "open_folder_failed"))?;
     Ok(json!({"ok": true}))
+}
+
+#[tauri::command]
+pub async fn resolve_remote_deletions(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    gallery_id: String,
+    photo_ids: Vec<String>,
+    action: String,
+) -> Result<Value, ErrorPayload> {
+    let Some(id) = sanitize_gallery_id(&gallery_id) else {
+        return Err(invalid_gallery());
+    };
+    let Some(gallery) = state.store.get_gallery(&id) else {
+        return Err(not_linked());
+    };
+    let action = match action.as_str() {
+        "delete_local" => RemoteDeleteAction::DeleteLocal,
+        "keep_local" => RemoteDeleteAction::KeepLocal,
+        "upload" => RemoteDeleteAction::Upload,
+        _ => {
+            return Err(command_error(
+                "Unknown remote delete action",
+                "invalid_action",
+            ))
+        }
+    };
+    let api = state.api().await;
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|duration| duration.as_millis() as i64)
+        .unwrap_or(0);
+    let result =
+        resolve_remote_deletions_core(&api, &state.store, &gallery, &photo_ids, action, now)
+            .await?;
+    emit_state(&app, &state).await;
+    serde_json::to_value(result).map_err(|err| command_error(err.to_string(), "invalid_data"))
 }
 
 #[tauri::command]

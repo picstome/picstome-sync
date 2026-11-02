@@ -96,6 +96,7 @@ jobs:
 
             The Sync button checks remote changes and shows live progress. When the
             API reports favorite photos, Sync asks for a 1–5 star rating before
-            writing it locally. The old Rate tab is now a rating dialog inside the
-            same desktop interface.
+            writing it locally. If a photo was deleted in Picstome, Sync asks
+            whether to delete it locally, keep it locally or upload it again. The
+            old Rate tab is now a rating dialog inside the same desktop interface.
           args: ${{ matrix.args }}

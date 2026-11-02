@@ -1,7 +1,9 @@
 use std::collections::{HashMap, HashSet};
 
 use crate::identity::preferred_file;
-use crate::model::{Conflict, ConflictPhoto, Diff, DiffCounts, LocalFile, Photo, SnapshotFile};
+use crate::model::{
+    Conflict, ConflictPhoto, Diff, DiffCounts, LocalFile, Photo, RemoteDeletedItem, SnapshotFile,
+};
 
 fn content_equal(
     a_hash: Option<&str>,
@@ -102,13 +104,18 @@ pub fn compute_diff(
                     diff.remote_new.push(photo.clone());
                 }
             }
-            (None, Some(file)) => {
-                if base.is_some() {
-                    diff.remote_deleted.push(file.clone());
-                } else {
-                    diff.local_new.push(file.clone());
+            (None, Some(file)) => match base {
+                Some(base) if base.keep_local => {}
+                Some(base) => {
+                    diff.remote_deleted.push(RemoteDeletedItem {
+                        id: base.id.clone(),
+                        filename: file.filename.clone(),
+                        identity_key: Some(key.clone()),
+                        relative_path: Some(file.relative_path.clone()),
+                    });
                 }
-            }
+                None => diff.local_new.push(file.clone()),
+            },
             (Some(photo), Some(file)) => {
                 let version_changed =
                     match (photo.version_count, base.and_then(|b| b.version_count)) {
@@ -229,6 +236,8 @@ mod tests {
             mtime: None,
             version_count: Some(version),
             version_number: Some(version),
+            remote_deleted: false,
+            keep_local: false,
         }
     }
 
@@ -293,6 +302,7 @@ mod tests {
             &[local("a.jpg", "h1")],
         );
         assert_eq!(remote_deleted.counts.remote_deleted, 1);
+        assert_eq!(remote_deleted.remote_deleted[0].id, "p1");
     }
 
     #[test]
@@ -374,6 +384,8 @@ mod extra_tests {
             mtime: None,
             version_count: version,
             version_number: version,
+            remote_deleted: false,
+            keep_local: false,
         }
     }
 
@@ -392,6 +404,15 @@ mod extra_tests {
             &[local_with("a.jpg", None, 11)],
         );
         assert_eq!(changed.counts.local_modified, 1);
+    }
+
+    #[test]
+    fn kept_local_files_are_not_reported_as_remote_deleted() {
+        let mut base = snapshot_with("p1", "a.jpg", Some("h1"), Some(10), Some(1));
+        base.keep_local = true;
+        let diff = compute_diff(&[base], &[], &[local_with("a.jpg", Some("h1"), 10)]);
+        assert_eq!(diff.counts.remote_deleted, 0);
+        assert!(!diff.has_changes());
     }
 
     #[test]

@@ -63,6 +63,10 @@ pub struct SnapshotFile {
     pub version_count: Option<u64>,
     #[serde(default)]
     pub version_number: Option<u64>,
+    #[serde(default)]
+    pub remote_deleted: bool,
+    #[serde(default)]
+    pub keep_local: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -182,7 +186,7 @@ pub struct Diff {
     pub local_new: Vec<LocalFile>,
     pub local_modified: Vec<LocalFile>,
     pub local_deleted: Vec<Photo>,
-    pub remote_deleted: Vec<LocalFile>,
+    pub remote_deleted: Vec<RemoteDeletedItem>,
     pub conflicts: Vec<Conflict>,
     pub in_sync: Vec<Photo>,
     pub counts: DiffCounts,
@@ -263,6 +267,17 @@ pub struct DeleteProposals {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub struct RemoteDeletedItem {
+    pub id: String,
+    pub filename: String,
+    #[serde(default)]
+    pub identity_key: Option<String>,
+    #[serde(default)]
+    pub relative_path: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct FavoritePhoto {
     pub id: String,
     pub filename: String,
@@ -284,7 +299,7 @@ pub struct SyncReport {
     pub downloaded: Vec<DownloadedItem>,
     pub uploaded: Vec<UploadedItem>,
     pub conflicts: Vec<Conflict>,
-    pub remote_deleted: Vec<DeleteProposal>,
+    pub remote_deleted: Vec<RemoteDeletedItem>,
     pub proposals: DeleteProposals,
     pub favorites: Vec<FavoritePhoto>,
     pub errors: Vec<SyncErrorItem>,

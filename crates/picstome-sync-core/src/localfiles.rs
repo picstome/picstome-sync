@@ -301,6 +301,8 @@ mod extra_tests {
             mtime: Some(mtime_ms),
             version_count: Some(1),
             version_number: Some(1),
+            remote_deleted: false,
+            keep_local: false,
         }
     }
 

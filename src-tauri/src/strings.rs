@@ -206,6 +206,13 @@ fn english() -> Value {
         "syncHint": "Fetches remote changes and applies local ones.",
         "readyToSync": "Ready to sync",
         "lastSyncAt": "Last sync: {date}",
+        "remoteDeletedTitle": "Deleted in Picstome",
+        "remoteDeletedHint": "{n} photo(s) were deleted in Picstome. What do you want to do with the local copies?",
+        "deleteLocal": "Delete locally",
+        "keepLocal": "Keep local",
+        "uploadAgain": "Upload again",
+        "remoteDeletedDone": "Done",
+        "remoteDeletedError": "Some photos could not be resolved",
     })
 }
 
@@ -321,6 +328,13 @@ fn spanish() -> Value {
         "syncHint": "Busca cambios remotos y aplica los locales.",
         "readyToSync": "Listo para sincronizar",
         "lastSyncAt": "Última sync: {date}",
+        "remoteDeletedTitle": "Borradas en Picstome",
+        "remoteDeletedHint": "{n} foto(s) se borraron en Picstome. ¿Qué quieres hacer con las copias locales?",
+        "deleteLocal": "Borrar en local",
+        "keepLocal": "Mantener en local",
+        "uploadAgain": "Subir de nuevo",
+        "remoteDeletedDone": "Hecho",
+        "remoteDeletedError": "Algunas fotos no se pudieron resolver",
     })
 }
 

@@ -30,6 +30,14 @@ const state = {
         result: null,
     },
     pendingDeletes: new Set(),
+    remoteDeleted: {
+        open: false,
+        galleryId: null,
+        items: [],
+        busy: false,
+        result: null,
+        pendingFavorites: null,
+    },
 };
 
 const els = {
@@ -116,6 +124,16 @@ const els = {
     btnRatingCancel: document.getElementById("btnRatingCancel"),
     btnRatingClose: document.getElementById("btnRatingClose"),
     starButtons: Array.from(document.querySelectorAll("#ratingStars .star-btn")),
+
+    remoteDeletedModal: document.getElementById("remoteDeletedModal"),
+    remoteDeletedTitle: document.getElementById("remoteDeletedTitle"),
+    remoteDeletedHint: document.getElementById("remoteDeletedHint"),
+    remoteDeletedList: document.getElementById("remoteDeletedList"),
+    remoteDeletedResult: document.getElementById("remoteDeletedResult"),
+    btnRemoteClose: document.getElementById("btnRemoteClose"),
+    btnRemoteDeleteLocal: document.getElementById("btnRemoteDeleteLocal"),
+    btnRemoteKeepLocal: document.getElementById("btnRemoteKeepLocal"),
+    btnRemoteUploadAgain: document.getElementById("btnRemoteUploadAgain"),
 };
 
 for (const [key, el] of Object.entries(els)) {
@@ -232,6 +250,11 @@ function applyStrings() {
     els.btnRatingCancel.textContent = s.notNow;
     els.btnRatingClose.textContent = s.infoClose;
     els.btnRatingFolder.textContent = s.chooseFolder;
+    els.remoteDeletedTitle.textContent = s.remoteDeletedTitle;
+    els.btnRemoteClose.textContent = s.infoClose;
+    els.btnRemoteDeleteLocal.textContent = s.deleteLocal;
+    els.btnRemoteKeepLocal.textContent = s.keepLocal;
+    els.btnRemoteUploadAgain.textContent = s.uploadAgain;
 
 }
 
@@ -587,6 +610,70 @@ function renderRating() {
     }
 }
 
+function renderRemoteDeleted() {
+    const s = state.strings;
+    if (!s) return;
+    const modal = state.remoteDeleted;
+    if (!modal.open) {
+        hide(els.remoteDeletedModal);
+        return;
+    }
+    show(els.remoteDeletedModal);
+    els.remoteDeletedHint.textContent = fmt(s.remoteDeletedHint, {
+        n: modal.items.length,
+    });
+    els.remoteDeletedList.replaceChildren();
+    for (const item of modal.items) {
+        const label = document.createElement("label");
+        label.className = "delete-item";
+        const checkbox = document.createElement("input");
+        checkbox.type = "checkbox";
+        checkbox.checked = true;
+        checkbox.dataset.remoteId = item.id;
+        const text = document.createElement("span");
+        text.textContent = item.filename;
+        label.appendChild(checkbox);
+        label.appendChild(text);
+        els.remoteDeletedList.appendChild(label);
+    }
+    els.btnRemoteDeleteLocal.disabled = modal.busy || modal.items.length === 0;
+    els.btnRemoteKeepLocal.disabled = modal.busy || modal.items.length === 0;
+    els.btnRemoteUploadAgain.disabled = modal.busy || modal.items.length === 0;
+
+    if (modal.result) {
+        show(els.remoteDeletedResult);
+        els.remoteDeletedResult.className = `rating-result ${
+            modal.result.errors?.length ? "error" : "ok"
+        }`;
+        const resolved = modal.result.resolved?.length || 0;
+        const errors = modal.result.errors || [];
+        els.remoteDeletedResult.textContent = errors.length
+            ? `${s.remoteDeletedError}: ${errors
+                  .map((error) => error.message)
+                  .join(" · ")}`
+            : `${s.remoteDeletedDone} (${resolved})`;
+    } else {
+        hide(els.remoteDeletedResult);
+    }
+}
+
+function handlePostSync(report) {
+    const remoteDeleted = report?.remoteDeleted || [];
+    if (remoteDeleted.length > 0) {
+        state.remoteDeleted = {
+            open: true,
+            galleryId: report.galleryId,
+            items: remoteDeleted,
+            busy: false,
+            result: null,
+            pendingFavorites: report,
+        };
+        renderRemoteDeleted();
+        return;
+    }
+    openFavoritesPrompt(report);
+}
+
 function renderAll() {
     applyStrings();
     renderAccount();
@@ -596,6 +683,7 @@ function renderAll() {
     renderProgress();
     renderReport();
     renderRating();
+    renderRemoteDeleted();
 }
 
 function setState(next) {
@@ -690,7 +778,7 @@ async function syncCurrent() {
         state.progress = null;
         await refreshState();
         renderAll();
-        openFavoritesPrompt(state.report);
+        handlePostSync(state.report);
     }
 }
 
@@ -721,7 +809,7 @@ async function startSync(galleryId, name) {
         state.progress = null;
         await refreshState();
         renderAll();
-        openFavoritesPrompt(state.report);
+        handlePostSync(state.report);
     }
 }
 
@@ -749,6 +837,52 @@ async function applyRating() {
     } finally {
         state.rating.busy = false;
         renderRating();
+    }
+}
+
+async function resolveRemoteDeleted(action) {
+    const modal = state.remoteDeleted;
+    if (!modal.galleryId || modal.busy) return;
+    const ids = Array.from(
+        els.remoteDeletedList.querySelectorAll("input[type=checkbox]:checked"),
+    ).map((checkbox) => checkbox.dataset.remoteId);
+    if (ids.length === 0) return;
+    modal.busy = true;
+    modal.result = null;
+    renderRemoteDeleted();
+    try {
+        const result = await invoke("resolve_remote_deletions", {
+            galleryId: modal.galleryId,
+            photoIds: ids,
+            action,
+        });
+        modal.result = result;
+        const resolved = new Set(result.resolved || []);
+        modal.items = modal.items.filter((item) => !resolved.has(item.id));
+        if (state.report?.remoteDeleted) {
+            state.report.remoteDeleted = state.report.remoteDeleted.filter(
+                (item) => !resolved.has(item.id),
+            );
+        }
+        if (modal.items.length === 0) {
+            const pending = modal.pendingFavorites;
+            modal.open = false;
+            modal.pendingFavorites = null;
+            await refreshState();
+            renderAll();
+            if (pending) openFavoritesPrompt(pending);
+        } else {
+            await refreshState();
+            renderAll();
+        }
+    } catch (err) {
+        modal.result = {
+            resolved: [],
+            errors: [{ message: err?.message || String(err) }],
+        };
+    } finally {
+        modal.busy = false;
+        renderRemoteDeleted();
     }
 }
 
@@ -970,11 +1104,35 @@ els.btnRatingFolder.addEventListener("click", async () => {
     }
 });
 
+els.btnRemoteDeleteLocal.addEventListener("click", () =>
+    resolveRemoteDeleted("delete_local"),
+);
+els.btnRemoteKeepLocal.addEventListener("click", () =>
+    resolveRemoteDeleted("keep_local"),
+);
+els.btnRemoteUploadAgain.addEventListener("click", () =>
+    resolveRemoteDeleted("upload"),
+);
+els.btnRemoteClose.addEventListener("click", () => {
+    state.remoteDeleted.open = false;
+    state.remoteDeleted.pendingFavorites = null;
+    renderRemoteDeleted();
+});
+els.remoteDeletedModal.addEventListener("click", (event) => {
+    if (event.target === els.remoteDeletedModal) {
+        state.remoteDeleted.open = false;
+        state.remoteDeleted.pendingFavorites = null;
+        renderRemoteDeleted();
+    }
+});
+
 document.addEventListener("keydown", (event) => {
     if (event.key !== "Escape") return;
     hide(els.infoModal);
     state.rating.open = false;
+    state.remoteDeleted.open = false;
     renderRating();
+    renderRemoteDeleted();
 });
 
 init();

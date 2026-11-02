@@ -143,6 +143,7 @@ pub fn run() {
             commands::unlink_gallery,
             commands::open_folder,
             commands::apply_deletions,
+            commands::resolve_remote_deletions,
             commands::rate_files,
             commands::open_account_profile,
             commands::open_galleries_page,

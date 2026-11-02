@@ -5,7 +5,10 @@ use picstome_sync_core::config::Store;
 use picstome_sync_core::localfiles::hash_file;
 use picstome_sync_core::mock::{start_mock_server, MockServerOptions};
 use picstome_sync_core::model::GalleryEntry;
-use picstome_sync_core::sync::{apply_remote_deletions, run_gallery_sync, SyncOptions};
+use picstome_sync_core::sync::{
+    apply_remote_deletions, resolve_remote_deletions, run_gallery_sync, RemoteDeleteAction,
+    SyncOptions,
+};
 use picstome_sync_core::transfer::{download_file, DownloadOptions};
 
 async fn mock() -> picstome_sync_core::mock::MockServer {
@@ -297,5 +300,123 @@ async fn sync_reports_conflicts_without_overwriting() {
     assert_eq!(report.downloaded.len(), 0);
     assert_eq!(report.uploaded.len(), 0);
     assert_eq!(std::fs::read(&files[0]).unwrap(), vec![5u8; 999]);
+    mock.close().await;
+}
+
+#[tokio::test]
+async fn remote_deletions_are_reported_and_resolved_explicitly() {
+    let (mock, api, _dir, store, gallery) = setup_sync().await;
+    run_gallery_sync(&api, &store, &gallery, SyncOptions::default(), silence())
+        .await
+        .unwrap();
+
+    let client = reqwest::Client::new();
+    let remove_remote = |photo_id: String| {
+        let client = client.clone();
+        let url = format!("{}/api/v1/dev/remove", mock.url);
+        let token = mock.token.clone();
+        async move {
+            client
+                .post(url)
+                .bearer_auth(token)
+                .json(&serde_json::json!({"gallery_id": "G123", "photo_id": photo_id}))
+                .send()
+                .await
+                .unwrap();
+        }
+    };
+
+    let manifest = api.manifest("G123").await.unwrap();
+    let kept = manifest.photos.last().unwrap().clone();
+    remove_remote(kept.id.clone()).await;
+
+    let report = run_gallery_sync(&api, &store, &gallery, SyncOptions::default(), silence())
+        .await
+        .unwrap();
+    assert_eq!(report.remote_deleted.len(), 1);
+    assert_eq!(report.remote_deleted[0].id, kept.id);
+    assert_eq!(report.uploaded.len(), 0, "remote deletions must not upload");
+
+    let again = run_gallery_sync(&api, &store, &gallery, SyncOptions::default(), silence())
+        .await
+        .unwrap();
+    assert_eq!(
+        again.remote_deleted.len(),
+        1,
+        "must keep asking, not upload"
+    );
+    assert_eq!(again.uploaded.len(), 0);
+
+    let kept_path = std::path::Path::new(&gallery.local_path).join(&kept.filename);
+    let resolution = resolve_remote_deletions(
+        &api,
+        &store,
+        &gallery,
+        std::slice::from_ref(&kept.id),
+        RemoteDeleteAction::KeepLocal,
+        1,
+    )
+    .await
+    .unwrap();
+    assert_eq!(resolution.resolved, vec![kept.id.clone()]);
+    assert!(kept_path.exists());
+    let after_keep = run_gallery_sync(&api, &store, &gallery, SyncOptions::default(), silence())
+        .await
+        .unwrap();
+    assert_eq!(after_keep.remote_deleted.len(), 0);
+
+    let manifest = api.manifest("G123").await.unwrap();
+    let deleted = manifest.photos.last().unwrap().clone();
+    remove_remote(deleted.id.clone()).await;
+    let report = run_gallery_sync(&api, &store, &gallery, SyncOptions::default(), silence())
+        .await
+        .unwrap();
+    assert_eq!(report.remote_deleted.len(), 1);
+    let deleted_path = std::path::Path::new(&gallery.local_path).join(&deleted.filename);
+    assert!(deleted_path.exists());
+    let resolution = resolve_remote_deletions(
+        &api,
+        &store,
+        &gallery,
+        std::slice::from_ref(&deleted.id),
+        RemoteDeleteAction::DeleteLocal,
+        2,
+    )
+    .await
+    .unwrap();
+    assert_eq!(resolution.resolved, vec![deleted.id.clone()]);
+    assert!(!deleted_path.exists());
+    let after_delete = run_gallery_sync(&api, &store, &gallery, SyncOptions::default(), silence())
+        .await
+        .unwrap();
+    assert_eq!(after_delete.remote_deleted.len(), 0);
+
+    let manifest = api.manifest("G123").await.unwrap();
+    let restored = manifest.photos.last().unwrap().clone();
+    remove_remote(restored.id.clone()).await;
+    let report = run_gallery_sync(&api, &store, &gallery, SyncOptions::default(), silence())
+        .await
+        .unwrap();
+    assert_eq!(report.remote_deleted.len(), 1);
+    let resolution = resolve_remote_deletions(
+        &api,
+        &store,
+        &gallery,
+        std::slice::from_ref(&restored.id),
+        RemoteDeleteAction::Upload,
+        3,
+    )
+    .await
+    .unwrap();
+    assert_eq!(resolution.resolved, vec![restored.id.clone()]);
+    let remote = api.manifest("G123").await.unwrap();
+    assert!(
+        remote
+            .photos
+            .iter()
+            .any(|photo| photo.filename == restored.filename),
+        "uploaded photo should be back in the manifest"
+    );
+
     mock.close().await;
 }
