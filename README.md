@@ -169,6 +169,7 @@ state and logs out.
 | Workflow | Trigger | What it does |
 | --- | --- | --- |
 | `ci.yml` | push/PR/manual | Linux-only Rustfmt + Clippy + engine tests, workspace tests, app `--smoke`, full UI E2E and core coverage report. macOS/Windows CI was removed to stop burning Actions minutes. |
+| `build.yml` | manual only | macOS universal test DMG uploaded to a draft release. Use only when a Mac test build is needed. |
 | `release.yml` | version tag/manual (final releases) | builds and attaches Linux/macOS/Windows installers to a **draft** GitHub release |
 | `real-api.yml` | manual | engine + UI E2E against a real API (`PICSTOME_REAL_API`, `PICSTOME_REAL_TOKEN`, `PICSTOME_REAL_GALLERY`; optional write round-trip) |
 
@@ -184,7 +185,8 @@ scripts/release-local.sh v0.1.7     # explicit draft tag
 ```
 
 - On **Linux** it builds `.deb` + `.AppImage`.
-- On **macOS** it builds a universal `.dmg` (run it on the Mac).
+- On **macOS** it builds a universal `.dmg` (run it on the Mac), or trigger the
+  manual **build** workflow and pass the draft tag (e.g. `v0.1.7`).
 - Windows builds are intentionally reserved for the final `release.yml` run.
 
 The script uses `gh release upload --clobber`, so re-running it replaces the

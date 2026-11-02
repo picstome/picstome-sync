@@ -36,11 +36,9 @@ OS="$(uname -s)"
 case "$OS" in
   Darwin)
     PLATFORM="macos"
-    ARTIFACTS=(target/universal-apple-darwin/release/bundle/dmg/*.dmg)
     ;;
   Linux)
     PLATFORM="linux"
-    ARTIFACTS=(target/release/bundle/deb/*.deb target/release/bundle/appimage/*.AppImage)
     ;;
   *)
     echo "Unsupported local platform: $OS (use release.yml for Windows/final releases)" >&2
@@ -64,6 +62,12 @@ if ! gh release view "$TAG" >/dev/null 2>&1; then
     --draft \
     --title "Picstome Sync $TAG" \
     --notes "Local test build for $PLATFORM ($VERSION). Built and uploaded without GitHub Actions minutes."
+fi
+
+if [[ "$PLATFORM" == "macos" ]]; then
+  ARTIFACTS=(target/universal-apple-darwin/release/bundle/dmg/*.dmg)
+else
+  ARTIFACTS=(target/release/bundle/deb/*.deb target/release/bundle/appimage/*.AppImage)
 fi
 
 echo "Uploading $PLATFORM artifacts..."
