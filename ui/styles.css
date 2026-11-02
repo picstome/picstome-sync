@@ -100,13 +100,24 @@ body {
 .brand {
     display: flex;
     align-items: center;
-    gap: 10px;
+    gap: 11px;
 }
 
 .brand-logo {
-    width: 168px;
-    height: auto;
+    width: 44px;
+    height: 44px;
     display: block;
+    border-radius: 13px;
+    mix-blend-mode: multiply;
+    flex: 0 0 auto;
+}
+
+.brand-name {
+    font-size: 19px;
+    font-weight: 700;
+    letter-spacing: -0.03em;
+    color: var(--graphite);
+    white-space: nowrap;
 }
 
 .tabs {
@@ -909,7 +920,12 @@ button.danger:hover {
     }
 
     .brand-logo {
-        width: 146px;
+        width: 38px;
+        height: 38px;
+    }
+
+    .brand-name {
+        font-size: 17px;
     }
 
     .tabs {

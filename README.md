@@ -1,3 +1,5 @@
+<p align="center"><img src="ui/assets/picstome-sync-logo.png" width="120" alt="Picstome Sync"></p>
+
 # Picstome Sync
 
 Desktop app to keep Picstome galleries and local photo folders in sync, while

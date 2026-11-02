@@ -201,7 +201,8 @@ function renderAccount() {
 
   if (state.auth.connected) {
     show(els.accountChip);
-    els.accountChip.textContent = `${s.connectedAs} ${
+    els.accountChip.textContent = state.auth.email || "Picstome";
+    els.accountChip.title = `${s.connectedAs} ${
       state.auth.email || "Picstome"
     }`;
     show(els.btnLogout);
