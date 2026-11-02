@@ -46,7 +46,7 @@ jobs:
             os: ubuntu-latest
             args: ""
           - name: macos-universal
-            os: macos-latest
+            os: macos-15-intel
             args: "--target universal-apple-darwin"
           - name: windows
             os: windows-latest
