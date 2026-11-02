@@ -65,9 +65,29 @@ cargo run -p picstome-sync-core --bin picstome-sync-mock
 PICSTOME_API_BASE=http://127.0.0.1:8787 PICSTOME_MOCK=1 cargo run -p picstome-sync
 ```
 
+## Testing a downloaded build
+
+1. Open **GitHub → Releases** and download the latest **draft** asset (maintainers
+   see drafts on the releases page), e.g. `Picstome.Sync_<version>_universal.dmg`.
+   With the CLI: `gh release download v0.1.3 --pattern '*.dmg'`.
+   You can also use the `build` workflow artifacts under **Actions → build**.
+2. Install it, open **Info** in the header and check **Version**, **Build**,
+   **Mode** and **API target**.
+3. Use **Test API target → Production / Development** to switch between
+   `https://app.picstome.com` and `https://devel.picstome.com`. Switching signs
+   you out; press **Open Picstome** to authorize again.
+4. The header badge always shows `PROD`, `DEV`, `LOCAL`, `DEMO` or `CUSTOM`, so
+   you can tell at a glance which backend the app is using.
+
+Production is the default: `https://app.picstome.com`.
+
 ## Real API
 
 ```bash
+# production (default)
+cargo run -p picstome-sync
+
+# development
 PICSTOME_API_BASE=https://devel.picstome.com cargo run -p picstome-sync
 ```
 

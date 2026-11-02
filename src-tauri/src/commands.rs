@@ -1,4 +1,5 @@
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
 use serde::Serialize;
@@ -26,8 +27,8 @@ use crate::strings;
 
 pub struct AppState {
     pub store: Store,
-    pub api: ApiClient,
-    pub mock: bool,
+    pub api: tokio::sync::RwLock<ApiClient>,
+    pub mock: AtomicBool,
     pub lang: String,
     pub app_version: String,
     pub build_profile: String,
@@ -48,8 +49,8 @@ impl AppState {
     ) -> Self {
         Self {
             store,
-            api,
-            mock,
+            api: tokio::sync::RwLock::new(api),
+            mock: AtomicBool::new(mock),
             lang: strings::language(),
             app_version,
             build_profile,
@@ -57,6 +58,22 @@ impl AppState {
             auth_nonce: std::sync::Mutex::new(None),
             _mock_server: std::sync::Mutex::new(mock_server),
         }
+    }
+
+    pub async fn api(&self) -> ApiClient {
+        self.api.read().await.clone()
+    }
+
+    pub async fn replace_api(&self, api: ApiClient) {
+        *self.api.write().await = api;
+    }
+
+    pub fn is_mock(&self) -> bool {
+        self.mock.load(Ordering::Relaxed)
+    }
+
+    pub fn set_mock(&self, value: bool) {
+        self.mock.store(value, Ordering::Relaxed);
     }
 }
 
@@ -99,8 +116,9 @@ pub fn exiftool_path(app: &AppHandle) -> Option<PathBuf> {
 
 pub async fn build_state(state: &AppState) -> AppStateView {
     let config = state.store.load_config();
-    let connected = state.api.has_token().await;
-    let email = if state.mock && connected {
+    let api = state.api().await;
+    let connected = api.has_token().await;
+    let email = if state.is_mock() && connected {
         Some("desktop@picstome.test".to_string())
     } else {
         config.account_email.clone()
@@ -120,8 +138,8 @@ pub async fn build_state(state: &AppState) -> AppStateView {
         lang: state.lang.clone(),
         strings: strings::strings(&state.lang),
         config: ConfigView {
-            api_base: state.api.base_url().to_string(),
-            api_kind: picstome_sync_core::model::api_kind(state.api.base_url(), state.mock)
+            api_base: api.base_url().to_string(),
+            api_kind: picstome_sync_core::model::api_kind(api.base_url(), state.is_mock())
                 .to_string(),
             photos_dir: config.photos_dir.filter(|dir| folder_exists(dir)),
             last_rating: match config.last_rating.as_deref() {
@@ -135,7 +153,7 @@ pub async fn build_state(state: &AppState) -> AppStateView {
             app_version: state.app_version.clone(),
             build_profile: state.build_profile.clone(),
         },
-        mock: state.mock,
+        mock: state.is_mock(),
         auth: AuthState {
             connected,
             email,
@@ -186,8 +204,9 @@ async fn sync_linked(
     }
 
     show_main(app);
+    let api = state.api().await;
     let report = run_gallery_sync(
-        &state.api,
+        &api,
         &state.store,
         &gallery,
         SyncOptions::default(),
@@ -257,8 +276,9 @@ pub fn choose_folder(app: AppHandle, state: State<'_, AppState>) -> Option<Strin
 
 #[tauri::command]
 pub async fn connect(app: AppHandle, state: State<'_, AppState>) -> Result<Value, ErrorPayload> {
-    if state.mock {
-        state.api.dev_login().await?;
+    let api = state.api().await;
+    if state.is_mock() {
+        api.dev_login().await?;
         let _ = state.store.update_config(|config| {
             config.account_email = Some("desktop@picstome.test".into());
         });
@@ -268,7 +288,7 @@ pub async fn connect(app: AppHandle, state: State<'_, AppState>) -> Result<Value
 
     let nonce = auth::new_nonce();
     *state.auth_nonce.lock().unwrap() = Some(nonce.clone());
-    let url = state.api.authorize_url(&nonce)?;
+    let url = api.authorize_url(&nonce)?;
     match app.opener().open_url(url.clone(), None::<&str>) {
         Ok(()) => Ok(json!({"ok": true, "url": url, "opened": true})),
         Err(err) => {
@@ -287,10 +307,11 @@ pub async fn connect(app: AppHandle, state: State<'_, AppState>) -> Result<Value
 
 #[tauri::command]
 pub async fn logout(app: AppHandle, state: State<'_, AppState>) -> Result<Value, ErrorPayload> {
-    if state.api.has_token().await {
-        let _ = state.api.revoke().await;
+    let api = state.api().await;
+    if api.has_token().await {
+        let _ = api.revoke().await;
     }
-    state.api.set_token(None).await;
+    api.set_token(None).await;
     auth::save_token(None);
     let _ = state.store.update_config(|config| {
         config.account_email = None;
@@ -303,7 +324,7 @@ pub async fn logout(app: AppHandle, state: State<'_, AppState>) -> Result<Value,
 pub async fn list_remote_galleries(
     state: State<'_, AppState>,
 ) -> Result<Vec<GallerySummary>, ErrorPayload> {
-    Ok(state.api.galleries().await?)
+    Ok(state.api().await.galleries().await?)
 }
 
 #[derive(Debug, Serialize)]
@@ -427,7 +448,8 @@ pub async fn apply_deletions(
     let Some(id) = sanitize_gallery_id(&gallery_id) else {
         return Err(invalid_gallery());
     };
-    let result = apply_remote_deletions(&state.api, &state.store, &id, &photo_ids).await?;
+    let api = state.api().await;
+    let result = apply_remote_deletions(&api, &state.store, &id, &photo_ids).await?;
     emit_state(&app, &state).await;
     Ok(result)
 }
@@ -465,6 +487,36 @@ pub async fn rate_files(
     });
 
     Ok(rate::rate_files(state.exiftool.as_deref(), &files, &rating, &trusted_path).await)
+}
+
+#[tauri::command]
+pub async fn set_api_base(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    base_url: String,
+) -> Result<AppStateView, ErrorPayload> {
+    let base = picstome_sync_core::model::normalize_api_base(&base_url)?;
+    let old_api = state.api().await;
+    if old_api.has_token().await {
+        let _ = old_api.revoke().await;
+    }
+    auth::save_token(None);
+
+    let new_api = ApiClient::new(Some(&base), None)?;
+    state.replace_api(new_api).await;
+    state.set_mock(false);
+    let _ = state.store.update_config(|config| {
+        config.api_base = Some(base.clone());
+        config.account_email = None;
+    });
+
+    let view = build_state(&state).await;
+    let _ = app.emit("app-state", view.clone());
+    let _ = app.emit(
+        "auth-status",
+        json!({"connected": false, "reason": "api_changed"}),
+    );
+    Ok(view)
 }
 
 #[tauri::command]

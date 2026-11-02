@@ -971,3 +971,28 @@ button.danger:hover {
         width: 100%;
     }
 }
+
+.api-switch {
+    margin-top: 18px;
+    padding-top: 16px;
+    border-top: 1px solid var(--line);
+}
+
+.api-switch-title {
+    margin-bottom: 9px;
+    font-size: 11px;
+    font-weight: 700;
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+    color: var(--pine);
+}
+
+.api-switch .btn-row {
+    margin-bottom: 8px;
+}
+
+.api-switch button.active-target {
+    background: var(--pine);
+    color: #ffffff;
+    border-color: var(--pine);
+}

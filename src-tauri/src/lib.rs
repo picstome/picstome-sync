@@ -92,10 +92,7 @@ pub fn run() {
             if mock {
                 let app_for_login = handle.clone();
                 tauri::async_runtime::spawn(async move {
-                    let api = {
-                        let state = app_for_login.state::<AppState>();
-                        state.api.clone()
-                    };
+                    let api = app_for_login.state::<AppState>().api().await;
                     if api.dev_login().await.is_ok() {
                         let view = {
                             let state = app_for_login.state::<AppState>();
@@ -126,6 +123,7 @@ pub fn run() {
             commands::open_folder,
             commands::apply_deletions,
             commands::rate_files,
+            commands::set_api_base,
             commands::dev_handle_deep_link,
             commands::install_update,
             commands::check_updates,

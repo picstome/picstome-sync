@@ -78,7 +78,7 @@ pub async fn handle_url(app: AppHandle, raw: String) {
                 return;
             }
 
-            let api = app_state.api.clone();
+            let api = app_state.api().await;
             let store = app_state.store.clone();
             match api.exchange_code(&code).await {
                 Ok(response) => {

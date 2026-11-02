@@ -1,7 +1,7 @@
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-pub const DEFAULT_API_BASE: &str = "https://picstome.com";
+pub const DEFAULT_API_BASE: &str = "https://app.picstome.com";
 pub const CLIENT_NAME: &str = "picstome-sync";
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -364,7 +364,10 @@ pub fn api_kind(base_url: &str, mock: bool) -> &'static str {
         return "demo";
     }
     let normalized = base_url.trim().trim_end_matches('/').to_ascii_lowercase();
-    if normalized == DEFAULT_API_BASE {
+    if normalized == DEFAULT_API_BASE
+        || normalized == "https://picstome.com"
+        || normalized.contains("://app.picstome.com")
+    {
         "production"
     } else if normalized.contains("devel.") || normalized.contains("staging.") {
         "development"
@@ -375,14 +378,30 @@ pub fn api_kind(base_url: &str, mock: bool) -> &'static str {
     }
 }
 
+/// Validates and normalizes the API base URL used for a test target.
+pub fn normalize_api_base(value: &str) -> crate::error::CoreResult<String> {
+    let trimmed = value.trim().trim_end_matches('/');
+    if trimmed.is_empty() {
+        return Err(crate::error::CoreError::InvalidData("empty API URL".into()));
+    }
+    let parsed = url::Url::parse(trimmed).map_err(crate::error::CoreError::from)?;
+    if !matches!(parsed.scheme(), "http" | "https") || parsed.host_str().is_none() {
+        return Err(crate::error::CoreError::InvalidData(
+            "API URL must be http(s)".into(),
+        ));
+    }
+    Ok(trimmed.to_string())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
     fn classifies_api_targets() {
+        assert_eq!(api_kind("https://app.picstome.com", false), "production");
+        assert_eq!(api_kind("https://app.picstome.com/", false), "production");
         assert_eq!(api_kind("https://picstome.com", false), "production");
-        assert_eq!(api_kind("https://picstome.com/", false), "production");
         assert_eq!(api_kind("https://devel.picstome.com", false), "development");
         assert_eq!(
             api_kind("https://staging.picstome.com", false),
@@ -392,6 +411,21 @@ mod tests {
         assert_eq!(api_kind("http://localhost:8787", false), "local");
         assert_eq!(api_kind("https://sync.example.test", false), "custom");
         assert_eq!(api_kind("https://anywhere", true), "demo");
+    }
+
+    #[test]
+    fn validates_api_urls() {
+        assert_eq!(
+            normalize_api_base(" https://devel.picstome.com/ ").unwrap(),
+            "https://devel.picstome.com"
+        );
+        assert_eq!(
+            normalize_api_base("http://127.0.0.1:8787").unwrap(),
+            "http://127.0.0.1:8787"
+        );
+        assert!(normalize_api_base("").is_err());
+        assert!(normalize_api_base("ftp://example.test").is_err());
+        assert!(normalize_api_base("not a url").is_err());
     }
 
     #[test]

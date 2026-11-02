@@ -98,7 +98,12 @@ fn english() -> Value {
         "modeDevelopment": "Development",
         "modeLocal": "Local",
         "modeDemo": "Demo (fake API)",
-        "modeCustom": "Custom"
+        "modeCustom": "Custom",
+        "apiSwitchTitle": "Test API target",
+        "useProduction": "Production",
+        "useDevelopment": "Development",
+        "apiSwitchHint": "Switching target signs you out. Connect again afterwards.",
+        "apiSwitched": "API target changed. Please connect again."
     })
 }
 
@@ -183,7 +188,12 @@ fn spanish() -> Value {
         "modeDevelopment": "Desarrollo",
         "modeLocal": "Local",
         "modeDemo": "Demo (API falsa)",
-        "modeCustom": "Personalizada"
+        "modeCustom": "Personalizada",
+        "apiSwitchTitle": "API de prueba",
+        "useProduction": "Producción",
+        "useDevelopment": "Desarrollo",
+        "apiSwitchHint": "Cambiar de entorno cierra la sesión. Vuelve a conectar después.",
+        "apiSwitched": "API cambiada. Vuelve a conectar."
     })
 }
 
@@ -217,6 +227,11 @@ mod tests {
                 "modeLocal",
                 "modeDemo",
                 "modeCustom",
+                "apiSwitchTitle",
+                "useProduction",
+                "useDevelopment",
+                "apiSwitchHint",
+                "apiSwitched",
             ] {
                 assert!(
                     value.get(key).and_then(|value| value.as_str()).is_some(),

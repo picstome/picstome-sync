@@ -46,6 +46,10 @@ const els = {
   infoMode: document.getElementById("infoMode"),
   infoTarget: document.getElementById("infoTarget"),
   btnInfoClose: document.getElementById("btnInfoClose"),
+  apiSwitchTitle: document.getElementById("apiSwitchTitle"),
+  apiSwitchHint: document.getElementById("apiSwitchHint"),
+  btnApiProduction: document.getElementById("btnApiProduction"),
+  btnApiDevelopment: document.getElementById("btnApiDevelopment"),
   updateBanner: document.getElementById("updateBanner"),
   updateMsg: document.getElementById("updateMsg"),
   btnUpdate: document.getElementById("btnUpdate"),
@@ -168,6 +172,10 @@ function applyStrings() {
   els.infoModeLabel.textContent = s.infoMode;
   els.infoTargetLabel.textContent = s.infoTarget;
   els.btnInfoClose.textContent = s.infoClose;
+  els.apiSwitchTitle.textContent = s.apiSwitchTitle;
+  els.apiSwitchHint.textContent = s.apiSwitchHint;
+  els.btnApiProduction.textContent = s.useProduction;
+  els.btnApiDevelopment.textContent = s.useDevelopment;
   els.btnUpdate.textContent = s.restartUpdate;
   els.mockBadge.textContent = s.mockMode;
   els.syncTitle.textContent = s.syncTab;
@@ -231,7 +239,7 @@ function renderRuntimeInfo() {
   const label = modeLabel(kind);
   const badge =
     kind === "production"
-      ? ""
+      ? "PROD"
       : kind === "development"
         ? "DEV"
         : kind === "local"
@@ -241,10 +249,17 @@ function renderRuntimeInfo() {
             : "CUSTOM";
 
   els.envBadge.textContent = badge;
-  els.envBadge.classList.toggle("hidden", badge === "");
+  els.envBadge.classList.remove("hidden");
   els.envBadge.title = `${state.strings?.infoTarget || "API"}: ${
     config.apiBase || ""
   }`;
+
+  const base = (config.apiBase || "").replace(/\/$/, "").toLowerCase();
+  const isProduction =
+    base === "https://app.picstome.com" || base === "https://picstome.com";
+  const isDevelopment = base === "https://devel.picstome.com";
+  els.btnApiProduction.classList.toggle("active-target", isProduction);
+  els.btnApiDevelopment.classList.toggle("active-target", isDevelopment);
 
   els.infoVersion.textContent = `${config.appVersion || "?"} (${
     config.buildProfile || "?"
@@ -692,6 +707,26 @@ els.infoModal.addEventListener("click", (event) => {
 document.addEventListener("keydown", (event) => {
   if (event.key === "Escape") hide(els.infoModal);
 });
+
+async function switchApiTarget(baseUrl) {
+  try {
+    await invoke("set_api_base", { baseUrl });
+    hide(els.infoModal);
+    await refreshState();
+    show(els.updateBanner);
+    els.updateMsg.textContent = state.strings?.apiSwitched || "Connected target changed.";
+  } catch (err) {
+    show(els.updateBanner);
+    els.updateMsg.textContent = err?.message || String(err);
+  }
+}
+
+els.btnApiProduction.addEventListener("click", () =>
+  switchApiTarget("https://app.picstome.com"),
+);
+els.btnApiDevelopment.addEventListener("click", () =>
+  switchApiTarget("https://devel.picstome.com"),
+);
 
 init();
 els.tabs.addEventListener("click", (event) => {

@@ -90,5 +90,7 @@ jobs:
             3. Approve it in **System Settings → Privacy & Security**.
 
             The app shows its version, build profile and exact API URL under the
-            **Info** button in the header.
+            **Info** button in the header. Use **Test API target** there to switch
+            between production (`app.picstome.com`) and development
+            (`devel.picstome.com`); switching signs you out.
           args: ${{ matrix.args }}

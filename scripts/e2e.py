@@ -275,15 +275,14 @@ def main():
         assert state["config"]["appVersion"] in dom["infoText"], "info modal must show the version"
         kind = state["config"]["apiKind"]
         expected_badge = {
-            "production": "",
+            "production": "PROD",
             "development": "DEV",
             "local": "LOCAL",
             "demo": "DEMO",
             "custom": "CUSTOM",
         }[kind]
         assert dom["badge"] == expected_badge, (kind, dom["badge"])
-        if expected_badge:
-            assert not dom["badgeHidden"], "environment badge should be visible outside production"
+        assert not dom["badgeHidden"], "environment badge should always be visible"
 
         first = js_invoke(session, "sync_gallery", {"galleryId": gallery})
         log("first:", first["counts"], "errors:", first["errors"])
@@ -371,6 +370,34 @@ def main():
         assert logout.get("ok"), logout
         state = js_invoke(session, "get_state", {})
         assert not state["auth"]["connected"], "logout did not disconnect"
+
+        # Switch the test target from the Info modal (no network call needed).
+        run_async(
+            session,
+            """
+            const done = arguments[arguments.length - 1];
+            document.getElementById('btnInfo').click();
+            document.getElementById('btnApiProduction').click();
+            done('clicked');
+            """,
+        )
+        deadline = time.time() + 20
+        while time.time() < deadline:
+            state = js_invoke(session, "get_state", {})
+            if state["config"]["apiBase"] == "https://app.picstome.com":
+                break
+            time.sleep(0.2)
+        log(
+            "switched target:",
+            {
+                "apiBase": state["config"]["apiBase"],
+                "apiKind": state["config"]["apiKind"],
+                "connected": state["auth"]["connected"],
+            },
+        )
+        assert state["config"]["apiBase"] == "https://app.picstome.com", state["config"]
+        assert state["config"]["apiKind"] == "production", state["config"]
+        assert not state["auth"]["connected"], "switching targets must sign out"
         log("E2E PASSED")
     finally:
         if session:
