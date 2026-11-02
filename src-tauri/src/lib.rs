@@ -87,6 +87,17 @@ pub fn run() {
                 exiftool,
                 mock_server,
             ));
+            if let Some(window) = handle.get_webview_window("main") {
+                let app_for_events = handle.clone();
+                window.on_window_event(move |event| {
+                    if matches!(event, tauri::WindowEvent::Destroyed) {
+                        if let Some(state) = app_for_events.try_state::<AppState>() {
+                            state.mark_frontend_closed();
+                        }
+                    }
+                });
+            }
+
             deep_link::setup(&handle);
 
             if !mock {
@@ -148,6 +159,7 @@ pub fn run() {
             commands::open_account_profile,
             commands::open_galleries_page,
             commands::set_api_base,
+            commands::frontend_ready,
             commands::dev_handle_deep_link,
             commands::install_update,
             commands::check_updates,

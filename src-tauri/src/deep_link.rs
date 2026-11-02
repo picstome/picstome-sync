@@ -53,6 +53,15 @@ pub async fn handle_url(app: AppHandle, raw: String) {
             gallery,
         } => {
             show_main(&app);
+            if let Some(state) = app.try_state::<AppState>() {
+                if !state.frontend_is_ready() {
+                    state.defer_link(&raw);
+                    return;
+                }
+                if !state.should_process_link(&raw) {
+                    return;
+                }
+            }
             let _ = app.emit(
                 "incoming-rate",
                 json!({"files": files, "rating": rating, "gallery": gallery}),
@@ -60,6 +69,15 @@ pub async fn handle_url(app: AppHandle, raw: String) {
         }
         DeepLink::Sync { gallery_id, name } => {
             show_main(&app);
+            if let Some(state) = app.try_state::<AppState>() {
+                if !state.frontend_is_ready() {
+                    state.defer_link(&raw);
+                    return;
+                }
+                if !state.should_process_link(&raw) {
+                    return;
+                }
+            }
             let _ = app.emit(
                 "incoming-sync",
                 json!({"galleryId": gallery_id, "name": name}),

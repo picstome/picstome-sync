@@ -1002,6 +1002,8 @@ async function init() {
             renderMain();
         }
     });
+
+    await invoke("frontend_ready");
 }
 
 /* UI bindings */

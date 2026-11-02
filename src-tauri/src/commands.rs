@@ -1,6 +1,7 @@
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 
 use serde::Serialize;
 use serde_json::{json, Value};
@@ -36,6 +37,9 @@ pub struct AppState {
     pub build_profile: String,
     pub exiftool: Option<PathBuf>,
     pub auth_nonce: std::sync::Mutex<Option<String>>,
+    pending_link: std::sync::Mutex<Option<String>>,
+    last_link: std::sync::Mutex<Option<(String, Instant)>>,
+    frontend_ready: AtomicBool,
     pub _mock_server: std::sync::Mutex<Option<MockServer>>,
 }
 
@@ -58,6 +62,9 @@ impl AppState {
             build_profile,
             exiftool,
             auth_nonce: std::sync::Mutex::new(None),
+            pending_link: std::sync::Mutex::new(None),
+            last_link: std::sync::Mutex::new(None),
+            frontend_ready: AtomicBool::new(false),
             _mock_server: std::sync::Mutex::new(mock_server),
         }
     }
@@ -76,6 +83,35 @@ impl AppState {
 
     pub fn set_mock(&self, value: bool) {
         self.mock.store(value, Ordering::Relaxed);
+    }
+
+    pub fn frontend_is_ready(&self) -> bool {
+        self.frontend_ready.load(Ordering::SeqCst)
+    }
+
+    pub fn defer_link(&self, raw: &str) {
+        *self.pending_link.lock().unwrap() = Some(raw.to_string());
+    }
+
+    pub fn mark_frontend_ready(&self) -> Option<String> {
+        self.frontend_ready.store(true, Ordering::SeqCst);
+        self.pending_link.lock().unwrap().take()
+    }
+
+    pub fn mark_frontend_closed(&self) {
+        self.frontend_ready.store(false, Ordering::SeqCst);
+    }
+
+    pub fn should_process_link(&self, raw: &str) -> bool {
+        let now = Instant::now();
+        let mut last = self.last_link.lock().unwrap();
+        if let Some((previous, at)) = last.as_ref() {
+            if previous == raw && now.duration_since(*at) < Duration::from_secs(2) {
+                return false;
+            }
+        }
+        *last = Some((raw.to_string(), now));
+        true
     }
 }
 
@@ -648,6 +684,17 @@ pub async fn set_api_base(
 }
 
 #[tauri::command]
+pub fn frontend_ready(app: AppHandle, state: State<'_, AppState>) -> bool {
+    if let Some(raw) = state.mark_frontend_ready() {
+        let app = app.clone();
+        tauri::async_runtime::spawn(async move {
+            crate::deep_link::handle_url(app, raw).await;
+        });
+    }
+    true
+}
+
+#[tauri::command]
 pub async fn dev_handle_deep_link(app: AppHandle, url: String) -> Result<Value, ErrorPayload> {
     if !cfg!(debug_assertions) {
         return Err(command_error(
@@ -667,4 +714,29 @@ pub fn install_update() -> Value {
 #[tauri::command]
 pub async fn check_updates() -> Value {
     json!({"ok": false, "reason": "updater_not_configured"})
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn defers_links_until_frontend_ready_and_dedupes() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::new(dir.path()).unwrap();
+        let api = ApiClient::new(Some("http://127.0.0.1:1"), None).unwrap();
+        let state = AppState::new(store, api, false, "test".into(), "debug".into(), None, None);
+
+        assert!(!state.frontend_is_ready());
+        state.defer_link("picstome://sync?gallery=G1&name=Test");
+        assert_eq!(
+            state.mark_frontend_ready().as_deref(),
+            Some("picstome://sync?gallery=G1&name=Test")
+        );
+        assert!(state.frontend_is_ready());
+        assert!(state.should_process_link("picstome://sync?gallery=G1&name=Test"));
+        assert!(!state.should_process_link("picstome://sync?gallery=G1&name=Test"));
+        state.mark_frontend_closed();
+        assert!(!state.frontend_is_ready());
+    }
 }
