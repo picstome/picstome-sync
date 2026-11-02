@@ -37,19 +37,9 @@ fn sha256_hex(bytes: &[u8]) -> String {
     hex::encode(hasher.finalize())
 }
 
-fn photo_bytes(seed: &str, size: usize) -> Vec<u8> {
-    let header = [0xff, 0xd8, 0xff, 0xe0, 0x00, 0x10, 0x4a, 0x46];
-    let pattern = Sha256::digest(seed.as_bytes());
-    let mut out = vec![0u8; size.max(header.len())];
-    out[..header.len()].copy_from_slice(&header);
-    let mut offset = header.len();
-    while offset < out.len() {
-        let remaining = out.len() - offset;
-        let take = remaining.min(pattern.len());
-        out[offset..offset + take].copy_from_slice(&pattern[..take]);
-        offset += take;
-    }
-    out
+fn photo_bytes(_seed: &str, _size: usize) -> Vec<u8> {
+    // A real 1x1 JPEG so rating tests can exercise exiftool against the fake API.
+    include_bytes!("../assets/pixel.jpg").to_vec()
 }
 
 #[derive(Debug, Clone)]
@@ -62,6 +52,7 @@ pub struct PhotoRecord {
     pub version_count: u64,
     pub version_number: u64,
     pub updated_at: String,
+    pub favorited_at: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -116,6 +107,7 @@ fn make_photo(id: String, filename: String, seed: &str, size: usize, version: u6
         version_count: version,
         version_number: version,
         updated_at: iso_now(),
+        favorited_at: None,
     }
 }
 
@@ -131,13 +123,17 @@ pub fn seed_galleries(photo_size: usize) -> HashMap<String, GalleryRecord> {
     let mut weddings = Vec::new();
     for index in 1..=50 {
         let filename = format!("1Z8A43{index:02}.jpg");
-        weddings.push(make_photo(
+        let mut photo = make_photo(
             format!("p{index:03}"),
             filename,
             &format!("wedding-{index}"),
             photo_size,
             1,
-        ));
+        );
+        if index % 10 == 0 {
+            photo.favorited_at = Some(format!("2026-01-{:02}T12:00:00Z", index));
+        }
+        weddings.push(photo);
     }
 
     let mut portraits = Vec::new();
@@ -271,6 +267,7 @@ fn manifest_photo(photo: &PhotoRecord, base: &str, gallery_id: &str) -> Value {
         "version_count": photo.version_count,
         "version_number": photo.version_number,
         "identity_key": photo.identity_key,
+        "favorited_at": photo.favorited_at,
     })
 }
 

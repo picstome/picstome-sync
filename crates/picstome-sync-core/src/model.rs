@@ -11,6 +11,7 @@ pub struct Config {
     pub last_rating: Option<String>,
     pub last_update_check_at: Option<i64>,
     pub account_email: Option<String>,
+    pub account_name: Option<String>,
     pub api_base: Option<String>,
 }
 
@@ -95,6 +96,8 @@ pub struct Photo {
     pub version_number: Option<u64>,
     #[serde(default)]
     pub identity_key: Option<String>,
+    #[serde(default)]
+    pub favorited_at: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -260,6 +263,17 @@ pub struct DeleteProposals {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub struct FavoritePhoto {
+    pub id: String,
+    pub filename: String,
+    #[serde(default)]
+    pub identity_key: Option<String>,
+    #[serde(default)]
+    pub favorited_at: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct SyncReport {
     pub gallery_id: String,
     pub name: String,
@@ -272,6 +286,7 @@ pub struct SyncReport {
     pub conflicts: Vec<Conflict>,
     pub remote_deleted: Vec<DeleteProposal>,
     pub proposals: DeleteProposals,
+    pub favorites: Vec<FavoritePhoto>,
     pub errors: Vec<SyncErrorItem>,
     pub skipped: bool,
 }
@@ -298,6 +313,7 @@ pub struct Progress {
 pub struct AuthState {
     pub connected: bool,
     pub email: Option<String>,
+    pub name: Option<String>,
     pub account_email: Option<String>,
 }
 

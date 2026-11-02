@@ -83,9 +83,15 @@ pub async fn handle_url(app: AppHandle, raw: String) {
             match api.exchange_code(&code).await {
                 Ok(response) => {
                     auth::save_token(Some(&response.token));
-                    let email = response.email.clone();
+                    let me = api.me().await.ok();
+                    let email = me
+                        .as_ref()
+                        .map(|me| me.email.clone())
+                        .or_else(|| response.email.clone());
+                    let name = me.as_ref().and_then(|me| me.display_name.clone());
                     let _ = store.update_config(|config| {
                         config.account_email = email.clone();
+                        config.account_name = name.clone();
                     });
                     let view = build_state(&app_state).await;
                     let _ = app.emit("app-state", view);

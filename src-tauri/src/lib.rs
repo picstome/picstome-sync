@@ -89,6 +89,27 @@ pub fn run() {
             ));
             deep_link::setup(&handle);
 
+            if !mock {
+                let app_for_account = handle.clone();
+                tauri::async_runtime::spawn(async move {
+                    let api = app_for_account.state::<AppState>().api().await;
+                    if api.has_token().await {
+                        if let Ok(me) = api.me().await {
+                            let store = app_for_account.state::<AppState>().store.clone();
+                            let _ = store.update_config(|config| {
+                                config.account_email = Some(me.email.clone());
+                                config.account_name = me.display_name.clone();
+                            });
+                            let view = {
+                                let state = app_for_account.state::<AppState>();
+                                commands::build_state(&state).await
+                            };
+                            let _ = app_for_account.emit("app-state", view);
+                        }
+                    }
+                });
+            }
+
             if mock {
                 let app_for_login = handle.clone();
                 tauri::async_runtime::spawn(async move {
@@ -123,6 +144,8 @@ pub fn run() {
             commands::open_folder,
             commands::apply_deletions,
             commands::rate_files,
+            commands::open_account_profile,
+            commands::open_galleries_page,
             commands::set_api_base,
             commands::dev_handle_deep_link,
             commands::install_update,

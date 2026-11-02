@@ -183,6 +183,7 @@ async fn sync_downloads_then_is_a_noop() {
     assert_eq!(report.downloaded.len(), 50);
     assert_eq!(report.errors.len(), 0);
     assert_eq!(report.counts.remote_new, 50);
+    assert_eq!(report.favorites.len(), 5);
     let snapshot = store.load_snapshot("G123").unwrap();
     assert_eq!(snapshot.files.len(), 50);
     assert_eq!(

@@ -201,6 +201,7 @@ mod tests {
             version_count: Some(version),
             version_number: Some(version),
             identity_key: None,
+            favorited_at: None,
         }
     }
 
@@ -339,6 +340,7 @@ mod extra_tests {
             version_count: version,
             version_number: version,
             identity_key: None,
+            favorited_at: None,
         }
     }
 

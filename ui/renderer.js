@@ -2,919 +2,979 @@ const { invoke } = window.__TAURI__.core;
 const { listen } = window.__TAURI__.event;
 
 const state = {
-  lang: "en",
-  strings: null,
-  config: {
-    photosDir: "",
-    lastRating: "1",
-    apiBase: "",
-    apiKind: "custom",
-    appVersion: "",
-    buildProfile: "",
-  },
-  mock: false,
-  auth: { connected: false, email: null },
-  galleries: [],
-  activeTab: "sync",
-  currentGalleryId: null,
-  rateFiles: [],
-  rateRating: "1",
-  rateBusy: false,
-  syncBusy: false,
-  progress: null,
-  report: null,
-  pendingDeletes: new Set(),
+    lang: "en",
+    strings: null,
+    config: {
+        photosDir: "",
+        lastRating: "1",
+        apiBase: "",
+        apiKind: "custom",
+        appVersion: "",
+        buildProfile: "",
+    },
+    mock: false,
+    auth: { connected: false, name: null, email: null },
+    galleries: [],
+    currentGalleryId: null,
+    syncBusy: false,
+    progress: null,
+    report: null,
+    rating: {
+        open: false,
+        files: [],
+        value: "5",
+        galleryId: null,
+        photosDir: null,
+        source: "link",
+        busy: false,
+        result: null,
+    },
+    pendingDeletes: new Set(),
 };
 
 const els = {
-  tabs: document.getElementById("tabs"),
-  tabButtons: Array.from(document.querySelectorAll(".tab")),
-  envBadge: document.getElementById("envBadge"),
-  accountChip: document.getElementById("accountChip"),
-  btnConnect: document.getElementById("btnConnect"),
-  btnConnectEmpty: document.getElementById("btnConnectEmpty"),
-  btnLogout: document.getElementById("btnLogout"),
-  btnInfo: document.getElementById("btnInfo"),
-  infoModal: document.getElementById("infoModal"),
-  infoTitle: document.getElementById("infoTitle"),
-  infoVersionLabel: document.getElementById("infoVersionLabel"),
-  infoProfileLabel: document.getElementById("infoProfileLabel"),
-  infoModeLabel: document.getElementById("infoModeLabel"),
-  infoTargetLabel: document.getElementById("infoTargetLabel"),
-  infoVersion: document.getElementById("infoVersion"),
-  infoProfile: document.getElementById("infoProfile"),
-  infoMode: document.getElementById("infoMode"),
-  infoTarget: document.getElementById("infoTarget"),
-  btnInfoClose: document.getElementById("btnInfoClose"),
-  apiSwitchTitle: document.getElementById("apiSwitchTitle"),
-  apiSwitchHint: document.getElementById("apiSwitchHint"),
-  btnApiProduction: document.getElementById("btnApiProduction"),
-  btnApiDevelopment: document.getElementById("btnApiDevelopment"),
-  updateBanner: document.getElementById("updateBanner"),
-  updateMsg: document.getElementById("updateMsg"),
-  btnUpdate: document.getElementById("btnUpdate"),
+    envBadge: document.getElementById("envBadge"),
+    galleriesLabel: document.getElementById("galleriesLabel"),
+    btnAddGallery: document.getElementById("btnAddGallery"),
+    galleryList: document.getElementById("galleryList"),
+    syncEmpty: document.getElementById("syncEmpty"),
+    emptyTitle: document.getElementById("emptyTitle"),
+    emptyHint: document.getElementById("emptyHint"),
+    btnDemo: document.getElementById("btnDemo"),
 
-  syncTitle: document.getElementById("syncTitle"),
-  syncHint: document.getElementById("syncHint"),
-  mockBadge: document.getElementById("mockBadge"),
-  syncEmpty: document.getElementById("syncEmpty"),
-  emptyTitle: document.getElementById("emptyTitle"),
-  emptyHint: document.getElementById("emptyHint"),
-  btnDemo: document.getElementById("btnDemo"),
-  galleryList: document.getElementById("galleryList"),
+    accountChip: document.getElementById("accountChip"),
+    accountInitial: document.getElementById("accountInitial"),
+    accountName: document.getElementById("accountName"),
+    accountEmail: document.getElementById("accountEmail"),
+    btnConnect: document.getElementById("btnConnect"),
+    btnLogout: document.getElementById("btnLogout"),
+    btnInfo: document.getElementById("btnInfo"),
 
-  syncDetail: document.getElementById("syncDetail"),
-  btnBack: document.getElementById("btnBack"),
-  detailName: document.getElementById("detailName"),
-  detailPath: document.getElementById("detailPath"),
-  btnUpdateNow: document.getElementById("btnUpdateNow"),
-  btnChangeFolder: document.getElementById("btnChangeFolder"),
-  btnOpenFolder: document.getElementById("btnOpenFolder"),
+    detailName: document.getElementById("detailName"),
+    detailPath: document.getElementById("detailPath"),
+    detailLastSync: document.getElementById("detailLastSync"),
+    btnSync: document.getElementById("btnSync"),
+    btnChangeFolder: document.getElementById("btnChangeFolder"),
+    btnOpenFolder: document.getElementById("btnOpenFolder"),
+    btnUnlink: document.getElementById("btnUnlink"),
 
-  progressWrap: document.getElementById("progressWrap"),
-  progressFill: document.getElementById("progressFill"),
-  progressText: document.getElementById("progressText"),
+    idleState: document.getElementById("idleState"),
+    idleTitle: document.getElementById("idleTitle"),
+    idleHint: document.getElementById("idleHint"),
+    btnIdleSync: document.getElementById("btnIdleSync"),
+    welcome: document.getElementById("welcome"),
+    welcomeTitle: document.getElementById("welcomeTitle"),
+    welcomeHint: document.getElementById("welcomeHint"),
+    btnConnectWelcome: document.getElementById("btnConnectWelcome"),
+    btnDemoWelcome: document.getElementById("btnDemoWelcome"),
 
-  report: document.getElementById("report"),
-  reportSummary: document.getElementById("reportSummary"),
-  reportCounts: document.getElementById("reportCounts"),
-  reportErrors: document.getElementById("reportErrors"),
-  deleteBox: document.getElementById("deleteBox"),
-  deleteTitle: document.getElementById("deleteTitle"),
-  deleteHint: document.getElementById("deleteHint"),
-  deleteList: document.getElementById("deleteList"),
-  btnDeleteRemote: document.getElementById("btnDeleteRemote"),
-  btnCancelDelete: document.getElementById("btnCancelDelete"),
+    progressWrap: document.getElementById("progressWrap"),
+    progressTitle: document.getElementById("progressTitle"),
+    progressPercent: document.getElementById("progressPercent"),
+    progressBar: document.getElementById("progressBar"),
+    progressFill: document.getElementById("progressFill"),
+    progressText: document.getElementById("progressText"),
 
-  rateTitle: document.getElementById("rateTitle"),
-  rateHint: document.getElementById("rateHint"),
-  folderLabel: document.getElementById("folderLabel"),
-  pathBox: document.getElementById("pathBox"),
-  btnChooseFolder: document.getElementById("btnChooseFolder"),
-  infoRow: document.getElementById("infoRow"),
-  fileCount: document.getElementById("fileCount"),
-  photosLabel: document.getElementById("photosLabel"),
-  ratingLabel: document.getElementById("ratingLabel"),
-  ratingVal: document.getElementById("ratingVal"),
-  btnRate: document.getElementById("btnRate"),
-  spinner: document.getElementById("spinner"),
-  results: document.getElementById("results"),
-  resultSummary: document.getElementById("resultSummary"),
-  detailList: document.getElementById("detailList"),
-  starButtons: Array.from(document.querySelectorAll(".star-btn")),
+    report: document.getElementById("report"),
+    reportSummary: document.getElementById("reportSummary"),
+    reportTime: document.getElementById("reportTime"),
+    reportCounts: document.getElementById("reportCounts"),
+    reportErrors: document.getElementById("reportErrors"),
+    deleteBox: document.getElementById("deleteBox"),
+    deleteTitle: document.getElementById("deleteTitle"),
+    deleteHint: document.getElementById("deleteHint"),
+    deleteList: document.getElementById("deleteList"),
+    btnDeleteRemote: document.getElementById("btnDeleteRemote"),
+    btnCancelDelete: document.getElementById("btnCancelDelete"),
+
+    infoModal: document.getElementById("infoModal"),
+    infoTitle: document.getElementById("infoTitle"),
+    infoVersionLabel: document.getElementById("infoVersionLabel"),
+    infoProfileLabel: document.getElementById("infoProfileLabel"),
+    infoModeLabel: document.getElementById("infoModeLabel"),
+    infoTargetLabel: document.getElementById("infoTargetLabel"),
+    infoAccountLabel: document.getElementById("infoAccountLabel"),
+    infoVersion: document.getElementById("infoVersion"),
+    infoProfile: document.getElementById("infoProfile"),
+    infoMode: document.getElementById("infoMode"),
+    infoTarget: document.getElementById("infoTarget"),
+    infoAccount: document.getElementById("infoAccount"),
+    btnInfoClose: document.getElementById("btnInfoClose"),
+    apiSwitchTitle: document.getElementById("apiSwitchTitle"),
+    apiSwitchHint: document.getElementById("apiSwitchHint"),
+    btnApiProduction: document.getElementById("btnApiProduction"),
+    btnApiDevelopment: document.getElementById("btnApiDevelopment"),
+
+    ratingModal: document.getElementById("ratingModal"),
+    ratingTitle: document.getElementById("ratingTitle"),
+    ratingSubtitle: document.getElementById("ratingSubtitle"),
+    ratingTarget: document.getElementById("ratingTarget"),
+    btnRatingFolder: document.getElementById("btnRatingFolder"),
+    ratingValue: document.getElementById("ratingValue"),
+    ratingResult: document.getElementById("ratingResult"),
+    btnRatingApply: document.getElementById("btnRatingApply"),
+    btnRatingCancel: document.getElementById("btnRatingCancel"),
+    btnRatingClose: document.getElementById("btnRatingClose"),
+    starButtons: Array.from(document.querySelectorAll("#ratingStars .star-btn")),
 };
 
 for (const [key, el] of Object.entries(els)) {
-  if (Array.isArray(el)) {
-    if (el.length === 0) throw new Error(`Missing DOM element: ${key}`);
-  } else if (!el) {
-    throw new Error(`Missing DOM element: ${key}`);
-  }
+    if (Array.isArray(el)) {
+        if (el.length === 0) throw new Error(`Missing DOM element: ${key}`);
+    } else if (!el) {
+        throw new Error(`Missing DOM element: ${key}`);
+    }
 }
 
 function fmt(template, vars) {
-  return String(template || "").replace(/\{(\w+)\}/g, (match, key) =>
-    key in vars ? String(vars[key]) : match,
-  );
+    return String(template || "").replace(/\{(\w+)\}/g, (match, key) =>
+        key in vars ? String(vars[key]) : match,
+    );
 }
 
 function normalizeRating(value) {
-  const v = String(value ?? "").trim();
-  return ["1", "2", "3", "4", "5"].includes(v) ? v : "1";
+    const v = String(value ?? "").trim();
+    return ["1", "2", "3", "4", "5"].includes(v) ? v : "1";
+}
+
+function stem(filename) {
+    return String(filename || "").replace(/\.[^.]+$/, "");
 }
 
 function show(el) {
-  el.classList.remove("hidden");
+    el.classList.remove("hidden");
 }
 
 function hide(el) {
-  el.classList.add("hidden");
+    el.classList.add("hidden");
 }
 
-function showTab(tab) {
-  state.activeTab = tab;
-  for (const button of els.tabButtons) {
-    button.classList.toggle("active", button.dataset.tab === tab);
-  }
-  document
-    .getElementById("tab-sync")
-    .classList.toggle("hidden", tab !== "sync");
-  document
-    .getElementById("tab-rate")
-    .classList.toggle("hidden", tab !== "rate");
+function formatDateShort(value) {
+    if (!value) return state.strings?.never || "never";
+    try {
+        return new Date(value).toLocaleDateString(
+            state.lang === "es" ? "es-ES" : "en-US",
+            { month: "short", day: "numeric" },
+        );
+    } catch {
+        return String(value);
+    }
 }
 
 function formatDate(value) {
-  if (!value) return state.strings?.never || "never";
-  try {
-    return new Date(value).toLocaleString(state.lang === "es" ? "es-ES" : "en-US", {
-      dateStyle: "medium",
-      timeStyle: "short",
-    });
-  } catch {
-    return String(value);
-  }
-}
-
-function applyStrings() {
-  const s = state.strings;
-  if (!s) return;
-
-  els.tabButtons[0].textContent = s.syncTab;
-  els.tabButtons[1].textContent = s.rateTab;
-  els.btnConnect.textContent = s.connect;
-  els.btnConnectEmpty.textContent = s.connect;
-  els.btnLogout.textContent = s.logout;
-  els.btnInfo.textContent = s.info;
-  els.infoTitle.textContent = s.infoTitle;
-  els.infoVersionLabel.textContent = s.infoVersion;
-  els.infoProfileLabel.textContent = s.infoProfile;
-  els.infoModeLabel.textContent = s.infoMode;
-  els.infoTargetLabel.textContent = s.infoTarget;
-  els.btnInfoClose.textContent = s.infoClose;
-  els.apiSwitchTitle.textContent = s.apiSwitchTitle;
-  els.apiSwitchHint.textContent = s.apiSwitchHint;
-  els.btnApiProduction.textContent = s.useProduction;
-  els.btnApiDevelopment.textContent = s.useDevelopment;
-  els.btnUpdate.textContent = s.restartUpdate;
-  els.mockBadge.textContent = s.mockMode;
-  els.syncTitle.textContent = s.syncTab;
-  els.syncHint.textContent = state.mock ? s.demoHint : "";
-  els.emptyTitle.textContent = s.noGalleries;
-  els.emptyHint.textContent = s.noGalleriesHint;
-  els.btnDemo.textContent = s.syncDemo;
-  els.btnBack.textContent = `← ${s.back}`;
-  els.btnUpdateNow.textContent = s.updateNow;
-  els.btnChangeFolder.textContent = s.changeFolder;
-  els.btnOpenFolder.textContent = s.openFolder;
-  els.btnDeleteRemote.textContent = s.confirmDelete;
-  els.btnCancelDelete.textContent = s.cancel;
-  els.deleteHint.textContent = s.deleteRemoteHint;
-
-  els.rateTitle.textContent = s.rateTab;
-  els.folderLabel.textContent = s.folderLabel;
-  els.btnChooseFolder.textContent = s.changeBtn;
-  els.btnRate.textContent = s.applyBtn;
-  els.photosLabel.textContent = s.photos;
-  els.ratingLabel.textContent = s.rating;
-  els.spinner.textContent = s.applying;
-
-  els.mockBadge.classList.toggle("hidden", !state.mock);
-  els.btnDemo.classList.toggle("hidden", !state.mock);
-}
-
-function renderAccount() {
-  const s = state.strings;
-  if (!s) return;
-
-  if (state.auth.connected) {
-    show(els.accountChip);
-    els.accountChip.textContent = state.auth.email || "Picstome";
-    els.accountChip.title = `${s.connectedAs} ${
-      state.auth.email || "Picstome"
-    }`;
-    show(els.btnLogout);
-    hide(els.btnConnect);
-    hide(els.btnConnectEmpty);
-  } else {
-    hide(els.accountChip);
-    hide(els.btnLogout);
-    show(els.btnConnect);
-    show(els.btnConnectEmpty);
-  }
+    if (!value) return state.strings?.never || "never";
+    try {
+        return new Date(value).toLocaleString(state.lang === "es" ? "es-ES" : "en-US", {
+            dateStyle: "medium",
+            timeStyle: "short",
+        });
+    } catch {
+        return String(value);
+    }
 }
 
 function modeLabel(kind) {
-  const s = state.strings || {};
-  if (kind === "production") return s.modeProduction || "Production";
-  if (kind === "development") return s.modeDevelopment || "Development";
-  if (kind === "local") return s.modeLocal || "Local";
-  if (kind === "demo") return s.modeDemo || "Demo";
-  return s.modeCustom || "Custom";
+    const s = state.strings || {};
+    if (kind === "production") return s.modeProduction || "Production";
+    if (kind === "development") return s.modeDevelopment || "Development";
+    if (kind === "local") return s.modeLocal || "Local";
+    if (kind === "demo") return s.modeDemo || "Demo";
+    return s.modeCustom || "Custom";
+}
+
+function currentGallery() {
+    return state.galleries.find(
+        (gallery) => gallery.galleryId === state.currentGalleryId,
+    );
+}
+
+function applyStrings() {
+    const s = state.strings;
+    if (!s) return;
+
+    els.galleriesLabel.textContent = s.galleries;
+    els.emptyTitle.textContent = s.noGalleries;
+    els.emptyHint.textContent = s.noGalleriesHint;
+    els.btnDemo.textContent = s.syncDemo;
+    els.btnConnect.textContent = s.connect;
+    els.btnConnectWelcome.textContent = s.connect;
+    els.btnDemoWelcome.textContent = s.syncDemo;
+    els.btnLogout.textContent = s.logout;
+    els.btnInfo.textContent = s.info;
+    els.btnSync.textContent = s.sync;
+    els.btnIdleSync.textContent = s.sync;
+    els.idleTitle.textContent = s.readyToSync;
+    els.idleHint.textContent = s.syncHint;
+    els.btnChangeFolder.textContent = s.changeFolder;
+    els.btnOpenFolder.textContent = s.openFolder;
+    els.btnUnlink.textContent = s.unlink;
+    els.btnDeleteRemote.textContent = s.confirmDelete;
+    els.btnCancelDelete.textContent = s.cancel;
+    els.deleteHint.textContent = s.deleteRemoteHint;
+
+    els.infoTitle.textContent = s.infoTitle;
+    els.infoVersionLabel.textContent = s.infoVersion;
+    els.infoProfileLabel.textContent = s.infoProfile;
+    els.infoModeLabel.textContent = s.infoMode;
+    els.infoTargetLabel.textContent = s.infoTarget;
+    els.infoAccountLabel.textContent = s.infoAccount;
+    els.btnInfoClose.textContent = s.infoClose;
+    els.apiSwitchTitle.textContent = s.apiSwitchTitle;
+    els.apiSwitchHint.textContent = s.apiSwitchHint;
+    els.btnApiProduction.textContent = s.useProduction;
+    els.btnApiDevelopment.textContent = s.useDevelopment;
+
+    els.ratingTitle.textContent =
+        state.rating.source === "favorites" ? s.ratingTitle : s.ratePhotosTitle;
+    els.ratingSubtitle.textContent =
+        state.rating.source === "favorites" ? s.favoritesHint : s.ratePhotosHint;
+    els.btnRatingApply.textContent = s.applyRating;
+    els.btnRatingCancel.textContent = s.notNow;
+    els.btnRatingClose.textContent = s.infoClose;
+    els.btnRatingFolder.textContent = s.chooseFolder;
+
+}
+
+function renderAccount() {
+    const s = state.strings;
+    if (!s) return;
+
+    const connected = Boolean(state.auth.connected);
+    const name = state.auth.name || state.auth.email || "";
+    els.accountName.textContent = connected ? name || s.connectedAs : s.notConnected;
+    els.accountEmail.textContent = connected ? state.auth.email || "" : "";
+    els.accountInitial.textContent = (name || "?").trim().charAt(0).toUpperCase() || "?";
+    els.accountChip.title = connected ? s.openProfile : s.connect;
+
+    els.btnConnect.classList.toggle("hidden", connected);
+    els.btnLogout.classList.toggle("hidden", !connected);
+    els.btnConnectWelcome.classList.toggle("hidden", connected);
+    els.btnDemo.classList.toggle("hidden", !state.mock);
+    els.btnDemoWelcome.classList.toggle("hidden", !state.mock);
 }
 
 function renderRuntimeInfo() {
-  const config = state.config || {};
-  const kind = config.apiKind || "custom";
-  const label = modeLabel(kind);
-  const badge =
-    kind === "production"
-      ? "PROD"
-      : kind === "development"
-        ? "DEV"
-        : kind === "local"
-          ? "LOCAL"
-          : kind === "demo"
-            ? "DEMO"
-            : "CUSTOM";
+    const s = state.strings;
+    if (!s) return;
+    const config = state.config || {};
+    const kind = config.apiKind || "custom";
+    const label = modeLabel(kind);
+    const badge =
+        kind === "production"
+            ? "PROD"
+            : kind === "development"
+              ? "DEV"
+              : kind === "local"
+                ? "LOCAL"
+                : kind === "demo"
+                  ? "DEMO"
+                  : "CUSTOM";
 
-  els.envBadge.textContent = badge;
-  els.envBadge.classList.remove("hidden");
-  els.envBadge.title = `${state.strings?.infoTarget || "API"}: ${
-    config.apiBase || ""
-  }`;
+    els.envBadge.textContent = badge;
+    els.envBadge.classList.remove("hidden");
+    els.envBadge.title = `${s.infoTarget}: ${config.apiBase || ""}`;
 
-  const base = (config.apiBase || "").replace(/\/$/, "").toLowerCase();
-  const isProduction =
-    base === "https://app.picstome.com" || base === "https://picstome.com";
-  const isDevelopment = base === "https://devel.picstome.com";
-  els.btnApiProduction.classList.toggle("active-target", isProduction);
-  els.btnApiDevelopment.classList.toggle("active-target", isDevelopment);
+    const base = (config.apiBase || "").replace(/\/$/, "").toLowerCase();
+    const isProduction =
+        base === "https://app.picstome.com" || base === "https://picstome.com";
+    const isDevelopment = base === "https://devel.picstome.com";
+    els.btnApiProduction.classList.toggle("active-target", isProduction);
+    els.btnApiDevelopment.classList.toggle("active-target", isDevelopment);
 
-  els.infoVersion.textContent = `${config.appVersion || "?"} (${
-    config.buildProfile || "?"
-  })`;
-  els.infoProfile.textContent = config.buildProfile || "?";
-  els.infoMode.textContent = label;
-  els.infoTarget.textContent = config.apiBase || "?";
-}
-
-function renderTabs() {
-  showTab(state.activeTab);
+    els.infoVersion.textContent = `${config.appVersion || "?"} (${config.buildProfile || "?"})`;
+    els.infoProfile.textContent = config.buildProfile || "?";
+    els.infoMode.textContent = label;
+    els.infoTarget.textContent = config.apiBase || "?";
+    els.infoAccount.textContent = state.auth.connected
+        ? [state.auth.name, state.auth.email].filter(Boolean).join(" · ")
+        : "—";
 }
 
 function renderGalleryList() {
-  const s = state.strings;
-  els.galleryList.replaceChildren();
-  els.syncEmpty.classList.toggle("hidden", state.galleries.length > 0);
+    const s = state.strings;
+    if (!s) return;
+    els.galleryList.replaceChildren();
+    els.syncEmpty.classList.toggle("hidden", state.galleries.length > 0);
 
-  if (state.galleries.length === 0) return;
+    for (const gallery of state.galleries) {
+        const row = document.createElement("button");
+        row.type = "button";
+        row.className = "gallery-row";
+        row.dataset.galleryId = gallery.galleryId;
+        row.title = gallery.exists ? gallery.localPath : s.folderMissing;
+        if (gallery.galleryId === state.currentGalleryId) {
+            row.classList.add("selected");
+        }
 
-  for (const gallery of state.galleries) {
-    const row = document.createElement("div");
-    row.className = "gallery-row";
-    row.dataset.galleryId = gallery.galleryId;
+        const avatar = document.createElement("span");
+        avatar.className = "gallery-avatar";
+        avatar.textContent = (gallery.name || "?").trim().charAt(0).toUpperCase() || "?";
+        row.appendChild(avatar);
 
-    const main = document.createElement("div");
-    main.className = "gallery-main";
-
-    const avatar = document.createElement("div");
-    avatar.className = "gallery-avatar";
-    avatar.textContent = (gallery.name || "?").trim().charAt(0).toUpperCase() || "?";
-    main.appendChild(avatar);
-
-    const info = document.createElement("div");
-    info.className = "gallery-info";
-
-    const name = document.createElement("div");
-    name.className = "gallery-name";
-    name.textContent = gallery.name;
-    info.appendChild(name);
-
-    const meta = document.createElement("div");
-    meta.className = "gallery-meta";
-    const pathText = gallery.exists ? gallery.localPath : s.folderMissing;
-    const last = `${s.lastSync}: ${formatDate(gallery.lastSyncAt)}`;
-    meta.textContent = `${pathText} · ${last}`;
-    if (!gallery.exists) meta.classList.add("warn");
-    info.appendChild(meta);
-
-    const actions = document.createElement("div");
-    actions.className = "gallery-actions";
-
-    const btnUpdate = document.createElement("button");
-    btnUpdate.type = "button";
-    btnUpdate.className = "small";
-    btnUpdate.textContent = s.update;
-    btnUpdate.dataset.action = "update";
-    actions.appendChild(btnUpdate);
-
-    if (gallery.exists) {
-      const btnOpen = document.createElement("button");
-      btnOpen.type = "button";
-      btnOpen.className = "secondary small";
-      btnOpen.textContent = s.openFolder;
-      btnOpen.dataset.action = "open";
-      actions.appendChild(btnOpen);
-    } else {
-      const btnLocate = document.createElement("button");
-      btnLocate.type = "button";
-      btnLocate.className = "secondary small";
-      btnLocate.textContent = s.locate;
-      btnLocate.dataset.action = "locate";
-      actions.appendChild(btnLocate);
+        const info = document.createElement("span");
+        info.className = "gallery-info";
+        const name = document.createElement("span");
+        name.className = "gallery-name";
+        name.textContent = gallery.name;
+        const meta = document.createElement("span");
+        meta.className = "gallery-meta";
+        if (gallery.exists) {
+            meta.textContent = `${s.lastSync}: ${formatDateShort(gallery.lastSyncAt)}`;
+        } else {
+            meta.textContent = s.folderMissing;
+            meta.classList.add("warn");
+        }
+        info.appendChild(name);
+        info.appendChild(meta);
+        row.appendChild(info);
+        els.galleryList.appendChild(row);
     }
-
-    const btnUnlink = document.createElement("button");
-    btnUnlink.type = "button";
-    btnUnlink.className = "ghost small";
-    btnUnlink.textContent = s.unlink;
-    btnUnlink.dataset.action = "unlink";
-    actions.appendChild(btnUnlink);
-
-    main.appendChild(info);
-    row.appendChild(main);
-    row.appendChild(actions);
-    els.galleryList.appendChild(row);
-  }
 }
 
-function renderReport() {
-  const s = state.strings;
-  const report = state.report;
-  if (!report || !s) {
-    hide(els.report);
-    return;
-  }
+function renderMain() {
+    const s = state.strings;
+    if (!s) return;
+    const gallery = currentGallery();
 
-  show(els.report);
-  const counts = report.counts || {};
-  const total =
-    (counts.remoteNew || 0) +
-    (counts.remoteModified || 0) +
-    (counts.localNew || 0) +
-    (counts.localModified || 0) +
-    (counts.conflicts || 0);
-
-  if (report.errors && report.errors.length > 0) {
-    els.reportSummary.textContent = s.syncFailed;
-    els.reportSummary.className = "report-summary error";
-  } else if (total === 0 && (report.proposals?.deleteRemote?.length || 0) === 0) {
-    els.reportSummary.textContent = s.inSync;
-    els.reportSummary.className = "report-summary ok";
-  } else {
-    els.reportSummary.textContent = s.syncDone;
-    els.reportSummary.className = "report-summary ok";
-  }
-
-  const chips = [
-    [s.downloaded, (report.downloaded || []).length],
-    [s.uploaded, (report.uploaded || []).length],
-    [s.conflicts, (report.conflicts || []).length],
-    [s.errors, (report.errors || []).length],
-  ];
-  els.reportCounts.replaceChildren();
-  for (const [label, value] of chips) {
-    const chip = document.createElement("span");
-    chip.className = "count-chip";
-    chip.textContent = `${label}: ${value}`;
-    if (label === s.errors && value > 0) chip.classList.add("warn");
-    els.reportCounts.appendChild(chip);
-  }
-
-  els.reportErrors.replaceChildren();
-  for (const error of report.errors || []) {
-    const line = document.createElement("div");
-    line.className = "report-error";
-    line.textContent = `${error.filename || error.path || "—"} — ${error.message}`;
-    els.reportErrors.appendChild(line);
-  }
-  for (const conflict of report.conflicts || []) {
-    const line = document.createElement("div");
-    line.className = "report-error";
-    line.textContent = `${conflict.local?.filename || conflict.remote?.filename} — ${s.conflicts}`;
-    els.reportErrors.appendChild(line);
-  }
-
-  const proposals = report.proposals?.deleteRemote || [];
-  state.pendingDeletes = new Set(proposals.map((photo) => photo.id));
-  els.deleteList.replaceChildren();
-
-  if (proposals.length === 0) {
-    hide(els.deleteBox);
-  } else {
-    show(els.deleteBox);
-    els.deleteTitle.textContent = `${s.pendingDeletes} (${proposals.length})`;
-    for (const photo of proposals) {
-      const label = document.createElement("label");
-      label.className = "delete-item";
-      const checkbox = document.createElement("input");
-      checkbox.type = "checkbox";
-      checkbox.checked = true;
-      checkbox.dataset.photoId = photo.id;
-      const text = document.createElement("span");
-      text.textContent = photo.filename;
-      label.appendChild(checkbox);
-      label.appendChild(text);
-      els.deleteList.appendChild(label);
+    if (!gallery) {
+        state.currentGalleryId = null;
+        hide(els.progressWrap);
+        hide(els.report);
+        hide(els.idleState);
+        show(els.welcome);
+        els.detailName.textContent = s.appTitle;
+        els.detailPath.textContent = s.syncHint;
+        els.detailLastSync.textContent = "";
+        els.welcomeTitle.textContent =
+            state.galleries.length === 0 ? s.noGalleryTitle : s.noGalleryTitle;
+        els.welcomeHint.textContent = s.noGalleryHint;
+        els.btnSync.disabled = true;
+        els.btnChangeFolder.disabled = true;
+        els.btnOpenFolder.disabled = true;
+        els.btnUnlink.disabled = true;
+        return;
     }
-  }
-}
 
-function renderSync() {
-  const s = state.strings;
-  if (!s) return;
-
-  const current = state.galleries.find(
-    (gallery) => gallery.galleryId === state.currentGalleryId,
-  );
-
-  if (current) {
-    hide(els.galleryList);
-    hide(els.syncEmpty);
-    show(els.syncDetail);
-    els.detailName.textContent = current.name;
-    els.detailPath.textContent = current.exists
-      ? current.localPath
-      : s.folderMissing;
-    els.detailPath.classList.toggle("warn", !current.exists);
-    els.btnUpdateNow.disabled = state.syncBusy || !current.exists;
-    els.btnOpenFolder.disabled = !current.exists;
-  } else {
-    state.currentGalleryId = null;
-    show(els.galleryList);
-    show(els.syncEmpty);
-    hide(els.syncDetail);
-  }
-
-  renderGalleryList();
-  renderReport();
+    hide(els.welcome);
+    const showIdle =
+        !state.syncBusy &&
+        !state.report &&
+        !state.progress;
+    els.idleState.classList.toggle("hidden", !showIdle);
+    els.detailName.textContent = gallery.name;
+    els.detailPath.textContent = gallery.exists ? gallery.localPath : s.folderMissing;
+    els.detailPath.classList.toggle("warn", !gallery.exists);
+    els.detailLastSync.textContent = fmt(s.lastSyncAt, {
+        date: formatDate(gallery.lastSyncAt),
+    });
+    els.btnSync.disabled = state.syncBusy || !gallery.exists;
+    els.btnSync.textContent = state.syncBusy ? s.syncing : s.sync;
+    els.btnChangeFolder.disabled = false;
+    els.btnOpenFolder.disabled = !gallery.exists;
+    els.btnUnlink.disabled = false;
 }
 
 function renderProgress() {
-  const s = state.strings;
-  const progress = state.progress;
-  if (!progress || !state.syncBusy) {
-    hide(els.progressWrap);
-    return;
-  }
+    const s = state.strings;
+    if (!s) return;
+    if (!state.syncBusy || !state.progress) {
+        hide(els.progressWrap);
+        return;
+    }
+    show(els.progressWrap);
+    const progress = state.progress;
+    let title = s.checkingChanges;
+    let ratio = null;
+    let detail = "";
 
-  show(els.progressWrap);
-  let text = s.syncing;
-  if (progress.phase === "scan" || progress.phase === "scanning") {
-    text = s.scanning;
-  } else if (progress.phase === "download") {
-    text = fmt(s.downloadingProgress, {
-      done: progress.done || 0,
-      total: progress.total || 0,
-    });
-    if (progress.file) text += ` · ${progress.file}`;
-  } else if (progress.phase === "upload") {
-    text = fmt(s.uploadingProgress, {
-      done: progress.done || 0,
-      total: progress.total || 0,
-    });
-    if (progress.file) text += ` · ${progress.file}`;
-  } else if (progress.phase === "manifest") {
-    text = s.scanning;
-  }
-  els.progressText.textContent = text;
+    if (progress.phase === "scan" || progress.phase === "scanning") {
+        title = s.scanningLocal;
+    } else if (progress.phase === "download") {
+        title = fmt(s.downloadingProgress, {
+            done: progress.done || 0,
+            total: progress.total || 0,
+        });
+        if (progress.fileTotal) {
+            ratio = Math.min(1, (progress.fileDone || 0) / progress.fileTotal);
+        } else if (progress.total) {
+            ratio = Math.min(1, (progress.done || 0) / progress.total);
+        }
+        detail = progress.file || "";
+    } else if (progress.phase === "upload") {
+        title = fmt(s.uploadingProgress, {
+            done: progress.done || 0,
+            total: progress.total || 0,
+        });
+        ratio = progress.total
+            ? Math.min(1, (progress.done || 0) / progress.total)
+            : null;
+        detail = progress.file || "";
+    } else if (progress.phase === "done") {
+        title = s.progressDone;
+        ratio = 1;
+    }
 
-  let ratio = 0;
-  if (progress.fileTotal && progress.fileDone) {
-    ratio = progress.fileDone / progress.fileTotal;
-  } else if (progress.total) {
-    ratio = (progress.done || 0) / progress.total;
-  }
-  els.progressFill.style.width = `${Math.max(3, Math.min(100, ratio * 100))}%`;
+    const determinate = typeof ratio === "number";
+    els.progressTitle.textContent = title;
+    els.progressBar.classList.toggle("indeterminate", !determinate);
+    if (determinate) {
+        els.progressFill.style.width = `${Math.max(2, ratio * 100)}%`;
+        els.progressPercent.textContent = `${Math.round(ratio * 100)}%`;
+    } else {
+        els.progressFill.style.width = "";
+        els.progressPercent.textContent = "";
+    }
+    els.progressText.textContent = detail;
 }
 
-function renderRate() {
-  const s = state.strings;
-  if (!s) return;
+function renderReport() {
+    const s = state.strings;
+    const report = state.report;
+    if (!s || !report) {
+        hide(els.report);
+        return;
+    }
+    show(els.report);
+    const counts = report.counts || {};
+    const changes =
+        (counts.remoteNew || 0) +
+        (counts.remoteModified || 0) +
+        (counts.localNew || 0) +
+        (counts.localModified || 0) +
+        (counts.conflicts || 0);
 
-  if (state.config.photosDir) {
-    els.pathBox.textContent = state.config.photosDir;
-    els.pathBox.classList.remove("empty");
-  } else {
-    els.pathBox.textContent = s.noFolder;
-    els.pathBox.classList.add("empty");
-  }
+    if (report.errors && report.errors.length > 0) {
+        els.reportSummary.textContent = s.syncFailed;
+        els.reportSummary.className = "error";
+    } else if (changes === 0 && (report.proposals?.deleteRemote?.length || 0) === 0) {
+        els.reportSummary.textContent = s.inSync;
+        els.reportSummary.className = "ok";
+    } else {
+        els.reportSummary.textContent = s.syncDone;
+        els.reportSummary.className = "ok";
+    }
+    els.reportTime.textContent = new Date().toLocaleTimeString(
+        state.lang === "es" ? "es-ES" : "en-US",
+        { hour: "2-digit", minute: "2-digit" },
+    );
 
-  els.fileCount.textContent = String(state.rateFiles.length);
-  els.infoRow.classList.toggle("hidden", state.rateFiles.length === 0);
+    els.reportCounts.replaceChildren();
+    for (const [label, value] of [
+        [s.downloaded, (report.downloaded || []).length],
+        [s.uploaded, (report.uploaded || []).length],
+        [s.conflicts, (report.conflicts || []).length],
+        [s.errors, (report.errors || []).length],
+    ]) {
+        const chip = document.createElement("span");
+        chip.className = "count-chip";
+        if (label === s.errors && value > 0) chip.classList.add("warn");
+        chip.textContent = `${label}: ${value}`;
+        els.reportCounts.appendChild(chip);
+    }
 
-  const current = Number(state.rateRating);
-  for (const button of els.starButtons) {
-    const active = Number(button.dataset.rating) <= current;
-    button.classList.toggle("active", active);
-    button.setAttribute("aria-pressed", active ? "true" : "false");
-  }
-  els.ratingVal.textContent = state.rateRating;
+    els.reportErrors.replaceChildren();
+    for (const error of report.errors || []) {
+        const line = document.createElement("div");
+        line.className = "report-error";
+        line.textContent = `${error.filename || error.path || "—"} — ${error.message}`;
+        els.reportErrors.appendChild(line);
+    }
+    for (const conflict of report.conflicts || []) {
+        const line = document.createElement("div");
+        line.className = "report-error";
+        line.textContent = `${conflict.local?.filename || conflict.remote?.filename} — ${s.conflicts}`;
+        els.reportErrors.appendChild(line);
+    }
 
-  els.btnRate.disabled =
-    !state.config.photosDir || state.rateFiles.length === 0 || state.rateBusy;
+    const proposals = report.proposals?.deleteRemote || [];
+    state.pendingDeletes = new Set(proposals.map((photo) => photo.id));
+    els.deleteList.replaceChildren();
+    if (proposals.length === 0) {
+        hide(els.deleteBox);
+    } else {
+        show(els.deleteBox);
+        els.deleteTitle.textContent = `${s.pendingDeletes} (${proposals.length})`;
+        for (const photo of proposals) {
+            const label = document.createElement("label");
+            label.className = "delete-item";
+            const checkbox = document.createElement("input");
+            checkbox.type = "checkbox";
+            checkbox.checked = true;
+            checkbox.dataset.photoId = photo.id;
+            const text = document.createElement("span");
+            text.textContent = photo.filename;
+            label.appendChild(checkbox);
+            label.appendChild(text);
+            els.deleteList.appendChild(label);
+        }
+    }
+}
 
-  if (state.rateFiles.length > 0) {
-    els.rateHint.textContent = state.config.photosDir
-      ? fmt(s.ready, {
-          n: state.rateFiles.length,
-          s: state.rateFiles.length === 1 ? "" : "s",
-          r: state.rateRating,
-        })
-      : s.needFolder;
-  } else {
-    els.rateHint.textContent = state.config.photosDir
-      ? s.needFiles
-      : s.waiting;
-  }
+function ratingTargetText() {
+    if (state.rating.galleryId) {
+        const gallery = state.galleries.find(
+            (item) => item.galleryId === state.rating.galleryId,
+        );
+        return gallery?.localPath || "";
+    }
+    return state.rating.photosDir || state.config.photosDir || "";
+}
 
-  els.spinner.classList.toggle("hidden", !state.rateBusy);
+function renderRating() {
+    const s = state.strings;
+    if (!s) return;
+    if (!state.rating.open) {
+        hide(els.ratingModal);
+        return;
+    }
+    show(els.ratingModal);
+    els.ratingTitle.textContent =
+        state.rating.source === "favorites" ? s.ratingTitle : s.ratePhotosTitle;
+    els.ratingSubtitle.textContent =
+        state.rating.source === "favorites"
+            ? fmt(s.favoritesFound, { n: state.rating.files.length })
+            : s.ratePhotosHint;
+    const target = ratingTargetText();
+    els.ratingTarget.textContent = target || s.noFolder;
+    const needsFolder = !state.rating.galleryId && !target;
+    els.btnRatingFolder.classList.toggle("hidden", !needsFolder);
+
+    const value = Number(state.rating.value);
+    for (const button of els.starButtons) {
+        button.classList.toggle("active", Number(button.dataset.rating) <= value);
+    }
+    els.ratingValue.textContent = state.rating.value;
+
+    els.btnRatingApply.disabled =
+        state.rating.busy ||
+        state.rating.files.length === 0 ||
+        (!state.rating.galleryId && !target);
+    els.btnRatingApply.textContent = state.rating.busy ? s.applying : s.applyRating;
+
+    if (state.rating.result) {
+        show(els.ratingResult);
+        const result = state.rating.result;
+        let cls = "ok";
+        let text = fmt(s.rated, {
+            n: result.rated,
+            s: result.rated === 1 ? "" : "s",
+        });
+        if (result.notFound > 0) {
+            cls = "warn";
+            text += ` · ${fmt(s.notFoundCount, {
+                n: result.notFound,
+                s: result.notFound === 1 ? "" : "s",
+            })}`;
+        }
+        if (result.errors > 0) {
+            cls = "error";
+            text += ` · ${fmt(s.errorCount, {
+                n: result.errors,
+                s: result.errors === 1 ? "" : "s",
+            })}`;
+        }
+        els.ratingResult.className = `rating-result ${cls}`;
+        const details = (result.details || [])
+            .map((detail) =>
+                detail.status === "ok"
+                    ? detail.file
+                    : `${detail.name} — ${detail.msg || detail.status}`,
+            )
+            .join("\n");
+        els.ratingResult.textContent = details ? `${text}\n${details}` : text;
+    } else {
+        hide(els.ratingResult);
+    }
 }
 
 function renderAll() {
-  applyStrings();
-  renderAccount();
-  renderRuntimeInfo();
-  renderTabs();
-  renderSync();
-  renderProgress();
-  renderRate();
+    applyStrings();
+    renderAccount();
+    renderRuntimeInfo();
+    renderGalleryList();
+    renderMain();
+    renderProgress();
+    renderReport();
+    renderRating();
 }
 
 function setState(next) {
-  if (!next) return;
-  state.lang = next.lang || state.lang;
-  state.strings = next.strings || state.strings;
-  state.config = next.config || state.config;
-  state.mock = Boolean(next.mock);
-  state.auth = next.auth || state.auth;
-  state.galleries = Array.isArray(next.galleries) ? next.galleries : [];
-  renderAll();
+    if (!next) return;
+    state.lang = next.lang || state.lang;
+    state.strings = next.strings || state.strings;
+    state.config = next.config || state.config;
+    state.mock = Boolean(next.mock);
+    state.auth = next.auth || state.auth;
+    state.galleries = Array.isArray(next.galleries) ? next.galleries : [];
+    if (
+        state.currentGalleryId &&
+        !state.galleries.some(
+            (gallery) => gallery.galleryId === state.currentGalleryId,
+        )
+    ) {
+        state.currentGalleryId = null;
+    }
+    if (!state.currentGalleryId && state.galleries.length > 0) {
+        state.currentGalleryId = state.galleries[0].galleryId;
+    }
+    if (
+        state.rating.open &&
+        state.rating.galleryId &&
+        !state.galleries.some(
+            (gallery) => gallery.galleryId === state.rating.galleryId,
+        )
+    ) {
+        state.rating.open = false;
+    }
+    renderAll();
 }
 
 async function refreshState() {
-  const next = await invoke("get_state");
-  setState(next);
-  return next;
+    const next = await invoke("get_state");
+    setState(next);
+    return next;
 }
 
-async function runSync(galleryId) {
-  if (state.syncBusy) return;
-  state.currentGalleryId = galleryId;
-  state.syncBusy = true;
-  state.report = null;
-  state.progress = { phase: "scanning", done: 0, total: 1 };
-  renderAll();
-
-  try {
-    state.report = await invoke("sync_gallery", { galleryId });
-  } catch (err) {
-    state.report = {
-      counts: {},
-      downloaded: [],
-      uploaded: [],
-      conflicts: [],
-      errors: [{ filename: "—", message: err?.message || String(err) }],
-      proposals: { deleteRemote: [] },
+function openFavoritesPrompt(report) {
+    const favorites = report?.favorites || [];
+    if (favorites.length === 0) return;
+    state.rating = {
+        open: true,
+        files: favorites.map((photo) => stem(photo.filename)),
+        value: "5",
+        galleryId: report.galleryId,
+        photosDir: null,
+        source: "favorites",
+        busy: false,
+        result: null,
     };
-    if (err?.code === "unauthorized") {
-      show(els.updateBanner);
-      els.updateMsg.textContent = state.strings.reconnect;
-    }
-  } finally {
-    state.syncBusy = false;
-    state.progress = null;
-    await refreshState();
-    state.report = state.report;
+    renderRating();
+}
+
+function openRateLink({ files, rating, gallery }) {
+    state.rating = {
+        open: true,
+        files: Array.isArray(files) ? files : [],
+        value: normalizeRating(rating || state.config.lastRating || "1"),
+        galleryId: gallery || null,
+        photosDir: state.config.photosDir || null,
+        source: "link",
+        busy: false,
+        result: null,
+    };
+    renderRating();
+}
+
+async function syncCurrent() {
+    const gallery = currentGallery();
+    if (!gallery || state.syncBusy) return;
+    state.syncBusy = true;
+    state.progress = { phase: "manifest", done: 0, total: 1 };
+    state.report = null;
     renderAll();
-  }
+    try {
+        const report = await invoke("sync_gallery", { galleryId: gallery.galleryId });
+        state.report = report;
+    } catch (err) {
+        state.report = {
+            counts: {},
+            downloaded: [],
+            uploaded: [],
+            conflicts: [],
+            errors: [{ filename: "—", message: err?.message || String(err) }],
+            proposals: { deleteRemote: [] },
+            favorites: [],
+        };
+    } finally {
+        state.syncBusy = false;
+        state.progress = null;
+        await refreshState();
+        renderAll();
+        openFavoritesPrompt(state.report);
+    }
 }
 
 async function startSync(galleryId, name) {
-  if (state.syncBusy) return;
-  state.syncBusy = true;
-  state.progress = { phase: "scanning", done: 0, total: 1 };
-  state.report = null;
-  renderAll();
-
-  try {
-    const result = await invoke("start_sync", { galleryId, name });
-    if (result && result.report) {
-      state.currentGalleryId = result.report.galleryId;
-      state.report = result.report;
-    } else if (result && !result.canceled) {
-      state.report = {
-        counts: {},
-        downloaded: [],
-        uploaded: [],
-        conflicts: [],
-        errors: [{ filename: "—", message: "Error" }],
-        proposals: { deleteRemote: [] },
-      };
-    }
-  } catch (err) {
-    state.report = {
-      counts: {},
-      downloaded: [],
-      uploaded: [],
-      conflicts: [],
-      errors: [{ filename: "—", message: err?.message || String(err) }],
-      proposals: { deleteRemote: [] },
-    };
-  } finally {
-    state.syncBusy = false;
-    state.progress = null;
-    await refreshState();
+    if (state.syncBusy) return;
+    state.syncBusy = true;
+    state.progress = { phase: "manifest", done: 0, total: 1 };
+    state.report = null;
     renderAll();
-  }
+    try {
+        const result = await invoke("start_sync", { galleryId, name });
+        if (result?.report) {
+            state.currentGalleryId = result.report.galleryId;
+            state.report = result.report;
+        }
+    } catch (err) {
+        state.report = {
+            counts: {},
+            downloaded: [],
+            uploaded: [],
+            conflicts: [],
+            errors: [{ filename: "—", message: err?.message || String(err) }],
+            proposals: { deleteRemote: [] },
+            favorites: [],
+        };
+    } finally {
+        state.syncBusy = false;
+        state.progress = null;
+        await refreshState();
+        renderAll();
+        openFavoritesPrompt(state.report);
+    }
 }
+
+async function applyRating() {
+    if (state.rating.busy || state.rating.files.length === 0) return;
+    state.rating.busy = true;
+    state.rating.result = null;
+    renderRating();
+    try {
+        const result = await invoke("rate_files", {
+            files: state.rating.files,
+            rating: state.rating.value,
+            photosDir: state.rating.photosDir,
+            galleryId: state.rating.galleryId,
+        });
+        state.rating.result = result;
+        state.config.lastRating = state.rating.value;
+    } catch (err) {
+        state.rating.result = {
+            rated: 0,
+            notFound: 0,
+            errors: 1,
+            details: [{ name: "—", status: "error", msg: err?.message || String(err) }],
+        };
+    } finally {
+        state.rating.busy = false;
+        renderRating();
+    }
+}
+
+async function switchApiTarget(baseUrl) {
+    try {
+        await invoke("set_api_base", { baseUrl });
+        hide(els.infoModal);
+        await refreshState();
+    } catch (err) {
+        els.apiSwitchHint.textContent = err?.message || String(err);
+    }
+}
+
+async function connect() {
+    const result = await invoke("connect");
+    if (result?.ok) await refreshState();
+}
+
+async function openPicstome() {
+    if (state.auth.connected) {
+        await invoke("open_galleries_page");
+    } else {
+        await connect();
+    }
+}
+
+/* Events */
 
 async function init() {
-  try {
-    setState(await invoke("get_state"));
-  } catch (err) {
-    console.error("Could not load state:", err);
-  }
+    try {
+        setState(await invoke("get_state"));
+    } catch (err) {
+        console.error("Could not load state:", err);
+    }
 
-  await listen("app-state", (event) => setState(event.payload));
-  await listen("auth-status", async (event) => {
-    const data = event.payload || {};
-    if (data.connected) {
-      await refreshState();
-    } else if (data.error) {
-      show(els.updateBanner);
-      els.updateMsg.textContent = data.error;
-    }
-  });
-  await listen("incoming-rate", (event) => {
-    const { files, rating } = event.payload || {};
-    state.rateFiles = Array.isArray(files) ? files : [];
-    state.rateRating = rating ? normalizeRating(rating) : state.rateRating;
-    hide(els.results);
-    showTab("rate");
-    renderAll();
-  });
-  await listen("incoming-sync", (event) => {
-    const { galleryId, name } = event.payload || {};
-    showTab("sync");
-    const existing = state.galleries.find(
-      (gallery) => gallery.galleryId === galleryId,
-    );
-    if (existing) {
-      state.currentGalleryId = galleryId;
-      renderAll();
-      runSync(galleryId);
-    } else {
-      startSync(galleryId, name);
-    }
-  });
-  await listen("sync-progress", (event) => {
-    const progress = event.payload || {};
-    if (
-      state.currentGalleryId &&
-      progress.galleryId !== state.currentGalleryId
-    ) {
-      return;
-    }
-    state.progress = progress;
-    state.syncBusy = true;
-    renderProgress();
-  });
-  await listen("update-status", (event) => {
-    const data = event.payload || {};
-    els.updateMsg.textContent = data.msg;
-    show(els.updateBanner);
-    if (data.type === "ready") show(els.btnUpdate);
-  });
+    await listen("app-state", (event) => setState(event.payload));
+    await listen("auth-status", async (event) => {
+        const data = event.payload || {};
+        if (data.connected) await refreshState();
+    });
+    await listen("incoming-rate", (event) => {
+        openRateLink(event.payload || {});
+    });
+    await listen("incoming-sync", (event) => {
+        const { galleryId, name } = event.payload || {};
+        const existing = state.galleries.find(
+            (gallery) => gallery.galleryId === galleryId,
+        );
+        if (existing) {
+            state.currentGalleryId = galleryId;
+            renderAll();
+            syncCurrent();
+        } else {
+            startSync(galleryId, name);
+        }
+    });
+    await listen("sync-progress", (event) => {
+        const progress = event.payload || {};
+        if (
+            state.currentGalleryId &&
+            progress.galleryId !== state.currentGalleryId
+        ) {
+            return;
+        }
+        state.progress = progress;
+        if (progress.phase === "done") {
+            state.syncBusy = false;
+            renderProgress();
+            renderMain();
+            setTimeout(() => {
+                if (!state.syncBusy) {
+                    state.progress = null;
+                    renderProgress();
+                }
+            }, 900);
+        } else {
+            state.syncBusy = true;
+            renderProgress();
+            renderMain();
+        }
+    });
 }
+
+/* UI bindings */
+
+els.galleryList.addEventListener("click", (event) => {
+    const row = event.target.closest(".gallery-row");
+    if (!row) return;
+    state.currentGalleryId = row.dataset.galleryId;
+    state.report = null;
+    renderAll();
+});
+
+els.galleryList.addEventListener("dblclick", (event) => {
+    const row = event.target.closest(".gallery-row");
+    if (!row) return;
+    state.currentGalleryId = row.dataset.galleryId;
+    renderAll();
+    syncCurrent();
+});
+
+els.btnSync.addEventListener("click", syncCurrent);
+els.btnIdleSync.addEventListener("click", syncCurrent);
+els.btnAddGallery.addEventListener("click", openPicstome);
+els.btnConnect.addEventListener("click", openPicstome);
+els.btnConnectWelcome.addEventListener("click", openPicstome);
+els.btnDemo.addEventListener("click", () => startSync("G123", "MiBoda"));
+els.btnDemoWelcome.addEventListener("click", () => startSync("G123", "MiBoda"));
+
+els.btnLogout.addEventListener("click", async () => {
+    await invoke("logout");
+    await refreshState();
+});
+
+els.accountChip.addEventListener("click", async () => {
+    if (state.auth.connected) {
+        await invoke("open_account_profile");
+    } else {
+        await connect();
+    }
+});
 
 els.btnInfo.addEventListener("click", () => show(els.infoModal));
 els.btnInfoClose.addEventListener("click", () => hide(els.infoModal));
 els.infoModal.addEventListener("click", (event) => {
-  if (event.target === els.infoModal) hide(els.infoModal);
+    if (event.target === els.infoModal) hide(els.infoModal);
 });
-document.addEventListener("keydown", (event) => {
-  if (event.key === "Escape") hide(els.infoModal);
-});
-
-async function switchApiTarget(baseUrl) {
-  try {
-    await invoke("set_api_base", { baseUrl });
-    hide(els.infoModal);
-    await refreshState();
-    show(els.updateBanner);
-    els.updateMsg.textContent = state.strings?.apiSwitched || "Connected target changed.";
-  } catch (err) {
-    show(els.updateBanner);
-    els.updateMsg.textContent = err?.message || String(err);
-  }
-}
-
 els.btnApiProduction.addEventListener("click", () =>
-  switchApiTarget("https://app.picstome.com"),
+    switchApiTarget("https://app.picstome.com"),
 );
 els.btnApiDevelopment.addEventListener("click", () =>
-  switchApiTarget("https://devel.picstome.com"),
+    switchApiTarget("https://devel.picstome.com"),
 );
 
-init();
-els.tabs.addEventListener("click", (event) => {
-  const button = event.target.closest(".tab");
-  if (!button) return;
-  showTab(button.dataset.tab);
-});
-
-for (const button of [els.btnConnect, els.btnConnectEmpty]) {
-  button.addEventListener("click", async () => {
-    const result = await invoke("connect");
-    if (result.ok) await refreshState();
-  });
-}
-
-els.btnLogout.addEventListener("click", async () => {
-  await invoke("logout");
-  await refreshState();
-});
-
-els.btnDemo.addEventListener("click", () => startSync("G123", "MiBoda"));
-
-els.galleryList.addEventListener("click", async (event) => {
-  const button = event.target.closest("button[data-action]");
-  const row = event.target.closest(".gallery-row");
-  if (!row) return;
-  const galleryId = row.dataset.galleryId;
-
-  if (!button) {
-    state.currentGalleryId = galleryId;
-    state.report = null;
-    renderAll();
-    return;
-  }
-
-  event.stopPropagation();
-  const action = button.dataset.action;
-
-  if (action === "update") {
-    state.currentGalleryId = galleryId;
-    state.report = null;
-    renderAll();
-    await runSync(galleryId);
-  } else if (action === "open") {
-    await invoke("open_folder", { galleryId });
-  } else if (action === "locate") {
-    const result = await invoke("locate_gallery", { galleryId });
-    if (result.ok) await refreshState();
-  } else if (action === "unlink") {
-    await invoke("unlink_gallery", { galleryId });
-    if (state.currentGalleryId === galleryId) state.currentGalleryId = null;
-    await refreshState();
-  }
-});
-
-els.btnBack.addEventListener("click", () => {
-  state.currentGalleryId = null;
-  state.report = null;
-  renderAll();
-});
-
-els.btnUpdateNow.addEventListener("click", () => {
-  if (state.currentGalleryId) runSync(state.currentGalleryId);
-});
-
 els.btnChangeFolder.addEventListener("click", async () => {
-  if (!state.currentGalleryId) return;
-  const result = await invoke("change_folder", {
-    galleryId: state.currentGalleryId,
-  });
-  if (result.ok) {
-    state.report = null;
-    await refreshState();
-  }
+    if (!state.currentGalleryId) return;
+    const result = await invoke("change_folder", {
+        galleryId: state.currentGalleryId,
+    });
+    if (result.ok) {
+        state.report = null;
+        await refreshState();
+    }
 });
 
 els.btnOpenFolder.addEventListener("click", async () => {
-  if (!state.currentGalleryId) return;
-  await invoke("open_folder", { galleryId: state.currentGalleryId });
+    if (!state.currentGalleryId) return;
+    await invoke("open_folder", { galleryId: state.currentGalleryId });
+});
+
+els.btnUnlink.addEventListener("click", async () => {
+    if (!state.currentGalleryId) return;
+    await invoke("unlink_gallery", { galleryId: state.currentGalleryId });
+    state.currentGalleryId = null;
+    state.report = null;
+    await refreshState();
 });
 
 els.btnDeleteRemote.addEventListener("click", async () => {
-  if (!state.currentGalleryId) return;
-  const ids = Array.from(
-    els.deleteList.querySelectorAll("input[type=checkbox]:checked"),
-  ).map((checkbox) => checkbox.dataset.photoId);
-  if (ids.length === 0) return;
-  let result;
-  try {
-    result = { ok: true, result: await invoke("apply_deletions", {
-      galleryId: state.currentGalleryId,
-      photoIds: ids,
-    }) };
-  } catch (err) {
-    result = { ok: false, error: err?.message || String(err) };
-  }
-  if (result.ok) {
-    if (state.report) {
-      state.report.proposals.deleteRemote =
-        state.report.proposals.deleteRemote.filter(
-          (photo) => !ids.includes(photo.id),
-        );
+    if (!state.currentGalleryId) return;
+    const ids = Array.from(
+        els.deleteList.querySelectorAll("input[type=checkbox]:checked"),
+    ).map((checkbox) => checkbox.dataset.photoId);
+    if (ids.length === 0) return;
+    try {
+        await invoke("apply_deletions", {
+            galleryId: state.currentGalleryId,
+            photoIds: ids,
+        });
+        if (state.report) {
+            state.report.proposals.deleteRemote =
+                state.report.proposals.deleteRemote.filter(
+                    (photo) => !ids.includes(photo.id),
+                );
+        }
+        hide(els.deleteBox);
+        await refreshState();
+        renderReport();
+    } catch (err) {
+        state.report = {
+            ...(state.report || {}),
+            errors: [{ filename: "—", message: err?.message || String(err) }],
+            proposals: { deleteRemote: [] },
+        };
+        renderReport();
     }
-    hide(els.deleteBox);
-    await refreshState();
-    renderReport();
-  }
 });
 
-els.btnCancelDelete.addEventListener("click", () => {
-  hide(els.deleteBox);
-});
-
-els.btnChooseFolder.addEventListener("click", async () => {
-  const folder = await invoke("choose_folder");
-  if (folder) {
-    state.config.photosDir = folder;
-    renderRate();
-  }
-});
+els.btnCancelDelete.addEventListener("click", () => hide(els.deleteBox));
 
 for (const button of els.starButtons) {
-  button.addEventListener("click", () => {
-    state.rateRating = normalizeRating(button.dataset.rating);
-    renderRate();
-  });
+    button.addEventListener("click", () => {
+        state.rating.value = normalizeRating(button.dataset.rating);
+        renderRating();
+    });
 }
 
-els.btnRate.addEventListener("click", async () => {
-  if (!state.config.photosDir || state.rateFiles.length === 0 || state.rateBusy) {
-    return;
-  }
-  state.rateBusy = true;
-  hide(els.results);
-  renderRate();
-
-  try {
-    const result = await invoke("rate_files", {
-      files: state.rateFiles,
-      rating: state.rateRating,
-      photosDir: state.config.photosDir,
-    });
-    const s = state.strings;
-    let cls = "ok";
-    const parts = [fmt(s.rated, { n: result.rated, s: result.rated === 1 ? "" : "s" })];
-    if (result.notFound > 0) {
-      parts.push(
-        fmt(s.notFoundCount, {
-          n: result.notFound,
-          s: result.notFound === 1 ? "" : "s",
-        }),
-      );
-      cls = "warn";
+els.btnRatingApply.addEventListener("click", applyRating);
+els.btnRatingCancel.addEventListener("click", () => {
+    state.rating.open = false;
+    renderRating();
+});
+els.btnRatingClose.addEventListener("click", () => {
+    state.rating.open = false;
+    renderRating();
+});
+els.ratingModal.addEventListener("click", (event) => {
+    if (event.target === els.ratingModal) {
+        state.rating.open = false;
+        renderRating();
     }
-    if (result.errors > 0) {
-      parts.push(
-        fmt(s.errorCount, { n: result.errors, s: result.errors === 1 ? "" : "s" }),
-      );
-      cls = "error";
+});
+els.btnRatingFolder.addEventListener("click", async () => {
+    const folder = await invoke("choose_folder");
+    if (folder) {
+        state.rating.photosDir = folder;
+        state.config.photosDir = folder;
+        renderRating();
     }
-    els.resultSummary.textContent = parts.join(" · ");
-    els.resultSummary.className = `result-summary ${cls}`;
-
-    const fragment = document.createDocumentFragment();
-    for (const detail of result.details || []) {
-      const row = document.createElement("div");
-      row.className =
-        detail.status === "ok"
-          ? "ok"
-          : detail.status === "notfound"
-            ? "miss"
-            : "err";
-      row.textContent =
-        detail.status === "ok" ? detail.file : `${detail.name} — ${detail.msg}`;
-      fragment.appendChild(row);
-    }
-    els.detailList.replaceChildren(fragment);
-    show(els.results);
-  } catch (err) {
-    els.resultSummary.textContent = String(err);
-    els.resultSummary.className = "result-summary error";
-    els.detailList.replaceChildren();
-    show(els.results);
-  } finally {
-    state.rateBusy = false;
-    renderRate();
-  }
 });
 
-els.btnUpdate.addEventListener("click", () => invoke("install_update"));
+document.addEventListener("keydown", (event) => {
+    if (event.key !== "Escape") return;
+    hide(els.infoModal);
+    state.rating.open = false;
+    renderRating();
+});
 
+init();

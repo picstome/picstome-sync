@@ -4,7 +4,7 @@
         <meta charset="UTF-8" />
         <meta
             http-equiv="Content-Security-Policy"
-            content="default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; object-src 'none'; base-uri 'self'; frame-ancestors 'none'; form-action 'none';"
+            content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; object-src 'none'; base-uri 'self'; frame-ancestors 'none'; form-action 'none'; connect-src 'self' ipc: http://ipc.localhost"
         />
         <meta name="viewport" content="width=device-width, initial-scale=1.0" />
         <title>Picstome Sync</title>
@@ -13,43 +13,67 @@
     </head>
     <body>
         <div class="app-shell">
-            <div class="app">
-                <header class="topbar">
-                    <div class="brand">
-                        <img
-                            class="brand-logo"
-                            src="./assets/picstome-sync-logo.png"
-                            alt="Picstome Sync"
-                        />
+            <aside class="sidebar">
+                <div class="sidebar-brand">
+                    <img
+                        class="brand-logo"
+                        src="./assets/picstome-sync-logo.png"
+                        alt="Picstome Sync"
+                    />
+                    <div class="brand-text">
                         <span class="brand-name">Picstome Sync</span>
                         <span class="env-badge hidden" id="envBadge"></span>
                     </div>
+                </div>
 
-                    <nav class="tabs" id="tabs">
-                        <button type="button" class="tab active" data-tab="sync">
-                            Sync
-                        </button>
-                        <button type="button" class="tab" data-tab="rate">
-                            Rate
-                        </button>
-                    </nav>
+                <div class="sidebar-heading">
+                    <span id="galleriesLabel">Galleries</span>
+                    <button
+                        type="button"
+                        class="icon-button"
+                        id="btnAddGallery"
+                        title="Open Picstome"
+                    >
+                        +
+                    </button>
+                </div>
 
-                    <div class="account">
-                        <span class="account-chip hidden" id="accountChip"></span>
+                <div class="gallery-list" id="galleryList"></div>
+
+                <div class="sidebar-empty hidden" id="syncEmpty">
+                    <p class="empty-title" id="emptyTitle">
+                        No synced galleries yet
+                    </p>
+                    <p class="hint" id="emptyHint"></p>
+                    <button type="button" class="secondary small" id="btnDemo">
+                        Sync demo gallery
+                    </button>
+                </div>
+
+                <div class="sidebar-spacer"></div>
+
+                <div class="sidebar-footer">
+                    <button
+                        type="button"
+                        class="account-button"
+                        id="accountChip"
+                        title="Open account profile"
+                    >
+                        <span class="account-avatar" id="accountInitial">?</span>
+                        <span class="account-text">
+                            <span class="account-name" id="accountName"
+                                >Not connected</span
+                            >
+                            <span class="account-email" id="accountEmail"></span>
+                        </span>
+                    </button>
+                    <div class="sidebar-actions">
                         <button
                             type="button"
-                            class="secondary small"
+                            class="primary small"
                             id="btnConnect"
                         >
                             Open Picstome
-                        </button>
-                        <button
-                            type="button"
-                            class="secondary small"
-                            id="btnInfo"
-                            title="Build information"
-                        >
-                            Info
                         </button>
                         <button
                             type="button"
@@ -58,216 +82,124 @@
                         >
                             Log out
                         </button>
+                        <button type="button" class="ghost small" id="btnInfo">
+                            Info
+                        </button>
+                    </div>
+                </div>
+            </aside>
+
+            <main class="main-pane">
+                <header class="main-header">
+                    <div class="main-title">
+                        <h1 id="detailName">Picstome Sync</h1>
+                        <p class="hint" id="detailPath"></p>
+                        <p class="hint subtle" id="detailLastSync"></p>
+                    </div>
+                    <div class="main-actions">
+                        <button type="button" class="primary" id="btnSync">
+                            Sync
+                        </button>
+                        <button
+                            type="button"
+                            class="secondary"
+                            id="btnChangeFolder"
+                        >
+                            Change folder…
+                        </button>
+                        <button
+                            type="button"
+                            class="secondary"
+                            id="btnOpenFolder"
+                        >
+                            Open folder
+                        </button>
+                        <button
+                            type="button"
+                            class="ghost"
+                            id="btnUnlink"
+                        >
+                            Unlink
+                        </button>
                     </div>
                 </header>
 
-                <div class="update-banner hidden" id="updateBanner">
-                    <span id="updateMsg"></span>
-                    <button
-                        class="update-btn hidden"
-                        id="btnUpdate"
-                        type="button"
-                    >
-                        Restart &amp; Update
-                    </button>
-                </div>
+                <section class="main-content">
+                    <div class="idle-card hidden" id="idleState">
+                        <div class="idle-icon">⟳</div>
+                        <h2 id="idleTitle">Ready to sync</h2>
+                        <p class="hint" id="idleHint"></p>
+                        <button type="button" class="primary" id="btnIdleSync">
+                            Sync
+                        </button>
+                    </div>
 
-                <main>
-                    <section class="tab-panel" id="tab-sync">
-                        <div class="panel-head">
-                            <div>
-                                <h1 id="syncTitle">Your synced galleries</h1>
-                                <p class="hint" id="syncHint"></p>
-                            </div>
-                            <span class="badge hidden" id="mockBadge">Demo</span>
-                        </div>
-
-                        <div class="empty" id="syncEmpty">
-                            <div class="empty-title" id="emptyTitle">
-                                No synced galleries yet
-                            </div>
-                            <p class="hint" id="emptyHint"></p>
-                            <div class="btn-row">
-                                <button type="button" id="btnDemo">
-                                    Sync demo gallery
-                                </button>
-                                <button
-                                    type="button"
-                                    class="secondary"
-                                    id="btnConnectEmpty"
-                                >
-                                    Open Picstome
-                                </button>
-                            </div>
-                        </div>
-
-                        <div class="gallery-list" id="galleryList"></div>
-
-                        <div class="detail hidden" id="syncDetail">
-                            <button type="button" class="ghost small" id="btnBack">
-                                ← Back
-                            </button>
-                            <div class="detail-head">
-                                <h2 id="detailName"></h2>
-                                <div class="detail-path" id="detailPath"></div>
-                            </div>
-                            <div class="detail-actions">
-                                <button type="button" id="btnUpdateNow">
-                                    Update now
-                                </button>
-                                <button
-                                    type="button"
-                                    class="secondary"
-                                    id="btnChangeFolder"
-                                >
-                                    Change folder…
-                                </button>
-                                <button
-                                    type="button"
-                                    class="secondary"
-                                    id="btnOpenFolder"
-                                >
-                                    Open folder
-                                </button>
-                            </div>
-
-                            <div class="progress hidden" id="progressWrap">
-                                <div class="progress-bar">
-                                    <span id="progressFill"></span>
-                                </div>
-                                <div class="progress-text" id="progressText"></div>
-                            </div>
-
-                            <div class="report hidden" id="report">
-                                <div class="report-summary" id="reportSummary"></div>
-                                <div class="counts" id="reportCounts"></div>
-                                <div class="report-errors" id="reportErrors"></div>
-
-                                <div class="delete-box hidden" id="deleteBox">
-                                    <div class="delete-title" id="deleteTitle"></div>
-                                    <p class="hint" id="deleteHint"></p>
-                                    <div class="delete-list" id="deleteList"></div>
-                                    <div class="btn-row">
-                                        <button
-                                            type="button"
-                                            class="danger"
-                                            id="btnDeleteRemote"
-                                        >
-                                            Delete in Picstome
-                                        </button>
-                                        <button
-                                            type="button"
-                                            class="ghost"
-                                            id="btnCancelDelete"
-                                        >
-                                            Cancel
-                                        </button>
-                                    </div>
-                                </div>
-                            </div>
-                        </div>
-                    </section>
-
-                    <section class="tab-panel hidden" id="tab-rate">
-                        <div class="panel-head">
-                            <div>
-                                <h1 id="rateTitle">Rate photos</h1>
-                                <p class="hint" id="rateHint"></p>
-                            </div>
-                        </div>
-
-                        <div class="section">
-                            <label class="title-label" id="folderLabel"
-                                >Photos folder</label
-                            >
-                            <div class="row">
-                                <div class="path-box empty" id="pathBox">
-                                    No folder selected
-                                </div>
-                                <button
-                                    class="secondary"
-                                    id="btnChooseFolder"
-                                    type="button"
-                                >
-                                    Change...
-                                </button>
-                            </div>
-                        </div>
-
-                        <div class="info-row hidden" id="infoRow">
-                            <div class="info-chip">
-                                <span class="chip-label">Photos</span>
-                                <strong id="fileCount">0</strong>
-                                <span id="photosLabel">photos</span>
-                            </div>
-
-                            <div class="info-chip info-chip-rating">
-                                <span class="chip-label" id="ratingLabel"
-                                    >Rating</span
-                                >
-                                <div class="star-picker" id="starPicker">
-                                    <button
-                                        type="button"
-                                        class="star-btn"
-                                        data-rating="1"
-                                        aria-label="1 star"
-                                    >
-                                        ★
-                                    </button>
-                                    <button
-                                        type="button"
-                                        class="star-btn"
-                                        data-rating="2"
-                                        aria-label="2 stars"
-                                    >
-                                        ★
-                                    </button>
-                                    <button
-                                        type="button"
-                                        class="star-btn"
-                                        data-rating="3"
-                                        aria-label="3 stars"
-                                    >
-                                        ★
-                                    </button>
-                                    <button
-                                        type="button"
-                                        class="star-btn"
-                                        data-rating="4"
-                                        aria-label="4 stars"
-                                    >
-                                        ★
-                                    </button>
-                                    <button
-                                        type="button"
-                                        class="star-btn"
-                                        data-rating="5"
-                                        aria-label="5 stars"
-                                    >
-                                        ★
-                                    </button>
-                                </div>
-                                <strong id="ratingVal">1</strong>
-                            </div>
-                        </div>
-
+                    <div class="welcome" id="welcome">
+                        <h2 id="welcomeTitle">Select a gallery</h2>
+                        <p class="hint" id="welcomeHint"></p>
                         <div class="btn-row">
-                            <button id="btnRate" type="button" disabled>
-                                Apply rating
+                            <button
+                                type="button"
+                                class="primary"
+                                id="btnConnectWelcome"
+                            >
+                                Open Picstome
+                            </button>
+                            <button
+                                type="button"
+                                class="secondary"
+                                id="btnDemoWelcome"
+                            >
+                                Sync demo gallery
                             </button>
                         </div>
+                    </div>
 
-                        <div class="spinner hidden" id="spinner">
-                            Applying rating…
+                    <div class="progress-card hidden" id="progressWrap">
+                        <div class="progress-head">
+                            <span id="progressTitle">Syncing…</span>
+                            <span class="progress-percent" id="progressPercent"
+                                >0%</span
+                            >
                         </div>
+                        <div class="progress-bar" id="progressBar">
+                            <span id="progressFill"></span>
+                        </div>
+                        <div class="progress-text" id="progressText"></div>
+                    </div>
 
-                        <div class="results hidden" id="results">
-                            <div class="result-summary" id="resultSummary"></div>
-                            <div class="detail-list" id="detailList"></div>
+                    <div class="report hidden" id="report">
+                        <div class="report-head">
+                            <span id="reportSummary"></span>
+                            <span class="subtle" id="reportTime"></span>
                         </div>
-                    </section>
-                </main>
-            </div>
+                        <div class="counts" id="reportCounts"></div>
+                        <div class="report-errors" id="reportErrors"></div>
+
+                        <div class="delete-box hidden" id="deleteBox">
+                            <div class="delete-title" id="deleteTitle"></div>
+                            <p class="hint" id="deleteHint"></p>
+                            <div class="delete-list" id="deleteList"></div>
+                            <div class="btn-row">
+                                <button
+                                    type="button"
+                                    class="danger"
+                                    id="btnDeleteRemote"
+                                >
+                                    Delete in Picstome
+                                </button>
+                                <button
+                                    type="button"
+                                    class="ghost"
+                                    id="btnCancelDelete"
+                                >
+                                    Cancel
+                                </button>
+                            </div>
+                        </div>
+                    </div>
+                </section>
+            </main>
         </div>
 
         <div class="modal-backdrop hidden" id="infoModal">
@@ -295,6 +227,10 @@
                         <dt id="infoTargetLabel">API target</dt>
                         <dd><code id="infoTarget"></code></dd>
                     </div>
+                    <div>
+                        <dt id="infoAccountLabel">Account</dt>
+                        <dd id="infoAccount"></dd>
+                    </div>
                 </dl>
                 <div class="api-switch">
                     <div class="api-switch-title" id="apiSwitchTitle">
@@ -317,6 +253,60 @@
                         </button>
                     </div>
                     <p class="hint" id="apiSwitchHint"></p>
+                </div>
+            </div>
+        </div>
+
+        <div class="modal-backdrop hidden" id="ratingModal">
+            <div class="modal rating-modal" role="dialog" aria-modal="true">
+                <div class="modal-head">
+                    <h2 id="ratingTitle">Rate photos</h2>
+                    <button
+                        type="button"
+                        class="ghost small"
+                        id="btnRatingClose"
+                    >
+                        Close
+                    </button>
+                </div>
+                <p class="hint" id="ratingSubtitle"></p>
+                <div class="rating-target" id="ratingTarget"></div>
+                <button
+                    type="button"
+                    class="secondary small hidden"
+                    id="btnRatingFolder"
+                >
+                    Choose folder…
+                </button>
+
+                <div class="rating-stars" id="ratingStars">
+                    <button type="button" class="star-btn" data-rating="1">
+                        ★
+                    </button>
+                    <button type="button" class="star-btn" data-rating="2">
+                        ★
+                    </button>
+                    <button type="button" class="star-btn" data-rating="3">
+                        ★
+                    </button>
+                    <button type="button" class="star-btn" data-rating="4">
+                        ★
+                    </button>
+                    <button type="button" class="star-btn" data-rating="5">
+                        ★
+                    </button>
+                    <strong id="ratingValue">5</strong>
+                </div>
+
+                <div class="rating-result hidden" id="ratingResult"></div>
+
+                <div class="btn-row">
+                    <button type="button" class="primary" id="btnRatingApply">
+                        Apply rating
+                    </button>
+                    <button type="button" class="ghost" id="btnRatingCancel">
+                        Not now
+                    </button>
                 </div>
             </div>
         </div>

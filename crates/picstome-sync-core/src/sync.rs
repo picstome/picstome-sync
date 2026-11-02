@@ -12,8 +12,9 @@ use crate::error::CoreResult;
 use crate::identity::preferred_file;
 use crate::localfiles::{folder_exists as path_is_dir, scan_and_hash};
 use crate::model::{
-    DeleteProposal, DeleteProposals, DeleteResponse, Diff, DownloadedItem, GalleryEntry, Manifest,
-    Photo, Progress, Snapshot, SnapshotFile, SyncErrorItem, SyncReport, UploadedItem,
+    DeleteProposal, DeleteProposals, DeleteResponse, Diff, DownloadedItem, FavoritePhoto,
+    GalleryEntry, Manifest, Photo, Progress, Snapshot, SnapshotFile, SyncErrorItem, SyncReport,
+    UploadedItem,
 };
 use crate::sanitize::safe_join;
 use crate::transfer::{download_file, DownloadOptions, ProgressFn};
@@ -200,6 +201,7 @@ pub async fn run_gallery_sync(
         proposals: DeleteProposals {
             delete_remote: download_proposals(&diff),
         },
+        favorites: Vec::new(),
         errors: scan_errors
             .into_iter()
             .map(|error| SyncErrorItem {
@@ -371,6 +373,18 @@ pub async fn run_gallery_sync(
     } else {
         manifest
     };
+
+    report.favorites = final_manifest
+        .photos
+        .iter()
+        .filter(|photo| photo.favorited_at.is_some())
+        .map(|photo| FavoritePhoto {
+            id: photo.id.clone(),
+            filename: photo.filename.clone(),
+            identity_key: photo.identity(),
+            favorited_at: photo.favorited_at.clone(),
+        })
+        .collect();
 
     let snapshot = build_snapshot(gallery, &final_manifest, &local_files, now);
     store.save_snapshot(&snapshot)?;

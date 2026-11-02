@@ -35,16 +35,24 @@ against the backend contract in
   (debug builds only).
 - **Deep links**: `picstome://rate`, `picstome://sync`, `picstome://auth`, with
   single-instance forwarding on Windows/Linux.
-- **Rate tab**: same star flow as Picstome Rater, EXIF/XMP in batches of 20
-  through bundled exiftool (official Perl script + lib on macOS/Linux, native
-  `.exe` on Windows; system `exiftool` is used as a fallback).
+- **Rating integrated in Sync**: the old Rate tab is gone. `picstome://rate`
+  links open a rating dialog in the same desktop interface, and when the
+  manifest exposes `favorited_at` the app offers to write a chosen 1–5 star
+  rating for those favorite photos after syncing. EXIF/XMP is written in
+  batches of 20 through bundled exiftool (system `exiftool` fallback on Linux).
+- **Desktop-first interface**: fixed sidebar + main pane, no page scroll,
+  explicit **Sync** button, live progress for checking/scanning/downloading/
+  uploading, manual folder actions, and account/profile access from the
+  sidebar. English is the default; the UI switches to Spanish only when the
+  current keyboard layout is Spanish.
 - **Fake API**: seeded galleries (50 + 8 photos), signed URLs, Range support,
   upload/version/delete, browser auth page and a fake web UI to simulate remote
   changes.
 - **Runtime info for testers**: an **Info** button shows the exact API URL,
-  app version, build profile (debug/release) and mode (production / development
-  / local / demo / custom). Outside production a small `DEV`, `LOCAL`, `DEMO`
-  or `CUSTOM` badge stays visible in the header with the API URL as its title.
+  app version, build profile (debug/release), account and mode (production /
+  development / local / demo / custom). A small `PROD`, `DEV`, `LOCAL`, `DEMO`
+  or `CUSTOM` badge stays visible in the sidebar. The connected account shows
+  the Picstome display name; clicking it opens `/settings/profile`.
 
 ## Quick start (no backend)
 
@@ -69,7 +77,7 @@ PICSTOME_API_BASE=http://127.0.0.1:8787 PICSTOME_MOCK=1 cargo run -p picstome-sy
 
 1. Open **GitHub → Releases** and download the latest **draft** asset (maintainers
    see drafts on the releases page), e.g. `Picstome.Sync_<version>_universal.dmg`.
-   With the CLI: `gh release download v0.1.3 --pattern '*.dmg'`.
+   With the CLI: `gh release download v0.1.4 --pattern '*.dmg'`.
    You can also use the `build` workflow artifacts under **Actions → build**.
 2. Install it, open **Info** in the header and check **Version**, **Build**,
    **Mode** and **API target**.

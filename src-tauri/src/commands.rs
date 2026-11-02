@@ -123,6 +123,14 @@ pub async fn build_state(state: &AppState) -> AppStateView {
     } else {
         config.account_email.clone()
     };
+    let name = if state.is_mock() && connected {
+        Some("Picstome Sync Demo".to_string())
+    } else {
+        config
+            .account_name
+            .clone()
+            .or_else(|| config.account_email.clone())
+    };
 
     let galleries = state
         .store
@@ -157,6 +165,7 @@ pub async fn build_state(state: &AppState) -> AppStateView {
         auth: AuthState {
             connected,
             email,
+            name,
             account_email: config.account_email.clone(),
         },
         galleries,
@@ -281,6 +290,7 @@ pub async fn connect(app: AppHandle, state: State<'_, AppState>) -> Result<Value
         api.dev_login().await?;
         let _ = state.store.update_config(|config| {
             config.account_email = Some("desktop@picstome.test".into());
+            config.account_name = Some("Picstome Sync Demo".into());
         });
         emit_state(&app, &state).await;
         return Ok(json!({"ok": true, "mock": true}));
@@ -466,20 +476,33 @@ pub async fn rate_files(
     files: Vec<String>,
     rating: String,
     photos_dir: Option<String>,
+    gallery_id: Option<String>,
 ) -> Result<RateResult, ErrorPayload> {
     let config = state.store.load_config();
-    let Some(trusted) = config.photos_dir else {
-        return Ok(rate::rate_files(None, &files, &rating, Path::new(".")).await);
+    let has_gallery = gallery_id.is_some();
+    let trusted = match gallery_id {
+        Some(gallery_id) => {
+            let Some(id) = sanitize_gallery_id(&gallery_id) else {
+                return Err(invalid_gallery());
+            };
+            let Some(gallery) = state.store.get_gallery(&id) else {
+                return Err(not_linked());
+            };
+            Some(gallery.local_path)
+        }
+        None => config.photos_dir.clone(),
     };
-
-    let Some(requested) = photos_dir else {
-        return Err(command_error("No folder selected", "no_folder"));
+    let Some(trusted) = trusted else {
+        return Ok(rate::rate_files(None, &files, &rating, Path::new(".")).await);
     };
 
     let trusted_path = std::fs::canonicalize(&trusted)
         .map_err(|err| command_error(err.to_string(), "folder_error"))?;
-    let requested_path = std::fs::canonicalize(&requested)
-        .map_err(|err| command_error(err.to_string(), "folder_error"))?;
+    let requested_path = match photos_dir {
+        Some(requested) if !has_gallery => std::fs::canonicalize(&requested)
+            .map_err(|err| command_error(err.to_string(), "folder_error"))?,
+        _ => trusted_path.clone(),
+    };
     if trusted_path != requested_path {
         return Err(command_error("Folder not accessible", "folder_error"));
     }
@@ -493,6 +516,31 @@ pub async fn rate_files(
     });
 
     Ok(rate::rate_files(state.exiftool.as_deref(), &files, &rating, &trusted_path).await)
+}
+#[tauri::command]
+pub async fn open_galleries_page(
+    app: AppHandle,
+    state: State<'_, AppState>,
+) -> Result<Value, ErrorPayload> {
+    let base = state.api().await.base_url().to_string();
+    let url = format!("{base}/galleries");
+    app.opener()
+        .open_url(url, None::<&str>)
+        .map_err(|err| command_error(err.to_string(), "open_url_failed"))?;
+    Ok(json!({"ok": true}))
+}
+
+#[tauri::command]
+pub async fn open_account_profile(
+    app: AppHandle,
+    state: State<'_, AppState>,
+) -> Result<Value, ErrorPayload> {
+    let base = state.api().await.base_url().to_string();
+    let url = format!("{base}/settings/profile");
+    app.opener()
+        .open_url(url, None::<&str>)
+        .map_err(|err| command_error(err.to_string(), "open_url_failed"))?;
+    Ok(json!({"ok": true}))
 }
 
 #[tauri::command]
@@ -514,6 +562,7 @@ pub async fn set_api_base(
     let _ = state.store.update_config(|config| {
         config.api_base = Some(base.clone());
         config.account_email = None;
+        config.account_name = None;
     });
 
     let view = build_state(&state).await;

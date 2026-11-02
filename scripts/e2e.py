@@ -261,8 +261,9 @@ def main():
                 const info = {
                   account: document.getElementById('accountChip').textContent,
                   rows: document.querySelectorAll('.gallery-row').length,
+                  tabs: document.querySelectorAll('.tab').length,
+                  syncLabel: document.getElementById('btnSync').textContent.trim(),
                   emptyHidden: document.getElementById('syncEmpty').classList.contains('hidden'),
-                  demoBadge: !document.getElementById('mockBadge').classList.contains('hidden'),
                   badge: document.getElementById('envBadge').textContent,
                   badgeHidden: document.getElementById('envBadge').classList.contains('hidden'),
                   infoVisible: !modal.classList.contains('hidden'),
@@ -278,7 +279,8 @@ def main():
         assert dom["rows"] >= 1, "renderer did not draw the gallery list"
         assert dom["account"].strip(), "renderer did not show the account chip"
         assert dom["emptyHidden"], "empty state should be hidden with a linked gallery"
-        assert dom["demoBadge"] is False, "demo badge should not be shown"
+        assert dom["tabs"] == 0, "the desktop UI must not have web-style tabs"
+        assert dom["syncLabel"].lower() == "sync", dom["syncLabel"]
         assert dom["title"] == "Picstome Sync", dom["title"]
         assert dom["infoVisible"], "info modal did not open"
         assert state["config"]["apiBase"] in dom["infoText"], "info modal must show the API URL"
@@ -336,7 +338,7 @@ def main():
             log("final:", final["counts"], "skipped:", final["skipped"])
             assert final["skipped"], final["counts"]
 
-        # Rate tab: deep link + real exiftool write on a separate folder.
+        # Rating modal: deep link + real exiftool write on a separate folder.
         rating_name = "rating-photo.jpg"
         fixture = os.path.join(ROOT, "src-tauri", "tests", "fixtures", "pixel.jpg")
         with open(fixture, "rb") as src, open(
@@ -352,29 +354,87 @@ def main():
             session,
             """
             const done = arguments[arguments.length - 1];
-            document.querySelector('.tab[data-tab="rate"]').click();
-            const btn = document.getElementById('btnRate');
+            const btn = document.getElementById('btnRatingApply');
             if (btn.disabled) { done('DISABLED'); }
             else {
               btn.click();
               const deadline = Date.now() + 30000;
               const timer = setInterval(() => {
-                const summary = document.getElementById('resultSummary');
-                const visible = !document.getElementById('results').classList.contains('hidden');
-                if (visible && summary.textContent) {
+                const result = document.getElementById('ratingResult');
+                const visible = !result.classList.contains('hidden');
+                if (visible && result.textContent) {
                   clearInterval(timer);
-                  done(summary.textContent + ' | ' + document.getElementById('detailList').textContent);
+                  done(result.textContent);
                 } else if (Date.now() > deadline) {
                   clearInterval(timer);
-                  done('TIMEOUT ' + summary.textContent);
+                  done('TIMEOUT');
                 }
               }, 200);
             }
             """,
         )
-        log("rate:", rate_result)
+        log("rate:", rate_result.splitlines()[0] if rate_result else rate_result)
         assert not rate_result.startswith("DISABLED"), rate_result
         assert "1 file" in rate_result.lower() and "rated" in rate_result.lower(), rate_result
+        run_async(
+            session,
+            "const done = arguments[arguments.length - 1]; document.getElementById('btnRatingClose').click(); done('closed');",
+        )
+
+        # Favorites: Sync from the UI, detect remote favorites and apply a rating.
+        run_async(
+            session,
+            "const done = arguments[arguments.length - 1]; document.getElementById('btnSync').click(); done('clicked');",
+        )
+        deadline = time.time() + 60
+        favorite_prompt = None
+        while time.time() < deadline:
+            favorite_prompt = json.loads(
+                run_async(
+                    session,
+                    """
+                    const done = arguments[arguments.length - 1];
+                    const modal = document.getElementById('ratingModal');
+                    done(JSON.stringify({
+                      visible: !modal.classList.contains('hidden'),
+                      title: document.getElementById('ratingTitle').textContent,
+                      subtitle: document.getElementById('ratingSubtitle').textContent
+                    }));
+                    """,
+                )
+            )
+            if favorite_prompt["visible"] and "favorite" in favorite_prompt["title"].lower():
+                break
+            time.sleep(0.4)
+        log("favorites prompt:", favorite_prompt)
+        assert favorite_prompt and favorite_prompt["visible"], "favorites prompt did not open"
+        assert "favorite" in favorite_prompt["title"].lower(), favorite_prompt
+
+        favorites_result = run_async(
+            session,
+            """
+            const done = arguments[arguments.length - 1];
+            document.querySelector('#ratingStars .star-btn[data-rating="4"]').click();
+            document.getElementById('btnRatingApply').click();
+            const deadline = Date.now() + 30000;
+            const timer = setInterval(() => {
+              const result = document.getElementById('ratingResult');
+              if (!result.classList.contains('hidden') && result.textContent) {
+                clearInterval(timer);
+                done(result.textContent);
+              } else if (Date.now() > deadline) {
+                clearInterval(timer);
+                done('TIMEOUT');
+              }
+            }, 200);
+            """,
+        )
+        log("favorites rating:", favorites_result.splitlines()[0] if favorites_result else favorites_result)
+        assert "5 file" in favorites_result.lower() and "rated" in favorites_result.lower(), favorites_result
+        run_async(
+            session,
+            "const done = arguments[arguments.length - 1]; document.getElementById('btnRatingClose').click(); done('closed');",
+        )
 
         logout = js_invoke(session, "logout", {})
         assert logout.get("ok"), logout

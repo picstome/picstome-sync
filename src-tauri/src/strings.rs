@@ -1,12 +1,89 @@
 use serde_json::{json, Value};
 
 pub fn language() -> String {
-    let locale = sys_locale::get_locale().unwrap_or_else(|| "en".to_string());
-    if locale.to_ascii_lowercase().starts_with("es") {
+    if let Ok(value) = std::env::var("PICSTOME_LANG") {
+        return if value.to_ascii_lowercase().starts_with("es") {
+            "es".to_string()
+        } else {
+            "en".to_string()
+        };
+    }
+
+    if keyboard_is_spanish() {
         "es".to_string()
     } else {
         "en".to_string()
     }
+}
+
+fn keyboard_is_spanish() -> bool {
+    #[cfg(target_os = "macos")]
+    {
+        let output = std::process::Command::new("defaults")
+            .args([
+                "read",
+                "com.apple.HIToolbox",
+                "AppleCurrentKeyboardLayoutInputSourceID",
+            ])
+            .output();
+        if let Ok(output) = output {
+            return is_spanish_keyboard_id(&String::from_utf8_lossy(&output.stdout));
+        }
+    }
+
+    #[cfg(target_os = "linux")]
+    {
+        if let Ok(layout) = std::env::var("XKB_DEFAULT_LAYOUT") {
+            if is_spanish_xkb_layout(&layout) {
+                return true;
+            }
+        }
+        let output = std::process::Command::new("setxkbmap")
+            .arg("-query")
+            .output();
+        if let Ok(output) = output {
+            let text = String::from_utf8_lossy(&output.stdout);
+            if let Some(layout) = text.lines().find_map(|line| line.strip_prefix("layout:")) {
+                return is_spanish_xkb_layout(layout);
+            }
+        }
+    }
+
+    #[cfg(target_os = "windows")]
+    {
+        let output = std::process::Command::new("reg")
+            .args(["query", r"HKCU\Keyboard Layout\Preload"])
+            .output();
+        if let Ok(output) = output {
+            return is_spanish_windows_layout(&String::from_utf8_lossy(&output.stdout));
+        }
+    }
+
+    false
+}
+
+pub fn is_spanish_keyboard_id(value: &str) -> bool {
+    let normalized = value.to_ascii_lowercase();
+    normalized.contains("spanish")
+        || normalized.contains("español")
+        || normalized.contains("es-es")
+        || normalized.contains(".es")
+}
+
+pub fn is_spanish_xkb_layout(value: &str) -> bool {
+    value
+        .split([',', ' ', ';'])
+        .any(|token| token.trim().eq_ignore_ascii_case("es"))
+}
+
+pub fn is_spanish_windows_layout(value: &str) -> bool {
+    value
+        .lines()
+        .filter_map(|line| line.split_whitespace().last())
+        .any(|value| {
+            let lower = value.to_ascii_lowercase();
+            lower.ends_with("0a") && lower.len() >= 4
+        })
 }
 
 pub fn strings(lang: &str) -> Value {
@@ -103,7 +180,32 @@ fn english() -> Value {
         "useProduction": "Production",
         "useDevelopment": "Development",
         "apiSwitchHint": "Switching target signs you out. Connect again afterwards.",
-        "apiSwitched": "API target changed. Please connect again."
+        "apiSwitched": "API target changed. Please connect again.",
+        "galleries": "Galleries",
+        "noGalleryTitle": "Select a gallery",
+        "noGalleryHint": "Pick a gallery from the sidebar or open Picstome to start.",
+        "welcomeTitle": "Welcome to Picstome Sync",
+        "welcomeHint": "Open a gallery in Picstome and press “Sync / Open in app”, or try the demo.",
+        "sync": "Sync",
+        "checkingChanges": "Checking changes in Picstome…",
+        "scanningLocal": "Scanning local folder…",
+        "progressDone": "Sync complete",
+        "favoritesFound": "{n} favorite photo(s) found in Picstome",
+        "favoritesHint": "Choose how many stars to write locally. Nothing changes until you press Apply rating.",
+        "ratingTitle": "Favorite photos",
+        "ratePhotosTitle": "Rate photos",
+        "ratePhotosHint": "Choose how many stars to write to the selected photos.",
+        "applyRating": "Apply rating",
+        "notNow": "Not now",
+        "ratingDone": "Rating finished",
+        "ratingFailed": "Rating failed",
+        "chooseFolder": "Choose folder…",
+        "notConnected": "Not connected",
+        "openProfile": "Open account profile",
+        "infoAccount": "Account",
+        "syncHint": "Fetches remote changes and applies local ones.",
+        "readyToSync": "Ready to sync",
+        "lastSyncAt": "Last sync: {date}",
     })
 }
 
@@ -193,7 +295,32 @@ fn spanish() -> Value {
         "useProduction": "Producción",
         "useDevelopment": "Desarrollo",
         "apiSwitchHint": "Cambiar de entorno cierra la sesión. Vuelve a conectar después.",
-        "apiSwitched": "API cambiada. Vuelve a conectar."
+        "apiSwitched": "API cambiada. Vuelve a conectar.",
+        "galleries": "Galerías",
+        "noGalleryTitle": "Selecciona una galería",
+        "noGalleryHint": "Elige una galería en la barra lateral o abre Picstome para empezar.",
+        "welcomeTitle": "Bienvenido a Picstome Sync",
+        "welcomeHint": "Abre una galería en Picstome y pulsa «Sincronizar / Abrir en la app», o prueba la demo.",
+        "sync": "Sincronizar",
+        "checkingChanges": "Buscando cambios en Picstome…",
+        "scanningLocal": "Analizando la carpeta local…",
+        "progressDone": "Sincronización completa",
+        "favoritesFound": "{n} foto(s) favorita(s) encontradas en Picstome",
+        "favoritesHint": "Elige cuántas estrellas escribir en local. No se cambia nada hasta pulsar Aplicar valoración.",
+        "ratingTitle": "Fotos favoritas",
+        "ratePhotosTitle": "Valorar fotos",
+        "ratePhotosHint": "Elige cuántas estrellas escribir en las fotos seleccionadas.",
+        "applyRating": "Aplicar valoración",
+        "notNow": "Ahora no",
+        "ratingDone": "Valoración terminada",
+        "ratingFailed": "Error al valorar",
+        "chooseFolder": "Elegir carpeta…",
+        "notConnected": "Sin conexión",
+        "openProfile": "Abrir perfil de la cuenta",
+        "infoAccount": "Cuenta",
+        "syncHint": "Busca cambios remotos y aplica los locales.",
+        "readyToSync": "Listo para sincronizar",
+        "lastSyncAt": "Última sync: {date}",
     })
 }
 
@@ -208,6 +335,22 @@ mod tests {
         let en_keys: std::collections::BTreeSet<&String> = en.as_object().unwrap().keys().collect();
         let es_keys: std::collections::BTreeSet<&String> = es.as_object().unwrap().keys().collect();
         assert_eq!(en_keys, es_keys, "translation key mismatch");
+    }
+
+    #[test]
+    fn detects_spanish_keyboards() {
+        assert!(is_spanish_keyboard_id("com.apple.keylayout.Spanish"));
+        assert!(is_spanish_keyboard_id("com.apple.keylayout.Spanish-ISO"));
+        assert!(!is_spanish_keyboard_id("com.apple.keylayout.US"));
+        assert!(is_spanish_xkb_layout("es,us"));
+        assert!(is_spanish_xkb_layout("us, es"));
+        assert!(!is_spanish_xkb_layout("us,de"));
+        assert!(is_spanish_windows_layout(
+            "HKEY_CURRENT_USER\\Keyboard Layout\\Preload\n    1    REG_SZ    0000040a\n"
+        ));
+        assert!(!is_spanish_windows_layout(
+            "HKEY_CURRENT_USER\\Keyboard Layout\\Preload\n    1    REG_SZ    00000409\n"
+        ));
     }
 
     #[test]
@@ -232,6 +375,11 @@ mod tests {
                 "useDevelopment",
                 "apiSwitchHint",
                 "apiSwitched",
+                "galleries",
+                "sync",
+                "ratingTitle",
+                "applyRating",
+                "notNow",
             ] {
                 assert!(
                     value.get(key).and_then(|value| value.as_str()).is_some(),

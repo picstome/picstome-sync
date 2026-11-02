@@ -90,7 +90,12 @@ jobs:
             3. Approve it in **System Settings → Privacy & Security**.
 
             The app shows its version, build profile and exact API URL under the
-            **Info** button in the header. Use **Test API target** there to switch
+            **Info** button in the sidebar. Use **Test API target** there to switch
             between production (`app.picstome.com`) and development
             (`devel.picstome.com`); switching signs you out.
+
+            The Sync button checks remote changes and shows live progress. When the
+            API reports favorite photos, Sync asks for a 1–5 star rating before
+            writing it locally. The old Rate tab is now a rating dialog inside the
+            same desktop interface.
           args: ${{ matrix.args }}
