@@ -87,7 +87,7 @@ PICSTOME_API_BASE=http://127.0.0.1:8787 PICSTOME_MOCK=1 cargo run -p picstome-sy
 1. Open **GitHub → Releases** and download the latest **draft** asset (maintainers
    see drafts on the releases page), e.g. `Picstome.Sync_<version>_universal.dmg`.
    With the CLI: `gh release download v0.1.6 --pattern '*.dmg'`.
-   You can also use the `build` workflow artifacts under **Actions → build**.
+   New test builds are produced locally with `scripts/release-local.sh`.
 2. Install it, open **Info** in the header and check **Version**, **Build**,
    **Mode** and **API target**.
 3. Use **Test API target → Production / Development** to switch between
@@ -168,13 +168,27 @@ state and logs out.
 
 | Workflow | Trigger | What it does |
 | --- | --- | --- |
-| `ci.yml` | push/PR/manual | Rustfmt + Clippy + engine tests on Linux/macOS/Windows; workspace tests + app `--smoke` + full UI E2E (auth, sync, upload, delete, rate, info panel) on Linux; core coverage report (`lcov`) as an artifact |
-| `build.yml` | push to `main`/manual | unsigned Linux, universal macOS and Windows installers uploaded as workflow artifacts |
-| `release.yml` | version tag/manual | builds and attaches installers to a **draft** GitHub release |
+| `ci.yml` | push/PR/manual | Linux-only Rustfmt + Clippy + engine tests, workspace tests, app `--smoke`, full UI E2E and core coverage report. macOS/Windows CI was removed to stop burning Actions minutes. |
+| `release.yml` | version tag/manual (final releases) | builds and attaches Linux/macOS/Windows installers to a **draft** GitHub release |
 | `real-api.yml` | manual | engine + UI E2E against a real API (`PICSTOME_REAL_API`, `PICSTOME_REAL_TOKEN`, `PICSTOME_REAL_GALLERY`; optional write round-trip) |
 
-To test an app build without tagging: **Actions → build → Run workflow** and
-download the `picstome-sync-*` artifact.
+### Local test builds (no Actions minutes)
+
+Until the final release, build the current platform locally and upload it to a
+draft release:
+
+```bash
+scripts/release-local.sh            # current version, builds + uploads
+scripts/release-local.sh --no-build # upload already-built bundles
+scripts/release-local.sh v0.1.7     # explicit draft tag
+```
+
+- On **Linux** it builds `.deb` + `.AppImage`.
+- On **macOS** it builds a universal `.dmg` (run it on the Mac).
+- Windows builds are intentionally reserved for the final `release.yml` run.
+
+The script uses `gh release upload --clobber`, so re-running it replaces the
+same draft assets instead of creating a new release.
 
 ### macOS install note
 
