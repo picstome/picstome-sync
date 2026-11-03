@@ -357,6 +357,11 @@ def main():
             log("upload:", third["counts"], "errors:", third["errors"])
             assert not third["errors"], third["errors"]
             assert len(third["uploaded"]) == 1, third["counts"]
+            sync_log_path = os.path.join(user_data, "sync.log")
+            assert os.path.exists(sync_log_path), "sync.log was not written"
+            with open(sync_log_path, encoding="utf-8") as handle:
+                sync_log = handle.read()
+            assert upload_name in sync_log, sync_log[-500:]
 
             os.remove(os.path.join(photos, upload_name))
             proposal = js_invoke(session, "sync_gallery", {"galleryId": gallery})

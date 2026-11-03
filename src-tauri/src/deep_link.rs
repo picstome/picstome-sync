@@ -25,6 +25,19 @@ pub fn setup(app: &AppHandle) {
         }
     });
 
+    // macOS delivers cold-start URLs as an Apple Event, not as a CLI argument.
+    // The plugin stores them in `get_current`; check it after registering the
+    // event handler so the first deep link is not lost.
+    if let Ok(Some(urls)) = app.deep_link().get_current() {
+        for url in urls {
+            let app = app.clone();
+            let raw = url.to_string();
+            tauri::async_runtime::spawn(async move {
+                handle_url(app, raw).await;
+            });
+        }
+    }
+
     if let Some(raw) = std::env::args().find(|arg| arg.starts_with("picstome://")) {
         let app = app.clone();
         tauri::async_runtime::spawn(async move {

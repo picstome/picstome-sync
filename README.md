@@ -56,6 +56,12 @@ against the backend contract in
   current keyboard layout is Spanish.
 - **Fast gallery search**: filter the sidebar by name or path, with `Ctrl+F` /
   `Cmd+F` focusing the search field and `Enter` selecting the first match.
+- **Sync evidence**: the report lists every uploaded/downloaded filename, and
+  each sync appends a JSON line to `sync.log` in the app data directory. The
+  app data directory (not the photo folder) contains `index.json`, the
+  per-gallery snapshots, `auth.json` and `sync.log`; no hidden state file is
+  added to the photos folder, so moving/uploading that folder does not upload
+  app state.
 - **Sensible rating target**: a `picstome://rate` link uses the selected
   gallery's folder automatically; the folder picker only appears when no
   gallery is linked/selected.
@@ -91,7 +97,7 @@ PICSTOME_API_BASE=http://127.0.0.1:8787 PICSTOME_MOCK=1 cargo run -p picstome-sy
 
 1. Open **GitHub → Releases** and download the latest **draft** asset (maintainers
    see drafts on the releases page), e.g. `Picstome.Sync_<version>_universal.dmg`.
-   With the CLI: `gh release download v0.1.9 --pattern '*.dmg'`.
+   With the CLI: `gh release download v0.1.10 --pattern '*.dmg'`.
    New test builds are produced locally with `scripts/release-local.sh`.
 2. Install it, open **Info** in the header and check **Version**, **Build**,
    **Mode** and **API target**.
@@ -173,12 +179,23 @@ state and logs out.
 
 | Workflow | Trigger | What it does |
 | --- | --- | --- |
-| `ci.yml` | push/PR/manual | Linux-only Rustfmt + Clippy + engine tests, workspace tests, app `--smoke`, full UI E2E and core coverage report. macOS/Windows CI was removed to stop burning Actions minutes. |
+| `ci.yml` | manual only | Linux-only Rustfmt + Clippy + engine tests, workspace tests, app `--smoke`, full UI E2E and core coverage report. Automatic runs are disabled because the account exhausted its Actions minutes. |
 | `build.yml` | manual only | macOS universal test DMG uploaded to a draft release. Use only when a Mac test build is needed. |
 | `release.yml` | version tag/manual (final releases) | builds and attaches Linux/macOS/Windows installers to a **draft** GitHub release |
 | `real-api.yml` | manual | engine + UI E2E against a real API (`PICSTOME_REAL_API`, `PICSTOME_REAL_TOKEN`, `PICSTOME_REAL_GALLERY`; optional write round-trip) |
 
-### Local test builds (no Actions minutes)
+## Local tests and builds (no Actions minutes)
+
+Run the checks locally:
+
+```bash
+cargo fmt --all -- --check
+cargo clippy --workspace --all-targets -- -D warnings
+cargo test --workspace --all-targets
+cargo run -p picstome-sync -- --smoke
+# full UI E2E (Linux):
+xvfb-run -a python3 scripts/e2e.py
+```
 
 Until the final release, build the current platform locally and upload it to a
 draft release:

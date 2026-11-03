@@ -239,6 +239,34 @@ fn not_linked() -> ErrorPayload {
     command_error("Gallery is not linked", "not_linked")
 }
 
+fn append_sync_log(store: &Store, report: &SyncReport) {
+    let entry = json!({
+        "at": std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|duration| duration.as_millis() as i64)
+            .unwrap_or(0),
+        "galleryId": report.gallery_id,
+        "counts": report.counts,
+        "uploaded": report.uploaded.iter().map(|item| json!({
+            "filename": item.filename,
+            "versionNumber": item.version_number,
+        })).collect::<Vec<_>>(),
+        "downloaded": report.downloaded.iter().map(|item| item.filename.clone()).collect::<Vec<_>>(),
+        "errors": report.errors.iter().map(|item| item.message.clone()).collect::<Vec<_>>(),
+    });
+    use std::io::Write;
+    let mut options = std::fs::OpenOptions::new();
+    options.create(true).append(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
+    }
+    if let Ok(mut file) = options.open(store.root().join("sync.log")) {
+        let _ = writeln!(file, "{entry}");
+    }
+}
+
 async fn sync_linked(
     app: &AppHandle,
     state: &AppState,
@@ -264,6 +292,7 @@ async fn sync_linked(
         progress_emitter(app.clone()),
     )
     .await?;
+    append_sync_log(&state.store, &report);
     emit_state(app, state).await;
     Ok(report)
 }

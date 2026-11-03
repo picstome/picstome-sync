@@ -92,6 +92,7 @@ const els = {
     reportTime: document.getElementById("reportTime"),
     reportCounts: document.getElementById("reportCounts"),
     reportErrors: document.getElementById("reportErrors"),
+    reportFiles: document.getElementById("reportFiles"),
     deleteBox: document.getElementById("deleteBox"),
     deleteTitle: document.getElementById("deleteTitle"),
     deleteHint: document.getElementById("deleteHint"),
@@ -528,6 +529,27 @@ function renderReport() {
         line.className = "report-error";
         line.textContent = `${conflict.local?.filename || conflict.remote?.filename} — ${s.conflicts}`;
         els.reportErrors.appendChild(line);
+    }
+
+    els.reportFiles.replaceChildren();
+    const fileLines = [];
+    for (const item of report.uploaded || []) {
+        const version = item.version_number ? ` (v${item.version_number})` : "";
+        fileLines.push(`${s.uploadedFiles}: ${item.filename}${version}`);
+    }
+    for (const item of report.downloaded || []) {
+        fileLines.push(`${s.downloadedFiles}: ${item.filename}`);
+    }
+    if (fileLines.length === 0) {
+        hide(els.reportFiles);
+    } else {
+        show(els.reportFiles);
+        for (const text of fileLines) {
+            const line = document.createElement("div");
+            line.className = "report-file";
+            line.textContent = text;
+            els.reportFiles.appendChild(line);
+        }
     }
 
     const proposals = report.proposals?.deleteRemote || [];

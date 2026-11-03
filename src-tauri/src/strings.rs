@@ -215,6 +215,8 @@ fn english() -> Value {
         "uploadAgain": "Upload again",
         "remoteDeletedDone": "Done",
         "remoteDeletedError": "Some photos could not be resolved",
+        "uploadedFiles": "Uploaded",
+        "downloadedFiles": "Downloaded",
     })
 }
 
@@ -339,6 +341,8 @@ fn spanish() -> Value {
         "uploadAgain": "Subir de nuevo",
         "remoteDeletedDone": "Hecho",
         "remoteDeletedError": "Algunas fotos no se pudieron resolver",
+        "uploadedFiles": "Subidas",
+        "downloadedFiles": "Descargadas",
     })
 }
 
