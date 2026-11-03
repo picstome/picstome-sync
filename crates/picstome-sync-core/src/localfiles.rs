@@ -299,6 +299,7 @@ mod extra_tests {
             hash_algo: Some("sha256".into()),
             size: Some(std::fs::metadata(path).unwrap().len()),
             mtime: Some(mtime_ms),
+            local_present: true,
             version_count: Some(1),
             version_number: Some(1),
             remote_deleted: false,

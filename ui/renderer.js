@@ -45,7 +45,7 @@ const state = {
         open: false,
         galleryId: null,
         items: [],
-        tab: "app",
+        tab: "lightroom",
         query: "",
         busy: false,
         error: null,
@@ -165,7 +165,6 @@ const els = {
     favoritesResult: document.getElementById("favoritesResult"),
     btnFavoritesClose: document.getElementById("btnFavoritesClose"),
     btnFavoritesCopy: document.getElementById("btnFavoritesCopy"),
-    btnFavoritesRate: document.getElementById("btnFavoritesRate"),
     favoritesTabButtons: Array.from(
         document.querySelectorAll("#favoritesTabs .favorites-tab"),
     ),
@@ -350,9 +349,7 @@ function applyStrings() {
     els.favoritesFilter.placeholder = s.favoritesListSearch;
     els.btnFavoritesClose.textContent = s.infoClose;
     els.btnFavoritesCopy.textContent = s.favoritesListCopy;
-    els.btnFavoritesRate.textContent = s.favoritesRateButton;
     const favoritesTabs = {
-        app: s.favoritesTabApp,
         lightroom: s.favoritesTabLightroom,
         captureone: s.favoritesTabCaptureOne,
         finder: s.favoritesTabFinder,
@@ -1190,15 +1187,6 @@ function filteredFavoritePhotos() {
 function favoritesTabText(items, tab) {
     const names = items.map((photo) => photo.filename).filter(Boolean);
     const stems = names.map(stem);
-    if (tab === "app") {
-        const params = new URLSearchParams();
-        if (stems.length > 0) params.set("files", stems.join(","));
-        if (state.favorites.galleryId) {
-            params.set("gallery", state.favorites.galleryId);
-        }
-        params.set("rating", "1");
-        return `picstome://rate?${params.toString()}`;
-    }
     if (tab === "lightroom") return stems.join(", ");
     if (tab === "captureone") return stems.join(" ");
     if (tab === "finder") return stems.join(" OR ");
@@ -1206,7 +1194,6 @@ function favoritesTabText(items, tab) {
 }
 
 function favoritesHintKey(tab) {
-    if (tab === "app") return "favoritesAppHint";
     if (tab === "lightroom") return "favoritesLightroomHint";
     if (tab === "captureone") return "favoritesCaptureOneHint";
     if (tab === "finder") return "favoritesFinderHint";
@@ -1237,11 +1224,6 @@ function renderFavorites() {
     els.favoritesFilter.disabled = busy || total === 0;
     els.favoritesText.value = text;
     els.btnFavoritesCopy.disabled = busy || !text;
-    els.btnFavoritesRate.classList.toggle(
-        "hidden",
-        state.favorites.tab !== "app" || items.length === 0,
-    );
-    els.btnFavoritesRate.disabled = busy || items.length === 0;
 
     for (const button of els.favoritesTabButtons) {
         button.classList.toggle(
@@ -1280,7 +1262,7 @@ async function openFavoritesList() {
         open: true,
         galleryId: gallery.galleryId,
         items: [],
-        tab: "app",
+        tab: "lightroom",
         query: "",
         busy: true,
         error: null,
@@ -1664,13 +1646,6 @@ els.btnFavoritesCopy.addEventListener("click", async () => {
     setTimeout(() => {
         els.btnFavoritesCopy.textContent = original;
     }, 1600);
-});
-els.btnFavoritesRate.addEventListener("click", () => {
-    const favorites = filteredFavoritePhotos();
-    if (favorites.length === 0) return;
-    const galleryId = state.favorites.galleryId;
-    closeFavorites();
-    openFavoritesPrompt({ galleryId, favorites });
 });
 els.btnClearLog.addEventListener("click", clearLog);
 els.btnIdleSync.addEventListener("click", syncCurrent);

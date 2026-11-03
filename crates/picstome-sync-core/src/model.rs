@@ -3,9 +3,9 @@ use serde_json::Value;
 
 pub const DEFAULT_API_BASE: &str = "https://app.picstome.com";
 pub const CLIENT_NAME: &str = "picstome-sync";
-/// Bumped when the meaning of snapshot hashes changes. Old snapshots are
-/// rehashed once instead of trusting their legacy source hashes.
-pub const HASH_SEMANTICS: u32 = 2;
+/// Snapshot schema written by this engine. Older snapshots are discarded and
+/// rebuilt from the current remote/local state.
+pub const SNAPSHOT_SCHEMA: u32 = 3;
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 #[serde(rename_all = "camelCase", default)]
@@ -35,14 +35,14 @@ pub struct GalleryEntry {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Snapshot {
+    #[serde(default)]
+    pub schema: u32,
     pub gallery_id: String,
     pub name: String,
     pub local_path: String,
     pub last_sync_at: i64,
     #[serde(default)]
     pub remote_rev: Option<Value>,
-    #[serde(default)]
-    pub hash_semantics: u32,
     #[serde(default)]
     pub local_photo_count: u64,
     #[serde(default)]
@@ -68,6 +68,8 @@ pub struct SnapshotFile {
     pub size: Option<u64>,
     #[serde(default)]
     pub mtime: Option<i64>,
+    #[serde(default)]
+    pub local_present: bool,
     #[serde(default)]
     pub version_count: Option<u64>,
     #[serde(default)]

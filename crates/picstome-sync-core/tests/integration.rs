@@ -4,7 +4,7 @@ use picstome_sync_core::api::ApiClient;
 use picstome_sync_core::config::Store;
 use picstome_sync_core::localfiles::hash_file;
 use picstome_sync_core::mock::{start_mock_server, MockServerOptions};
-use picstome_sync_core::model::{GalleryEntry, Snapshot, SnapshotFile};
+use picstome_sync_core::model::{GalleryEntry, Snapshot, SnapshotFile, SNAPSHOT_SCHEMA};
 use picstome_sync_core::sync::{
     apply_remote_deletions, mark_favorites_rated, resolve_remote_deletions, run_gallery_sync,
     RemoteDeleteAction, SyncOptions,
@@ -220,12 +220,12 @@ async fn remote_only_snapshot_entries_are_downloaded_not_deleted_remotely() {
     let (mock, api, _dir, store, gallery) = setup_sync().await;
     let manifest = api.manifest("G123").await.unwrap();
     let snapshot = Snapshot {
+        schema: SNAPSHOT_SCHEMA,
         gallery_id: "G123".into(),
         name: "MiBoda".into(),
         local_path: gallery.local_path.clone(),
         last_sync_at: 1,
         remote_rev: manifest.rev.clone(),
-        hash_semantics: 0,
         local_photo_count: 0,
         local_bytes: 0,
         files: manifest
@@ -240,6 +240,7 @@ async fn remote_only_snapshot_entries_are_downloaded_not_deleted_remotely() {
                 hash_algo: photo.hash_algo.clone(),
                 size: photo.size,
                 mtime: None,
+                local_present: false,
                 version_count: photo.version_count,
                 version_number: photo.version_number,
                 remote_deleted: false,
@@ -261,30 +262,6 @@ async fn remote_only_snapshot_entries_are_downloaded_not_deleted_remotely() {
     let repaired = store.load_snapshot("G123").unwrap();
     assert_eq!(repaired.files.len(), 50);
     assert!(repaired.files.iter().all(|file| file.mtime.is_some()));
-    mock.close().await;
-}
-
-#[tokio::test]
-async fn legacy_source_hashes_are_repaired_without_false_conflicts() {
-    let (mock, api, _dir, store, gallery) = setup_sync().await;
-    run_gallery_sync(&api, &store, &gallery, SyncOptions::default(), silence())
-        .await
-        .unwrap();
-
-    let mut snapshot = store.load_snapshot("G123").unwrap();
-    snapshot.hash_semantics = 0;
-    for file in &mut snapshot.files {
-        file.hash = Some("legacy-source-hash".into());
-    }
-    store.save_snapshot(&snapshot).unwrap();
-
-    let report = run_gallery_sync(&api, &store, &gallery, SyncOptions::default(), silence())
-        .await
-        .unwrap();
-    assert_eq!(report.counts.conflicts, 0);
-    assert_eq!(report.counts.local_modified, 0);
-    assert_eq!(report.counts.remote_modified, 0);
-    assert_eq!(report.downloaded.len(), 0);
     mock.close().await;
 }
 

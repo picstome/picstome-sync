@@ -7,7 +7,7 @@ use futures::StreamExt;
 
 use crate::api::ApiClient;
 use crate::config::Store;
-use crate::diff::{compute_diff, repair_legacy_bases};
+use crate::diff::compute_diff;
 use crate::error::{CoreError, CoreResult};
 use crate::identity::{identity_key, preferred_file};
 use crate::localfiles::{
@@ -16,7 +16,7 @@ use crate::localfiles::{
 use crate::model::{
     DeleteProposal, DeleteProposals, DeleteResponse, Diff, DownloadedItem, FavoritePhoto,
     GalleryEntry, Manifest, Photo, Progress, Snapshot, SnapshotFile, SyncErrorItem, SyncReport,
-    UploadedItem, HASH_SEMANTICS,
+    UploadedItem, SNAPSHOT_SCHEMA,
 };
 use crate::sanitize::{is_inside, safe_join, sanitize_file_name};
 use crate::transfer::{download_file, DownloadOptions, ProgressFn};
@@ -87,6 +87,7 @@ fn snapshot_entry(
     base_hash: Option<String>,
     base_size: Option<u64>,
     mtime: Option<i64>,
+    local_present: bool,
     version_count: Option<u64>,
     version_number: Option<u64>,
     remote_deleted: bool,
@@ -102,6 +103,7 @@ fn snapshot_entry(
         hash_algo: Some("sha256".to_string()),
         size: base_size,
         mtime,
+        local_present,
         version_count,
         version_number,
         remote_deleted,
@@ -176,6 +178,7 @@ fn build_snapshot(
                 .or_else(|| local.hash.clone()),
             photo.size.or(Some(local.size)),
             Some(local.mtime_ms),
+            true,
             photo.version_count,
             photo.version_number.or(photo.version_count),
             false,
@@ -201,6 +204,7 @@ fn build_snapshot(
                     .or_else(|| photo.content_hash().map(str::to_string)),
                 Some(item.size),
                 item.mtime,
+                true,
                 photo.version_count,
                 photo.version_number.or(photo.version_count),
                 false,
@@ -232,6 +236,7 @@ fn build_snapshot(
                 file.hash.clone(),
                 Some(file.size),
                 Some(file.mtime_ms),
+                true,
                 item.version_count
                     .or_else(|| previous.and_then(|file| file.version_count)),
                 item.version_number
@@ -256,6 +261,7 @@ fn build_snapshot(
             let mut entry = previous.clone();
             entry.id = photo.id.clone();
             entry.filename = photo.filename.clone();
+            entry.local_present = false;
             entry.version_count = photo.version_count.or(previous.version_count);
             entry.version_number = photo
                 .version_number
@@ -286,6 +292,7 @@ fn build_snapshot(
         entry.filename = local.filename.clone();
         entry.relative_path = Some(local.relative_path.clone());
         entry.mtime = Some(local.mtime_ms);
+        entry.local_present = true;
         entry.remote_deleted = true;
         entry.keep_local = previous.keep_local;
         files.push(entry);
@@ -300,6 +307,7 @@ fn build_snapshot(
                 entry.filename = local.filename.clone();
                 entry.relative_path = Some(local.relative_path.clone());
                 entry.mtime = Some(local.mtime_ms);
+                entry.local_present = true;
             }
             files.push(entry);
         }
@@ -324,6 +332,7 @@ fn build_snapshot(
         entry.filename = local.filename.clone();
         entry.relative_path = Some(local.relative_path.clone());
         entry.mtime = Some(local.mtime_ms);
+        entry.local_present = true;
         entry.remote_deleted = true;
         entry.keep_local = previous.keep_local;
         files.push(entry);
@@ -359,9 +368,9 @@ fn build_snapshot(
             manifest.name.clone()
         },
         local_path: gallery.local_path.clone(),
+        schema: SNAPSHOT_SCHEMA,
         last_sync_at: now,
         remote_rev: manifest.rev.clone(),
-        hash_semantics: HASH_SEMANTICS,
         local_photo_count,
         local_bytes,
         files,
@@ -682,10 +691,6 @@ pub async fn run_gallery_sync(
     });
 
     let previous = store.load_snapshot(&gallery.gallery_id);
-    let previous_semantics = previous
-        .as_ref()
-        .map(|snapshot| snapshot.hash_semantics)
-        .unwrap_or(0);
     let previous_files = previous.map(|snapshot| snapshot.files).unwrap_or_default();
 
     progress(Progress {
@@ -695,23 +700,9 @@ pub async fn run_gallery_sync(
         total: 1,
         ..Default::default()
     });
-    let legacy_scan_cache: Vec<SnapshotFile>;
-    let scan_cache: &[SnapshotFile] = if previous_semantics >= HASH_SEMANTICS {
-        &previous_files
-    } else {
-        legacy_scan_cache = previous_files
-            .iter()
-            .map(|file| {
-                let mut file = file.clone();
-                file.hash = None;
-                file
-            })
-            .collect();
-        &legacy_scan_cache
-    };
     let (local_files, scan_errors) = scan_and_hash(
         Path::new(&gallery.local_path),
-        scan_cache,
+        &previous_files,
         options.hash_concurrency,
     )
     .await?;
@@ -723,7 +714,6 @@ pub async fn run_gallery_sync(
         ..Default::default()
     });
 
-    let previous_files = repair_legacy_bases(&previous_files, &manifest.photos, &local_files);
     let diff = compute_diff(&previous_files, &manifest.photos, &local_files);
 
     let scan_error_items: Vec<SyncErrorItem> = scan_errors
@@ -1098,6 +1088,7 @@ mod tests {
             hash_algo: Some("sha256".into()),
             size: Some(10),
             mtime,
+            local_present: mtime.is_some(),
             version_count: Some(1),
             version_number: Some(1),
             remote_deleted: false,

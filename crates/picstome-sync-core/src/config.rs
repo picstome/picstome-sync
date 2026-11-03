@@ -6,7 +6,7 @@ use serde::de::DeserializeOwned;
 use serde::Serialize;
 
 use crate::error::{CoreError, CoreResult};
-use crate::model::{Config, GalleryEntry, Snapshot};
+use crate::model::{Config, GalleryEntry, Snapshot, SNAPSHOT_SCHEMA};
 use crate::sanitize::sanitize_gallery_id;
 
 #[derive(Debug, Clone)]
@@ -187,7 +187,11 @@ impl Store {
 
     pub fn load_snapshot(&self, gallery_id: &str) -> Option<Snapshot> {
         let path = self.snapshot_path(gallery_id).ok()?;
-        read_json(&path)
+        let snapshot: Snapshot = read_json(&path)?;
+        if snapshot.schema != SNAPSHOT_SCHEMA {
+            return None;
+        }
+        Some(snapshot)
     }
 
     pub fn save_snapshot(&self, snapshot: &Snapshot) -> CoreResult<()> {
@@ -284,12 +288,12 @@ mod tests {
     fn snapshots_roundtrip() {
         let (_dir, store) = temp_store();
         let snapshot = Snapshot {
+            schema: SNAPSHOT_SCHEMA,
             gallery_id: "G123".into(),
             name: "MiBoda".into(),
             local_path: "/tmp/a".into(),
             last_sync_at: 1,
             remote_rev: None,
-            hash_semantics: 0,
             local_photo_count: 0,
             local_bytes: 0,
             files: vec![],
@@ -392,6 +396,25 @@ mod extra_tests {
     }
 
     #[test]
+    fn outdated_snapshot_schema_is_ignored() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::new(dir.path()).unwrap();
+        let snapshot = Snapshot {
+            schema: SNAPSHOT_SCHEMA - 1,
+            gallery_id: "G123".into(),
+            name: "MiBoda".into(),
+            local_path: "/tmp/a".into(),
+            last_sync_at: 1,
+            remote_rev: None,
+            local_photo_count: 0,
+            local_bytes: 0,
+            files: vec![],
+        };
+        store.save_snapshot(&snapshot).unwrap();
+        assert!(store.load_snapshot("G123").is_none());
+    }
+
+    #[test]
     fn snapshot_helpers_validate_ids_and_missing_files() {
         let dir = tempfile::tempdir().unwrap();
         let store = Store::new(dir.path()).unwrap();
@@ -399,12 +422,12 @@ mod extra_tests {
         assert!(store.delete_snapshot("../bad").is_err());
         assert!(!store.delete_snapshot("G1").unwrap());
         let bad = Snapshot {
+            schema: SNAPSHOT_SCHEMA,
             gallery_id: "../bad".into(),
             name: "x".into(),
             local_path: "/tmp".into(),
             last_sync_at: 0,
             remote_rev: None,
-            hash_semantics: 0,
             local_photo_count: 0,
             local_bytes: 0,
             files: vec![],

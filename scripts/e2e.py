@@ -811,6 +811,40 @@ def main():
         log("after favorites:", after_rating["counts"], "favorites:", len(after_rating["favorites"]))
         assert not after_rating["favorites"], after_rating["favorites"]
 
+        run_async(
+            session,
+            "const done = arguments[arguments.length - 1]; document.getElementById('btnFavoritesList').click(); done('clicked');",
+        )
+        deadline = time.time() + 20
+        favorites_export = None
+        while time.time() < deadline:
+            favorites_export = json.loads(
+                run_async(
+                    session,
+                    """
+                    const done = arguments[arguments.length - 1];
+                    done(JSON.stringify({
+                      visible: !document.getElementById('favoritesModal').classList.contains('hidden'),
+                      hasAppTab: !!document.querySelector('#favoritesTabs [data-tab="app"]'),
+                      active: document.querySelector('#favoritesTabs .favorites-tab.active')?.dataset.tab || '',
+                      text: document.getElementById('favoritesText').value
+                    }));
+                    """,
+                )
+            )
+            if favorites_export["visible"] and favorites_export["text"]:
+                break
+            time.sleep(0.2)
+        log("favorites export:", favorites_export)
+        assert favorites_export and favorites_export["visible"], favorites_export
+        assert not favorites_export["hasAppTab"], favorites_export
+        assert favorites_export["active"] == "lightroom", favorites_export
+        assert favorites_export["text"], favorites_export
+        run_async(
+            session,
+            "const done = arguments[arguments.length - 1]; document.getElementById('btnFavoritesClose').click(); done('closed');",
+        )
+
         cleared = js_invoke(session, "clear_sync_log", {"galleryId": gallery})
         assert cleared.get("ok"), cleared
         assert not os.path.exists(
