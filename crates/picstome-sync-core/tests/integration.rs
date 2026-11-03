@@ -189,6 +189,14 @@ async fn sync_downloads_then_is_a_noop() {
     assert_eq!(report.favorites.len(), 5);
     let snapshot = store.load_snapshot("G123").unwrap();
     assert_eq!(snapshot.files.len(), 50);
+    assert_eq!(snapshot.local_photo_count, 50);
+    let local_bytes: u64 = std::fs::read_dir(&gallery.local_path)
+        .unwrap()
+        .filter_map(Result::ok)
+        .filter_map(|entry| entry.metadata().ok())
+        .map(|metadata| metadata.len())
+        .sum();
+    assert_eq!(snapshot.local_bytes, local_bytes);
     assert_eq!(
         std::fs::read_dir(&gallery.local_path)
             .unwrap()
@@ -217,6 +225,8 @@ async fn remote_only_snapshot_entries_are_downloaded_not_deleted_remotely() {
         local_path: gallery.local_path.clone(),
         last_sync_at: 1,
         remote_rev: manifest.rev.clone(),
+        local_photo_count: 0,
+        local_bytes: 0,
         files: manifest
             .photos
             .iter()

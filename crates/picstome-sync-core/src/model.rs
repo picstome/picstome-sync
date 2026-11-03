@@ -39,6 +39,10 @@ pub struct Snapshot {
     #[serde(default)]
     pub remote_rev: Option<Value>,
     #[serde(default)]
+    pub local_photo_count: u64,
+    #[serde(default)]
+    pub local_bytes: u64,
+    #[serde(default)]
     pub files: Vec<SnapshotFile>,
 }
 
@@ -90,6 +94,8 @@ pub struct Photo {
     pub size: Option<u64>,
     #[serde(default)]
     pub hash: Option<String>,
+    #[serde(default)]
+    pub download_hash: Option<String>,
     #[serde(default)]
     pub hash_algo: Option<String>,
     #[serde(default)]
@@ -352,6 +358,8 @@ pub struct GalleryView {
     #[serde(flatten)]
     pub entry: GalleryEntry,
     pub exists: bool,
+    pub photo_count: u64,
+    pub local_bytes: u64,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -392,6 +400,12 @@ impl Manifest {
 }
 
 impl Photo {
+    /// Hash of the bytes served by the download URL. The manifest `hash`
+    /// field is the upload/source hash and may not match processed files.
+    pub fn content_hash(&self) -> Option<&str> {
+        self.download_hash.as_deref()
+    }
+
     pub fn identity(&self) -> Option<String> {
         self.identity_key
             .clone()
@@ -500,6 +514,7 @@ mod tests {
                     filename: "IMG_0001.JPG".into(),
                     size: None,
                     hash: None,
+                    download_hash: None,
                     hash_algo: None,
                     url: String::new(),
                     updated_at: None,
@@ -513,6 +528,7 @@ mod tests {
                     filename: "IMG_0002.JPG".into(),
                     size: None,
                     hash: None,
+                    download_hash: None,
                     hash_algo: None,
                     url: String::new(),
                     updated_at: None,

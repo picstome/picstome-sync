@@ -26,7 +26,7 @@ fn snapshot_had_local(base: &SnapshotFile) -> bool {
 
 fn remote_matches_base(photo: &Photo, base: &SnapshotFile) -> bool {
     content_equal(
-        photo.hash.as_deref(),
+        photo.content_hash(),
         photo.size,
         base.hash.as_deref(),
         base.size,
@@ -132,7 +132,7 @@ pub fn compute_diff(
 
                 if !version_changed
                     && content_equal(
-                        photo.hash.as_deref(),
+                        photo.content_hash(),
                         photo.size,
                         file.hash.as_deref(),
                         Some(file.size),
@@ -209,6 +209,7 @@ mod tests {
             filename: filename.into(),
             size: Some(100),
             hash: Some(hash.into()),
+            download_hash: Some(hash.into()),
             hash_algo: Some("sha256".into()),
             url: String::new(),
             updated_at: None,
@@ -314,6 +315,15 @@ mod tests {
     }
 
     #[test]
+    fn legacy_manifest_hash_is_not_used_for_download_validation() {
+        let mut photo = remote("p1", "a.jpg", "source-hash", 1);
+        photo.download_hash = None;
+        let diff = compute_diff(&[], &[photo], &[local("a.jpg", "served-hash")]);
+        assert_eq!(diff.counts.in_sync, 1);
+        assert_eq!(diff.counts.conflicts, 0);
+    }
+
+    #[test]
     fn version_bump_is_a_remote_change() {
         let diff = compute_diff(
             &[snapshot("p1", "a.jpg", "h1", 1)],
@@ -352,6 +362,7 @@ mod extra_tests {
             filename: filename.into(),
             size,
             hash: hash.map(str::to_string),
+            download_hash: hash.map(str::to_string),
             hash_algo: Some("sha256".into()),
             url: String::new(),
             updated_at: None,

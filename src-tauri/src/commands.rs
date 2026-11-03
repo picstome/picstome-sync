@@ -178,9 +178,32 @@ pub async fn build_state(state: &AppState) -> AppStateView {
         .store
         .load_index()
         .into_iter()
-        .map(|entry| GalleryView {
-            exists: folder_exists(&entry.local_path),
-            entry,
+        .map(|entry| {
+            let (photo_count, local_bytes) = state
+                .store
+                .load_snapshot(&entry.gallery_id)
+                .map(|snapshot| {
+                    if snapshot.local_photo_count == 0 && snapshot.local_bytes == 0 {
+                        let local: Vec<_> = snapshot
+                            .files
+                            .iter()
+                            .filter(|file| file.mtime.is_some())
+                            .collect();
+                        (
+                            local.len() as u64,
+                            local.iter().filter_map(|file| file.size).sum(),
+                        )
+                    } else {
+                        (snapshot.local_photo_count, snapshot.local_bytes)
+                    }
+                })
+                .unwrap_or((0, 0));
+            GalleryView {
+                exists: folder_exists(&entry.local_path),
+                entry,
+                photo_count,
+                local_bytes,
+            }
         })
         .collect();
 

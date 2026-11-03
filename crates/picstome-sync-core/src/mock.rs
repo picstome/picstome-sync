@@ -261,6 +261,7 @@ fn manifest_photo(photo: &PhotoRecord, base: &str, gallery_id: &str) -> Value {
         "filename": photo.filename,
         "size": photo.data.len(),
         "hash": photo.hash,
+        "download_hash": photo.hash,
         "hash_algo": "sha256",
         "url": format!("{base}/files/{gallery_id}/{}?expires={expires}&sig={sig}", photo.id),
         "updated_at": photo.updated_at,

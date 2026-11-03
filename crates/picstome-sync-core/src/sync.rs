@@ -10,7 +10,9 @@ use crate::config::Store;
 use crate::diff::compute_diff;
 use crate::error::{CoreError, CoreResult};
 use crate::identity::{identity_key, preferred_file};
-use crate::localfiles::{folder_exists as path_is_dir, scan_and_hash};
+use crate::localfiles::{
+    folder_exists as path_is_dir, scan_and_hash, scan_local_photos, MAX_PHOTO_BYTES,
+};
 use crate::model::{
     DeleteProposal, DeleteProposals, DeleteResponse, Diff, DownloadedItem, FavoritePhoto,
     GalleryEntry, Manifest, Photo, Progress, Snapshot, SnapshotFile, SyncErrorItem, SyncReport,
@@ -168,7 +170,10 @@ fn build_snapshot(
             photo.id.clone(),
             local.filename.clone(),
             Some(local.relative_path.clone()),
-            photo.hash.clone().or_else(|| local.hash.clone()),
+            photo
+                .content_hash()
+                .map(str::to_string)
+                .or_else(|| local.hash.clone()),
             photo.size.or(Some(local.size)),
             Some(local.mtime_ms),
             photo.version_count,
@@ -191,7 +196,9 @@ fn build_snapshot(
                 photo.id.clone(),
                 item.filename.clone(),
                 Some(item.filename.clone()),
-                item.hash.clone().or_else(|| photo.hash.clone()),
+                item.hash
+                    .clone()
+                    .or_else(|| photo.content_hash().map(str::to_string)),
                 Some(item.size),
                 item.mtime,
                 photo.version_count,
@@ -328,6 +335,22 @@ fn build_snapshot(
             .then_with(|| a.relative_path.cmp(&b.relative_path))
     });
 
+    let mut local_photo_count = local_files.len() as u64;
+    let mut local_bytes: u64 = local_files.iter().map(|file| file.size).sum();
+    let mut local_sizes: HashMap<String, u64> = local_files
+        .iter()
+        .map(|file| (file.filename.to_lowercase(), file.size))
+        .collect();
+    for item in downloaded {
+        match local_sizes.remove(&item.filename.to_lowercase()) {
+            Some(previous_size) => {
+                local_bytes = local_bytes.saturating_sub(previous_size);
+            }
+            None => local_photo_count += 1,
+        }
+        local_bytes = local_bytes.saturating_add(item.size);
+    }
+
     Snapshot {
         gallery_id: gallery.gallery_id.clone(),
         name: if manifest.name.is_empty() {
@@ -338,6 +361,8 @@ fn build_snapshot(
         local_path: gallery.local_path.clone(),
         last_sync_at: now,
         remote_rev: manifest.rev.clone(),
+        local_photo_count,
+        local_bytes,
         files,
     }
 }
@@ -611,6 +636,10 @@ pub async fn resolve_remote_deletions(
         snapshot
             .files
             .retain(|file| !resolved_set.contains(&file.id));
+        let (local, _) =
+            scan_local_photos(Path::new(&gallery.local_path), 8, true, MAX_PHOTO_BYTES);
+        snapshot.local_photo_count = local.len() as u64;
+        snapshot.local_bytes = local.iter().map(|file| file.size).sum();
     }
 
     snapshot.last_sync_at = now;
@@ -770,7 +799,7 @@ pub async fn run_gallery_sync(
                         &photo.url,
                         &dest,
                         DownloadOptions {
-                            expected_hash: photo.hash.clone(),
+                            expected_hash: photo.content_hash().map(str::to_string),
                             chunk_bytes,
                             parallel,
                             ..Default::default()
@@ -1016,6 +1045,7 @@ mod tests {
             filename: "a.jpg".into(),
             size: Some(10),
             hash: Some("h1".into()),
+            download_hash: Some("h1".into()),
             hash_algo: Some("sha256".into()),
             url: String::new(),
             updated_at: None,
@@ -1130,6 +1160,8 @@ mod tests {
         assert_eq!(snapshot.files.len(), 1);
         assert_eq!(snapshot.files[0].mtime, Some(123));
         assert_eq!(snapshot.files[0].relative_path.as_deref(), Some("a.jpg"));
+        assert_eq!(snapshot.local_photo_count, 1);
+        assert_eq!(snapshot.local_bytes, 10);
     }
 
     fn manifest_with(photo: Photo) -> Manifest {
@@ -1145,6 +1177,7 @@ mod tests {
     fn failed_remote_download_keeps_the_previous_base() {
         let mut photo = remote();
         photo.hash = Some("h2".into());
+        photo.download_hash = Some("h2".into());
         photo.version_count = Some(2);
         photo.version_number = Some(2);
         let mut diff = diff_with();
@@ -1187,6 +1220,7 @@ mod tests {
     fn successful_transfer_records_the_new_remote_state() {
         let mut photo = remote();
         photo.hash = Some("h2".into());
+        photo.download_hash = Some("h2".into());
         photo.version_count = Some(2);
         photo.version_number = Some(2);
         let mut diff = diff_with();
@@ -1230,6 +1264,7 @@ mod tests {
     fn conflict_without_a_common_base_is_not_saved_to_the_snapshot() {
         let mut photo = remote();
         photo.hash = Some("h2".into());
+        photo.download_hash = Some("h2".into());
         photo.version_count = Some(2);
         photo.version_number = Some(2);
         let mut file = local();
@@ -1253,6 +1288,7 @@ mod tests {
     fn conflict_keeps_the_previous_base() {
         let mut photo = remote();
         photo.hash = Some("h2".into());
+        photo.download_hash = Some("h2".into());
         photo.version_count = Some(2);
         photo.version_number = Some(2);
         let mut file = local();

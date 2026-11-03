@@ -229,7 +229,7 @@ body {
     white-space: nowrap;
 }
 
-.gallery-meta {
+.gallery-stats {
     font-size: 11px;
     color: var(--muted);
     overflow: hidden;
@@ -237,6 +237,15 @@ body {
     white-space: nowrap;
 }
 
+.gallery-meta {
+    font-size: 10.5px;
+    color: var(--muted);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.gallery-row.selected .gallery-stats,
 .gallery-row.selected .gallery-meta {
     color: rgba(255, 255, 255, 0.75);
 }

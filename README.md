@@ -77,6 +77,12 @@ against the backend contract in
   current keyboard layout is Spanish.
 - **Fast gallery search**: filter the sidebar by name or path, with `Ctrl+F` /
   `Cmd+F` focusing the search field and `Enter` selecting the first match.
+- **Gallery size at a glance**: every gallery row and the detail header show
+  the number of photo files and the disk space they occupy. The values are
+  refreshed after each sync.
+- **Download integrity**: validation uses the manifest `download_hash`, which
+  describes the bytes served by the download URL. The legacy `hash` field is
+  treated as a source/upload hash and is never used to reject processed files.
 - **Sync evidence**: the report lists every uploaded/downloaded filename, and
   each gallery has its own log at `logs/<gallery-id>.log` in the app data
   directory. Star ratings are logged too (`kind: "rating"`, stars, source
@@ -131,7 +137,7 @@ PICSTOME_API_BASE=http://127.0.0.1:8787 PICSTOME_MOCK=1 cargo run -p picstome-sy
 
 1. Open **GitHub → Releases** and download the latest **draft** asset (maintainers
    see drafts on the releases page), e.g. `Picstome.Sync_<version>_universal.dmg`.
-   With the CLI: `gh release download v0.1.19 --pattern '*.dmg'`.
+   With the CLI: `gh release download v0.1.20 --pattern '*.dmg'`.
    New test builds are produced locally with `scripts/release-local.sh`.
 2. Install it, open **Info** in the header and check **Version**, **Build**,
    **Mode** and **API target**.

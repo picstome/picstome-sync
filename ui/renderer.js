@@ -82,6 +82,7 @@ const els = {
 
     detailName: document.getElementById("detailName"),
     detailPath: document.getElementById("detailPath"),
+    detailStats: document.getElementById("detailStats"),
     detailLastSync: document.getElementById("detailLastSync"),
     btnSync: document.getElementById("btnSync"),
     btnFavoritesList: document.getElementById("btnFavoritesList"),
@@ -241,6 +242,26 @@ async function copyText(text) {
     } catch {
         return false;
     }
+}
+
+function formatBytes(bytes) {
+    const value = Number(bytes) || 0;
+    if (value < 1024) return `${value} B`;
+    const units = ["KB", "MB", "GB", "TB", "PB"];
+    let amount = value;
+    let index = -1;
+    do {
+        amount /= 1024;
+        index += 1;
+    } while (amount >= 1024 && index < units.length - 1);
+    return `${amount.toFixed(amount >= 10 ? 0 : 1)} ${units[index]}`;
+}
+
+function galleryStatsText(gallery) {
+    return fmt(state.strings?.galleryStats || "{n} · {size}", {
+        n: Number(gallery.photoCount) || 0,
+        size: formatBytes(gallery.localBytes),
+    });
 }
 
 function formatDateShort(value) {
@@ -451,6 +472,9 @@ function renderGalleryList() {
         const name = document.createElement("span");
         name.className = "gallery-name";
         name.textContent = gallery.name;
+        const stats = document.createElement("span");
+        stats.className = "gallery-stats";
+        stats.textContent = galleryStatsText(gallery);
         const meta = document.createElement("span");
         meta.className = "gallery-meta";
         if (gallery.exists) {
@@ -460,6 +484,7 @@ function renderGalleryList() {
             meta.classList.add("warn");
         }
         info.appendChild(name);
+        info.appendChild(stats);
         info.appendChild(meta);
         row.appendChild(info);
         els.galleryList.appendChild(row);
@@ -479,6 +504,7 @@ function renderMain() {
         show(els.welcome);
         els.detailName.textContent = s.appTitle;
         els.detailPath.textContent = s.syncHint;
+        els.detailStats.textContent = "";
         els.detailLastSync.textContent = "";
         els.welcomeTitle.textContent =
             state.galleries.length === 0 ? s.noGalleryTitle : s.noGalleryTitle;
@@ -500,6 +526,7 @@ function renderMain() {
     els.detailName.textContent = gallery.name;
     els.detailPath.textContent = gallery.exists ? gallery.localPath : s.folderMissing;
     els.detailPath.classList.toggle("warn", !gallery.exists);
+    els.detailStats.textContent = galleryStatsText(gallery);
     els.detailLastSync.textContent = fmt(s.lastSyncAt, {
         date: formatDate(gallery.lastSyncAt),
     });

@@ -289,6 +289,8 @@ mod tests {
             local_path: "/tmp/a".into(),
             last_sync_at: 1,
             remote_rev: None,
+            local_photo_count: 0,
+            local_bytes: 0,
             files: vec![],
         };
         store.save_snapshot(&snapshot).unwrap();
@@ -401,6 +403,8 @@ mod extra_tests {
             local_path: "/tmp".into(),
             last_sync_at: 0,
             remote_rev: None,
+            local_photo_count: 0,
+            local_bytes: 0,
             files: vec![],
         };
         assert!(store.save_snapshot(&bad).is_err());

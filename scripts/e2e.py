@@ -345,6 +345,24 @@ def main():
         log("second:", second["counts"], "skipped:", second["skipped"])
         assert second["skipped"] and not second["downloaded"], second["counts"]
 
+        stats_text = run_async(
+            session,
+            """
+            const done = arguments[arguments.length - 1];
+            const row = Array.from(document.querySelectorAll('.gallery-row'))
+              .find((item) => item.dataset.galleryId === 'G123');
+            done(JSON.stringify({
+              row: row ? row.textContent : '',
+              detail: document.getElementById('detailStats').textContent
+            }));
+            """,
+        )
+        stats_text = json.loads(stats_text)
+        log("gallery stats:", stats_text)
+        assert "50 photos" in stats_text["row"], stats_text
+        assert "on disk" in stats_text["detail"], stats_text
+        assert "KB" in stats_text["row"] or "MB" in stats_text["row"], stats_text
+
         if WRITE:
             source = next(name for name in files if name.endswith(".jpg"))
             upload_name = "e2e-upload.jpg"
@@ -357,6 +375,24 @@ def main():
             log("upload:", third["counts"], "errors:", third["errors"])
             assert not third["errors"], third["errors"]
             assert len(third["uploaded"]) == 1, third["counts"]
+            deadline = time.time() + 15
+            stats_after_upload = ""
+            while time.time() < deadline:
+                stats_after_upload = json.loads(
+                    run_async(
+                        session,
+                        """
+                        const done = arguments[arguments.length - 1];
+                        const row = Array.from(document.querySelectorAll('.gallery-row'))
+                          .find((item) => item.dataset.galleryId === 'G123');
+                        done(JSON.stringify(row ? row.textContent : ''));
+                        """,
+                    )
+                )
+                if "51 photos" in stats_after_upload:
+                    break
+                time.sleep(0.2)
+            assert "51 photos" in stats_after_upload, stats_after_upload
             sync_log_path = os.path.join(user_data, "logs", f"{gallery}.log")
             assert os.path.exists(sync_log_path), "per-gallery log was not written"
             with open(sync_log_path, encoding="utf-8") as handle:
