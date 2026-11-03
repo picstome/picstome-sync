@@ -362,6 +362,29 @@ def main():
             with open(sync_log_path, encoding="utf-8") as handle:
                 sync_log = handle.read()
             assert upload_name in sync_log, sync_log[-500:]
+            log_entries = js_invoke(
+                session, "get_sync_log", {"galleryId": gallery}
+            )
+            assert any(
+                item.get("filename") == upload_name
+                for entry in log_entries
+                for item in entry.get("uploaded", [])
+            ), log_entries
+            log_dom = json.loads(
+                run_async(
+                    session,
+                    """
+                    const done = arguments[arguments.length - 1];
+                    const card = document.getElementById('syncLog');
+                    done(JSON.stringify({
+                      exists: !!card,
+                      count: document.getElementById('syncLogCount').textContent
+                    }));
+                    """,
+                )
+            )
+            assert log_dom["exists"], log_dom
+            assert int(log_dom["count"] or 0) > 0, log_dom
 
             os.remove(os.path.join(photos, upload_name))
             proposal = js_invoke(session, "sync_gallery", {"galleryId": gallery})

@@ -250,6 +250,8 @@ fn append_sync_log(store: &Store, report: &SyncReport) {
         "uploaded": report.uploaded.iter().map(|item| json!({
             "filename": item.filename,
             "versionNumber": item.version_number,
+            "reason": item.reason,
+            "size": item.size,
         })).collect::<Vec<_>>(),
         "downloaded": report.downloaded.iter().map(|item| item.filename.clone()).collect::<Vec<_>>(),
         "errors": report.errors.iter().map(|item| item.message.clone()).collect::<Vec<_>>(),
@@ -714,6 +716,30 @@ pub async fn set_api_base(
         json!({"connected": false, "reason": "api_changed"}),
     );
     Ok(view)
+}
+
+#[tauri::command]
+pub async fn get_sync_log(
+    state: State<'_, AppState>,
+    gallery_id: String,
+) -> Result<Vec<serde_json::Value>, ErrorPayload> {
+    let Some(id) = sanitize_gallery_id(&gallery_id) else {
+        return Err(invalid_gallery());
+    };
+    let path = state.store.root().join("sync.log");
+    let Ok(text) = tokio::fs::read_to_string(path).await else {
+        return Ok(Vec::new());
+    };
+    let mut entries: Vec<serde_json::Value> = text
+        .lines()
+        .filter_map(|line| serde_json::from_str::<serde_json::Value>(line).ok())
+        .filter(|entry| {
+            entry.get("galleryId").and_then(serde_json::Value::as_str) == Some(id.as_str())
+        })
+        .collect();
+    entries.reverse();
+    entries.truncate(50);
+    Ok(entries)
 }
 
 #[tauri::command]

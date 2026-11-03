@@ -217,6 +217,10 @@ fn english() -> Value {
         "remoteDeletedError": "Some photos could not be resolved",
         "uploadedFiles": "Uploaded",
         "downloadedFiles": "Downloaded",
+        "activityLog": "Activity log",
+        "noActivity": "No sync activity yet",
+        "localNewReason": "new local file",
+        "localModifiedReason": "modified locally",
     })
 }
 
@@ -343,6 +347,10 @@ fn spanish() -> Value {
         "remoteDeletedError": "Algunas fotos no se pudieron resolver",
         "uploadedFiles": "Subidas",
         "downloadedFiles": "Descargadas",
+        "activityLog": "Registro de actividad",
+        "noActivity": "Todavía no hay actividad de sync",
+        "localNewReason": "archivo nuevo en local",
+        "localModifiedReason": "modificado en local",
     })
 }
 

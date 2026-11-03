@@ -526,17 +526,21 @@ pub async fn run_gallery_sync(
         }
     }
 
-    let to_upload: Vec<crate::model::LocalFile> = diff
+    let to_upload: Vec<(crate::model::LocalFile, String)> = diff
         .local_new
         .iter()
-        .chain(diff.local_modified.iter())
-        .cloned()
+        .map(|file| (file.clone(), "new".to_string()))
+        .chain(
+            diff.local_modified
+                .iter()
+                .map(|file| (file.clone(), "modified".to_string())),
+        )
         .collect();
     let total_uploads = to_upload.len() as u64;
     let uploaded_count = Arc::new(AtomicU64::new(0));
 
     let upload_results: Vec<Result<UploadedItem, SyncErrorItem>> = futures::stream::iter(to_upload)
-        .map(|entry| {
+        .map(|(entry, reason)| {
             let api = api.clone();
             let gallery_id = gallery.gallery_id.clone();
             let progress = progress.clone();
@@ -559,6 +563,8 @@ pub async fn run_gallery_sync(
                         Ok(UploadedItem {
                             id: response.id,
                             filename: entry.filename,
+                            reason: Some(reason),
+                            size: Some(entry.size),
                             version_count: response.version_count,
                             version_number: response.version_number,
                         })

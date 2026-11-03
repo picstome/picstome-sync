@@ -248,6 +248,10 @@ pub struct DownloadedItem {
 pub struct UploadedItem {
     pub id: Option<String>,
     pub filename: String,
+    #[serde(default)]
+    pub reason: Option<String>,
+    #[serde(default)]
+    pub size: Option<u64>,
     pub version_count: Option<u64>,
     pub version_number: Option<u64>,
 }

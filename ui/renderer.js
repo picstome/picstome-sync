@@ -32,6 +32,7 @@ const state = {
         result: null,
     },
     pendingDeletes: new Set(),
+    syncLog: [],
     remoteDeleted: {
         open: false,
         galleryId: null,
@@ -93,6 +94,10 @@ const els = {
     reportCounts: document.getElementById("reportCounts"),
     reportErrors: document.getElementById("reportErrors"),
     reportFiles: document.getElementById("reportFiles"),
+    syncLog: document.getElementById("syncLog"),
+    syncLogTitle: document.getElementById("syncLogTitle"),
+    syncLogCount: document.getElementById("syncLogCount"),
+    syncLogEntries: document.getElementById("syncLogEntries"),
     deleteBox: document.getElementById("deleteBox"),
     deleteTitle: document.getElementById("deleteTitle"),
     deleteHint: document.getElementById("deleteHint"),
@@ -258,6 +263,7 @@ function applyStrings() {
     els.btnRatingClose.textContent = s.infoClose;
     els.btnRatingFolder.textContent = s.chooseFolder;
     els.remoteDeletedTitle.textContent = s.remoteDeletedTitle;
+    els.syncLogTitle.textContent = s.activityLog;
     els.btnRemoteClose.textContent = s.infoClose;
     els.btnRemoteDeleteLocal.textContent = s.deleteLocal;
     els.btnRemoteKeepLocal.textContent = s.keepLocal;
@@ -535,7 +541,11 @@ function renderReport() {
     const fileLines = [];
     for (const item of report.uploaded || []) {
         const version = item.version_number ? ` (v${item.version_number})` : "";
-        fileLines.push(`${s.uploadedFiles}: ${item.filename}${version}`);
+        const reason =
+            item.reason === "modified" ? s.localModifiedReason : s.localNewReason;
+        fileLines.push(
+            `${s.uploadedFiles}: ${item.filename}${version} — ${reason}`,
+        );
     }
     for (const item of report.downloaded || []) {
         fileLines.push(`${s.downloadedFiles}: ${item.filename}`);
@@ -653,6 +663,83 @@ function renderRating() {
     }
 }
 
+function renderLog() {
+    const s = state.strings;
+    if (!s) return;
+    if (!state.currentGalleryId) {
+        hide(els.syncLog);
+        return;
+    }
+    show(els.syncLog);
+    els.syncLogCount.textContent = String(state.syncLog.length);
+    els.syncLogEntries.replaceChildren();
+
+    if (state.syncLog.length === 0) {
+        const empty = document.createElement("div");
+        empty.className = "log-empty";
+        empty.textContent = s.noActivity;
+        els.syncLogEntries.appendChild(empty);
+        return;
+    }
+
+    for (const entry of state.syncLog) {
+        const card = document.createElement("div");
+        card.className = "log-entry";
+
+        const head = document.createElement("div");
+        head.className = "log-entry-head";
+        const counts = entry.counts || {};
+        const parts = [
+            `${s.downloadedFiles}: ${counts.remoteNew + counts.remoteModified || 0}`,
+            `${s.uploadedFiles}: ${counts.localNew + counts.localModified || 0}`,
+            `${s.errors}: ${(entry.errors || []).length}`,
+        ];
+        head.textContent = `${formatDate(entry.at)} · ${parts.join(" · ")}`;
+        card.appendChild(head);
+
+        const body = document.createElement("div");
+        body.className = "log-entry-body";
+        for (const item of entry.uploaded || []) {
+            const line = document.createElement("div");
+            const reason =
+                item.reason === "modified"
+                    ? s.localModifiedReason
+                    : s.localNewReason;
+            const version = item.versionNumber ? ` (v${item.versionNumber})` : "";
+            line.textContent = `${s.uploadedFiles}: ${item.filename}${version} — ${reason}`;
+            body.appendChild(line);
+        }
+        for (const filename of entry.downloaded || []) {
+            const line = document.createElement("div");
+            line.textContent = `${s.downloadedFiles}: ${filename}`;
+            body.appendChild(line);
+        }
+        for (const error of entry.errors || []) {
+            const line = document.createElement("div");
+            line.className = "log-error";
+            line.textContent = `${s.errors}: ${error}`;
+            body.appendChild(line);
+        }
+        card.appendChild(body);
+        els.syncLogEntries.appendChild(card);
+    }
+}
+
+async function refreshLog() {
+    const galleryId = state.currentGalleryId;
+    if (!galleryId) {
+        state.syncLog = [];
+        renderLog();
+        return;
+    }
+    try {
+        state.syncLog = await invoke("get_sync_log", { galleryId });
+    } catch {
+        state.syncLog = [];
+    }
+    renderLog();
+}
+
 function renderRemoteDeleted() {
     const s = state.strings;
     if (!s) return;
@@ -727,6 +814,7 @@ function renderAll() {
     renderReport();
     renderRating();
     renderRemoteDeleted();
+    renderLog();
 }
 
 function setState(next) {
@@ -758,6 +846,12 @@ function setState(next) {
         state.rating.open = false;
     }
     renderAll();
+    if (state.currentGalleryId) {
+        refreshLog();
+    } else {
+        state.syncLog = [];
+        renderLog();
+    }
 }
 
 async function refreshState() {
@@ -1036,6 +1130,7 @@ els.galleryList.addEventListener("click", (event) => {
     state.currentGalleryId = row.dataset.galleryId;
     state.report = null;
     renderAll();
+    refreshLog();
 });
 
 els.galleryList.addEventListener("dblclick", (event) => {
