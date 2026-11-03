@@ -103,49 +103,42 @@
                 <header class="main-header">
                     <div class="main-title">
                         <h1 id="detailName">Picstome Sync</h1>
-                        <button
-                            type="button"
-                            class="path-link"
-                            id="detailPath"
-                            title="Open folder"
-                        >
-                            <span class="path-icon" aria-hidden="true">📁</span>
-                            <span class="path-text" id="detailPathText"></span>
-                        </button>
+                        <div class="path-row" id="pathRow">
+                            <button
+                                type="button"
+                                class="path-link"
+                                id="detailPath"
+                                title="Open folder"
+                            >
+                                <span class="path-icon" aria-hidden="true">📁</span>
+                                <span class="path-text" id="detailPathText"></span>
+                            </button>
+                            <button
+                                type="button"
+                                class="path-edit"
+                                id="btnChangeFolder"
+                                title="Change folder…"
+                                aria-label="Change folder…"
+                            >
+                                ✏️
+                            </button>
+                        </div>
                         <div class="main-meta">
                             <span class="meta-pill" id="detailStats"></span>
                             <span class="meta-pill" id="detailLastSync"></span>
                         </div>
                     </div>
                     <div class="main-actions">
-                        <div class="main-actions-top">
-                            <button
-                                type="button"
-                                class="favorites-action"
-                                id="btnFavoritesList"
-                            >
-                                ♥ Favorites
-                            </button>
-                            <button type="button" class="primary sync-action" id="btnSync">
-                                🔄 Sync
-                            </button>
-                        </div>
-                        <div class="main-actions-bottom">
-                            <button
-                                type="button"
-                                class="secondary"
-                                id="btnChangeFolder"
-                            >
-                                Change folder…
-                            </button>
-                            <button
-                                type="button"
-                                class="danger"
-                                id="btnUnlink"
-                            >
-                                Unlink
-                            </button>
-                        </div>
+                        <button
+                            type="button"
+                            class="favorites-action"
+                            id="btnFavoritesList"
+                        >
+                            ♥ Favorites
+                        </button>
+                        <button type="button" class="primary sync-action" id="btnSync">
+                            🔄 Sync
+                        </button>
                     </div>
                 </header>
 
@@ -239,6 +232,12 @@
                         <div class="log-entries" id="syncLogEntries"></div>
                     </details>
                 </section>
+
+                <footer class="main-footer" id="mainFooter">
+                    <button type="button" class="unlink-button" id="btnUnlink">
+                        Unlink
+                    </button>
+                </footer>
             </main>
         </div>
 

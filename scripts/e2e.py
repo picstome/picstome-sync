@@ -299,8 +299,9 @@ def main():
                   pathTag: document.getElementById('detailPath').tagName,
                   sync: document.getElementById('btnSync').textContent,
                   favorites: document.getElementById('btnFavoritesList').textContent,
-                  unlinkClass: document.getElementById('btnUnlink').className,
-                  change: document.getElementById('btnChangeFolder').textContent
+                  unlinkParent: document.getElementById('btnUnlink').closest('.main-footer')?.id || '',
+                  changeTitle: document.getElementById('btnChangeFolder').title,
+                  footerVisible: !document.getElementById('mainFooter').classList.contains('hidden')
                 }));
                 """,
             )
@@ -310,8 +311,9 @@ def main():
         assert layout["path"].startswith("/"), layout
         assert "🔄" in layout["sync"], layout
         assert "♥" in layout["favorites"], layout
-        assert "danger" in layout["unlinkClass"], layout
-        assert "Change folder" in layout["change"] or "Cambiar carpeta" in layout["change"], layout
+        assert layout["unlinkParent"] == "mainFooter", layout
+        assert layout["footerVisible"], layout
+        assert "Change folder" in layout["changeTitle"] or "Cambiar carpeta" in layout["changeTitle"], layout
         assert state["config"]["appVersion"] in dom["infoText"], "info modal must show the version"
         kind = state["config"]["apiKind"]
         expected_badge = {

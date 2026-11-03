@@ -83,6 +83,8 @@ const els = {
     detailName: document.getElementById("detailName"),
     detailPath: document.getElementById("detailPath"),
     detailPathText: document.getElementById("detailPathText"),
+    pathRow: document.getElementById("pathRow"),
+    mainFooter: document.getElementById("mainFooter"),
     detailStats: document.getElementById("detailStats"),
     detailLastSync: document.getElementById("detailLastSync"),
     btnSync: document.getElementById("btnSync"),
@@ -337,7 +339,8 @@ function applyStrings() {
     els.btnIdleSync.textContent = s.sync;
     els.idleTitle.textContent = s.readyToSync;
     els.idleHint.textContent = s.syncHint;
-    els.btnChangeFolder.textContent = s.changeFolder;
+    els.btnChangeFolder.title = s.changeFolder;
+    els.btnChangeFolder.setAttribute("aria-label", s.changeFolder);
     els.btnUnlink.textContent = s.unlink;
     els.detailPath.title = s.openFolder;
     els.btnDeleteRemote.textContent = s.confirmDelete;
@@ -520,6 +523,8 @@ function renderMain() {
         els.detailPath.disabled = true;
         els.detailPath.classList.add("hidden");
         els.detailPath.classList.remove("warn");
+        els.pathRow.classList.add("hidden");
+        els.mainFooter.classList.add("hidden");
         els.detailStats.textContent = "";
         els.detailLastSync.textContent = "";
         els.welcomeTitle.textContent =
@@ -539,6 +544,8 @@ function renderMain() {
         !state.progress;
     els.idleState.classList.toggle("hidden", !showIdle);
     els.detailName.textContent = gallery.name;
+    els.pathRow.classList.remove("hidden");
+    els.mainFooter.classList.remove("hidden");
     els.detailPath.classList.remove("hidden");
     els.detailPathText.textContent = gallery.exists ? gallery.localPath : s.folderMissing;
     els.detailPath.classList.toggle("warn", !gallery.exists);
