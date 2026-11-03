@@ -284,10 +284,34 @@ def main():
         assert dom["account"].strip(), "renderer did not show the account chip"
         assert dom["emptyHidden"], "empty state should be hidden with a linked gallery"
         assert dom["tabs"] == 0, "the desktop UI must not have web-style tabs"
-        assert dom["syncLabel"].lower() == "sync", dom["syncLabel"]
+        assert "sync" in dom["syncLabel"].lower(), dom["syncLabel"]
         assert dom["title"] == "Picstome Sync", dom["title"]
         assert dom["infoVisible"], "info modal did not open"
         assert state["config"]["apiBase"] in dom["infoText"], "info modal must show the API URL"
+
+        layout = json.loads(
+            run_async(
+                session,
+                """
+                const done = arguments[arguments.length - 1];
+                done(JSON.stringify({
+                  path: document.getElementById('detailPathText').textContent,
+                  pathTag: document.getElementById('detailPath').tagName,
+                  sync: document.getElementById('btnSync').textContent,
+                  favorites: document.getElementById('btnFavoritesList').textContent,
+                  unlinkClass: document.getElementById('btnUnlink').className,
+                  change: document.getElementById('btnChangeFolder').textContent
+                }));
+                """,
+            )
+        )
+        log("layout:", layout)
+        assert layout["pathTag"] == "BUTTON", layout
+        assert layout["path"].startswith("/"), layout
+        assert "🔄" in layout["sync"], layout
+        assert "♥" in layout["favorites"], layout
+        assert "danger" in layout["unlinkClass"], layout
+        assert "Change folder" in layout["change"] or "Cambiar carpeta" in layout["change"], layout
         assert state["config"]["appVersion"] in dom["infoText"], "info modal must show the version"
         kind = state["config"]["apiKind"]
         expected_badge = {
@@ -845,6 +869,42 @@ def main():
             os.path.join(user_data, "logs", f"{gallery}.log")
         ), "per-gallery log was not removed"
         assert not js_invoke(session, "get_sync_log", {"galleryId": gallery})
+
+        # Unlink must ask before removing the app state.
+        run_async(
+            session,
+            """
+            const done = arguments[arguments.length - 1];
+            const row = Array.from(document.querySelectorAll('.gallery-row'))
+              .find((item) => item.dataset.galleryId === 'G456');
+            row.click();
+            document.getElementById('btnUnlink').click();
+            done('clicked');
+            """,
+        )
+        unlink_confirm = json.loads(
+            run_async(
+                session,
+                """
+                const done = arguments[arguments.length - 1];
+                done(JSON.stringify({
+                  visible: !document.getElementById('confirmModal').classList.contains('hidden'),
+                  title: document.getElementById('confirmTitle').textContent
+                }));
+                """,
+            )
+        )
+        log("unlink confirmation:", unlink_confirm)
+        assert unlink_confirm["visible"], unlink_confirm
+        assert "unlink" in unlink_confirm["title"].lower(), unlink_confirm
+        run_async(
+            session,
+            "const done = arguments[arguments.length - 1]; document.getElementById('btnConfirmCancel').click(); done('cancelled');",
+        )
+        assert any(
+            item["galleryId"] == "G456"
+            for item in js_invoke(session, "get_state", {})["galleries"]
+        ), "cancelling unlink must keep the gallery"
 
         # A gallery deleted on the web must not delete local files. The app asks
         # whether to remove it locally; Cancel keeps it, Accept unlinks it.

@@ -82,12 +82,12 @@ const els = {
 
     detailName: document.getElementById("detailName"),
     detailPath: document.getElementById("detailPath"),
+    detailPathText: document.getElementById("detailPathText"),
     detailStats: document.getElementById("detailStats"),
     detailLastSync: document.getElementById("detailLastSync"),
     btnSync: document.getElementById("btnSync"),
     btnFavoritesList: document.getElementById("btnFavoritesList"),
     btnChangeFolder: document.getElementById("btnChangeFolder"),
-    btnOpenFolder: document.getElementById("btnOpenFolder"),
     btnUnlink: document.getElementById("btnUnlink"),
 
     idleState: document.getElementById("idleState"),
@@ -243,6 +243,10 @@ async function copyText(text) {
     }
 }
 
+function syncButtonLabel(s, busy) {
+    return busy ? `⏳ ${s.syncing}` : `🔄 ${s.sync}`;
+}
+
 function formatBytes(bytes) {
     const value = Number(bytes) || 0;
     if (value < 1024) return `${value} B`;
@@ -317,13 +321,13 @@ function applyStrings() {
     els.btnDemoWelcome.textContent = s.syncDemo;
     els.btnLogout.textContent = s.logout;
     els.btnInfo.textContent = s.info;
-    els.btnSync.textContent = s.sync;
+    els.btnSync.textContent = syncButtonLabel(s, state.syncBusy);
     els.btnIdleSync.textContent = s.sync;
     els.idleTitle.textContent = s.readyToSync;
     els.idleHint.textContent = s.syncHint;
     els.btnChangeFolder.textContent = s.changeFolder;
-    els.btnOpenFolder.textContent = s.openFolder;
     els.btnUnlink.textContent = s.unlink;
+    els.detailPath.title = s.openFolder;
     els.btnDeleteRemote.textContent = s.confirmDelete;
     els.btnCancelDelete.textContent = s.cancel;
     els.deleteHint.textContent = s.deleteRemoteHint;
@@ -344,7 +348,7 @@ function applyStrings() {
         state.rating.source === "favorites" ? s.ratingTitle : s.ratePhotosTitle;
     els.ratingSubtitle.textContent =
         state.rating.source === "favorites" ? s.favoritesHint : s.ratePhotosHint;
-    els.btnFavoritesList.textContent = s.favoritesList;
+    els.btnFavoritesList.textContent = `♥ ${s.favoritesList}`;
     els.favoritesTitle.textContent = s.favoritesListTitle;
     els.favoritesFilter.placeholder = s.favoritesListSearch;
     els.btnFavoritesClose.textContent = s.infoClose;
@@ -500,7 +504,10 @@ function renderMain() {
         hide(els.idleState);
         show(els.welcome);
         els.detailName.textContent = s.appTitle;
-        els.detailPath.textContent = s.syncHint;
+        els.detailPathText.textContent = s.syncHint;
+        els.detailPath.disabled = true;
+        els.detailPath.classList.add("hidden");
+        els.detailPath.classList.remove("warn");
         els.detailStats.textContent = "";
         els.detailLastSync.textContent = "";
         els.welcomeTitle.textContent =
@@ -509,7 +516,6 @@ function renderMain() {
         els.btnSync.disabled = true;
         els.btnFavoritesList.disabled = true;
         els.btnChangeFolder.disabled = true;
-        els.btnOpenFolder.disabled = true;
         els.btnUnlink.disabled = true;
         return;
     }
@@ -521,17 +527,19 @@ function renderMain() {
         !state.progress;
     els.idleState.classList.toggle("hidden", !showIdle);
     els.detailName.textContent = gallery.name;
-    els.detailPath.textContent = gallery.exists ? gallery.localPath : s.folderMissing;
+    els.detailPath.classList.remove("hidden");
+    els.detailPathText.textContent = gallery.exists ? gallery.localPath : s.folderMissing;
     els.detailPath.classList.toggle("warn", !gallery.exists);
+    els.detailPath.disabled = !gallery.exists;
+    els.detailPath.title = gallery.exists ? s.openFolder : s.folderMissing;
     els.detailStats.textContent = galleryStatsText(gallery);
     els.detailLastSync.textContent = fmt(s.lastSyncAt, {
         date: formatDate(gallery.lastSyncAt),
     });
     els.btnSync.disabled = state.syncBusy || !gallery.exists;
-    els.btnSync.textContent = state.syncBusy ? s.syncing : s.sync;
+    els.btnSync.textContent = syncButtonLabel(s, state.syncBusy);
     els.btnFavoritesList.disabled = false;
     els.btnChangeFolder.disabled = false;
-    els.btnOpenFolder.disabled = !gallery.exists;
     els.btnUnlink.disabled = false;
 }
 
@@ -1681,13 +1689,23 @@ els.btnChangeFolder.addEventListener("click", async () => {
     }
 });
 
-els.btnOpenFolder.addEventListener("click", async () => {
-    if (!state.currentGalleryId) return;
+els.detailPath.addEventListener("click", async () => {
+    if (!state.currentGalleryId || els.detailPath.disabled) return;
     await invoke("open_folder", { galleryId: state.currentGalleryId });
 });
 
 els.btnUnlink.addEventListener("click", async () => {
     if (!state.currentGalleryId) return;
+    const gallery = currentGallery();
+    const s = state.strings;
+    const confirmed = await askConfirm({
+        title: s.confirmUnlinkTitle,
+        message: fmt(s.confirmUnlinkMessage, {
+            name: gallery?.name || state.currentGalleryId,
+        }),
+        confirmLabel: s.confirmUnlinkAction,
+    });
+    if (!confirmed) return;
     await invoke("unlink_gallery", { galleryId: state.currentGalleryId });
     state.currentGalleryId = null;
     state.report = null;

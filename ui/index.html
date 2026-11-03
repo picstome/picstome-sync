@@ -103,42 +103,49 @@
                 <header class="main-header">
                     <div class="main-title">
                         <h1 id="detailName">Picstome Sync</h1>
-                        <p class="hint" id="detailPath"></p>
-                        <p class="hint subtle" id="detailStats"></p>
-                        <p class="hint subtle" id="detailLastSync"></p>
+                        <button
+                            type="button"
+                            class="path-link"
+                            id="detailPath"
+                            title="Open folder"
+                        >
+                            <span class="path-icon" aria-hidden="true">📁</span>
+                            <span class="path-text" id="detailPathText"></span>
+                        </button>
+                        <div class="main-meta">
+                            <span class="meta-pill" id="detailStats"></span>
+                            <span class="meta-pill" id="detailLastSync"></span>
+                        </div>
                     </div>
                     <div class="main-actions">
-                        <button type="button" class="primary" id="btnSync">
-                            Sync
-                        </button>
-                        <button
-                            type="button"
-                            class="secondary"
-                            id="btnFavoritesList"
-                        >
-                            Favorites list
-                        </button>
-                        <button
-                            type="button"
-                            class="secondary"
-                            id="btnChangeFolder"
-                        >
-                            Change folder…
-                        </button>
-                        <button
-                            type="button"
-                            class="secondary"
-                            id="btnOpenFolder"
-                        >
-                            Open folder
-                        </button>
-                        <button
-                            type="button"
-                            class="ghost"
-                            id="btnUnlink"
-                        >
-                            Unlink
-                        </button>
+                        <div class="main-actions-top">
+                            <button
+                                type="button"
+                                class="favorites-action"
+                                id="btnFavoritesList"
+                            >
+                                ♥ Favorites
+                            </button>
+                            <button type="button" class="primary sync-action" id="btnSync">
+                                🔄 Sync
+                            </button>
+                        </div>
+                        <div class="main-actions-bottom">
+                            <button
+                                type="button"
+                                class="secondary"
+                                id="btnChangeFolder"
+                            >
+                                Change folder…
+                            </button>
+                            <button
+                                type="button"
+                                class="danger"
+                                id="btnUnlink"
+                            >
+                                Unlink
+                            </button>
+                        </div>
                     </div>
                 </header>
 
