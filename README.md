@@ -32,7 +32,8 @@ against the backend contract in
 - **Updates**: three-way diff (remote / local / last snapshot) with downloads,
   uploads, local deletions proposed as remote deletions, and conflict reporting.
 - **Remote deletions are explicit**: if a photo disappears from Picstome, Sync
-  opens a dialog with **Delete locally / Keep local / Upload again**. It never
+  opens a dialog with **Move to Trash / Keep local / Upload again**. Local files
+  are moved to the OS Trash/Recycle Bin, never deleted permanently. It never
   re-uploads a remotely deleted photo silently; the choice is persisted in the
   snapshot so the same photo is not proposed again after resolving it.
 - **Resume**: `.part` + `.part.json` chunk map; a killed download resumes
@@ -103,7 +104,7 @@ PICSTOME_API_BASE=http://127.0.0.1:8787 PICSTOME_MOCK=1 cargo run -p picstome-sy
 
 1. Open **GitHub → Releases** and download the latest **draft** asset (maintainers
    see drafts on the releases page), e.g. `Picstome.Sync_<version>_universal.dmg`.
-   With the CLI: `gh release download v0.1.10 --pattern '*.dmg'`.
+   With the CLI: `gh release download v0.1.11 --pattern '*.dmg'`.
    New test builds are produced locally with `scripts/release-local.sh`.
 2. Install it, open **Info** in the header and check **Version**, **Build**,
    **Mode** and **API target**.

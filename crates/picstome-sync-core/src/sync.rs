@@ -259,14 +259,27 @@ pub async fn resolve_remote_deletions(
         match action {
             RemoteDeleteAction::DeleteLocal => {
                 if let Some(path) = local_path_for(gallery, &snapshot.files[index]) {
-                    if let Err(err) = tokio::fs::remove_file(&path).await {
-                        errors.push(SyncErrorItem {
-                            phase: "remote_delete".into(),
-                            filename: Some(snapshot.files[index].filename.clone()),
-                            path: Some(path.display().to_string()),
-                            message: err.to_string(),
-                        });
-                        continue;
+                    let trash_path = path.clone();
+                    match tokio::task::spawn_blocking(move || trash::delete(&trash_path)).await {
+                        Ok(Ok(())) => {}
+                        Ok(Err(err)) => {
+                            errors.push(SyncErrorItem {
+                                phase: "remote_delete".into(),
+                                filename: Some(snapshot.files[index].filename.clone()),
+                                path: Some(path.display().to_string()),
+                                message: err.to_string(),
+                            });
+                            continue;
+                        }
+                        Err(err) => {
+                            errors.push(SyncErrorItem {
+                                phase: "remote_delete".into(),
+                                filename: Some(snapshot.files[index].filename.clone()),
+                                path: Some(path.display().to_string()),
+                                message: err.to_string(),
+                            });
+                            continue;
+                        }
                     }
                 }
                 resolved.push(id.clone());
