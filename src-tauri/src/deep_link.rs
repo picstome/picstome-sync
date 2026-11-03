@@ -4,7 +4,6 @@ use tauri_plugin_deep_link::DeepLinkExt;
 
 use picstome_sync_core::links::{parse_deep_link, DeepLink};
 
-use crate::auth;
 use crate::commands::{build_state, AppState};
 
 pub fn setup(app: &AppHandle) {
@@ -100,7 +99,7 @@ pub async fn handle_url(app: AppHandle, raw: String) {
             let store = app_state.store.clone();
             match api.exchange_code(&code).await {
                 Ok(response) => {
-                    auth::save_token(Some(&response.token));
+                    let _ = app_state.token_store.save(Some(&response.token));
                     let me = api.me().await.ok();
                     let email = me
                         .as_ref()

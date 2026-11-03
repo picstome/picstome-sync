@@ -10,7 +10,7 @@ Electron, no Node runtime, no daemon and no ZIP step. The Linux release binary i
 about 11 MB; bundled exiftool resources are the largest extra asset.
 
 - Rust engine crate: [`crates/picstome-sync-core`](crates/picstome-sync-core) — API client, diff, downloads, uploads, snapshots, fake API. No Tauri dependency, fully testable with `cargo test`.
-- Tauri shell: [`src-tauri`](src-tauri) — commands, OS keychain auth, deep links, native dialogs, exiftool rating.
+- Tauri shell: [`src-tauri`](src-tauri) — commands, persistent auth, deep links, native dialogs, exiftool rating.
 - UI: [`ui`](ui) — small vanilla HTML/CSS/JS (Tauri global API), no bundler.
 
 Implements the desktop side of
@@ -35,10 +35,13 @@ against the backend contract in
   inside the linked folder, and remote `DELETE` only runs after an explicit
   confirmation with checkboxes.
 - **Auth**: browser flow `/authorize` → `picstome://auth` → token exchange,
-  token stored in the OS keychain (`keyring`) and reused across launches. Dev
-  override: `PICSTOME_TOKEN` (debug builds only). The API issues tokens with
-  `EXTERNAL_TOKEN_DAYS` (default 365); there is no refresh token in v1, so an
-  expired/revoked token asks to reconnect.
+  token stored in `auth.json` inside the app data directory with `0600`
+  permissions and reused across launches. The keychain is intentionally not
+  used in ad-hoc test builds because macOS prompts for the system password on
+  every launch/update; a notarized build can switch back to Keychain later.
+  Dev override: `PICSTOME_TOKEN` (debug builds only). The API issues tokens
+  with `EXTERNAL_TOKEN_DAYS` (default 365); there is no refresh token in v1, so
+  only an expired/revoked token asks to reconnect.
 - **Deep links**: `picstome://rate`, `picstome://sync`, `picstome://auth`, with
   single-instance forwarding on Windows/Linux.
 - **Rating integrated in Sync**: the old Rate tab is gone. `picstome://rate`
@@ -88,7 +91,7 @@ PICSTOME_API_BASE=http://127.0.0.1:8787 PICSTOME_MOCK=1 cargo run -p picstome-sy
 
 1. Open **GitHub → Releases** and download the latest **draft** asset (maintainers
    see drafts on the releases page), e.g. `Picstome.Sync_<version>_universal.dmg`.
-   With the CLI: `gh release download v0.1.8 --pattern '*.dmg'`.
+   With the CLI: `gh release download v0.1.9 --pattern '*.dmg'`.
    New test builds are produced locally with `scripts/release-local.sh`.
 2. Install it, open **Info** in the header and check **Version**, **Build**,
    **Mode** and **API target**.
@@ -112,7 +115,7 @@ PICSTOME_API_BASE=https://devel.picstome.com cargo run -p picstome-sync
 
 The app opens the browser authorization page, receives the one-time code
 through the `picstome://auth` deep link, exchanges it for a token and stores it
-in the OS keychain.
+in the app data directory (`0600`).
 
 For automation/testing, a token can be supplied directly (debug builds / demo mode only):
 
@@ -186,8 +189,7 @@ scripts/release-local.sh --no-build # upload already-built bundles
 scripts/release-local.sh v0.1.7     # explicit draft tag
 ```
 
-- On **Linux** it builds `.deb` + `.AppImage`. Linux needs `libdbus-1-dev` for
-  the keychain backend (`secret-service`).
+- On **Linux** it builds `.deb` + `.AppImage`.
 - On **macOS** it builds a universal `.dmg` (run it on the Mac), or trigger the
   manual **build** workflow and pass the draft tag (e.g. `v0.1.7`).
 - Windows builds are intentionally reserved for the final `release.yml` run.
@@ -230,8 +232,10 @@ config.json      {photosDir,lastRating,lastUpdateCheckAt,accountEmail,apiBase?}
 - Tauri capabilities are locked down to the `main` window (`core`, `dialog`,
   `shell`, `opener`, `deep-link`, `updater`).
 - The webview uses a strict CSP and the UI has no Node access.
-- Tokens go to the OS keychain through `keyring`; `PICSTOME_TOKEN` exists only
-  as an explicit development/testing override and is ignored in release builds.
+- Tokens are stored in `auth.json` under the app data directory with `0600`
+  permissions; `PICSTOME_TOKEN` exists only as an explicit development/testing
+  override and is ignored in release builds. Keychain storage can be re-enabled
+  once builds are signed/notarized with a Developer ID.
 - Remote deletion is never automatic and is auditable on the backend.
 
 ## Project layout

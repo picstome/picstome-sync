@@ -33,6 +33,7 @@ pub struct AppState {
     pub api: tokio::sync::RwLock<ApiClient>,
     pub mock: AtomicBool,
     pub lang: String,
+    pub token_store: auth::TokenStore,
     pub app_version: String,
     pub build_profile: String,
     pub exiftool: Option<PathBuf>,
@@ -44,10 +45,12 @@ pub struct AppState {
 }
 
 impl AppState {
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         store: Store,
         api: ApiClient,
         mock: bool,
+        token_store: auth::TokenStore,
         app_version: String,
         build_profile: String,
         exiftool: Option<PathBuf>,
@@ -58,6 +61,7 @@ impl AppState {
             api: tokio::sync::RwLock::new(api),
             mock: AtomicBool::new(mock),
             lang: strings::language(),
+            token_store,
             app_version,
             build_profile,
             exiftool,
@@ -366,7 +370,7 @@ pub async fn logout(app: AppHandle, state: State<'_, AppState>) -> Result<Value,
         let _ = api.revoke().await;
     }
     api.set_token(None).await;
-    auth::save_token(None);
+    let _ = state.token_store.save(None);
     let _ = state.store.update_config(|config| {
         config.account_email = None;
     });
@@ -663,7 +667,7 @@ pub async fn set_api_base(
     if old_api.has_token().await {
         let _ = old_api.revoke().await;
     }
-    auth::save_token(None);
+    let _ = state.token_store.save(None);
 
     let new_api = ApiClient::new(Some(&base), None)?;
     state.replace_api(new_api).await;
@@ -725,7 +729,17 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let store = Store::new(dir.path()).unwrap();
         let api = ApiClient::new(Some("http://127.0.0.1:1"), None).unwrap();
-        let state = AppState::new(store, api, false, "test".into(), "debug".into(), None, None);
+        let token_store = auth::TokenStore::new(dir.path().join("auth.json"));
+        let state = AppState::new(
+            store,
+            api,
+            false,
+            token_store,
+            "test".into(),
+            "debug".into(),
+            None,
+            None,
+        );
 
         assert!(!state.frontend_is_ready());
         state.defer_link("picstome://sync?gallery=G1&name=Test");

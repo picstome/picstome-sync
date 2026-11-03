@@ -1,29 +1,65 @@
+use std::fs;
+use std::io::Write;
+use std::path::{Path, PathBuf};
+
 use rand::RngCore;
+use serde::{Deserialize, Serialize};
 
-const SERVICE: &str = "com.picstome.sync";
-const USER: &str = "token";
-
-fn entry() -> Option<keyring::Entry> {
-    keyring::Entry::new(SERVICE, USER).ok()
+#[derive(Debug, Serialize, Deserialize)]
+struct StoredAuth {
+    token: String,
 }
 
-pub fn load_token() -> Option<String> {
-    let entry = entry()?;
-    entry.get_password().ok().filter(|token| !token.is_empty())
+#[derive(Debug, Clone)]
+pub struct TokenStore {
+    path: PathBuf,
 }
 
-pub fn save_token(token: Option<&str>) {
-    let Some(entry) = entry() else {
-        return;
-    };
-    match token {
-        Some(token) if !token.is_empty() => {
-            if let Err(err) = entry.set_password(token) {
-                eprintln!("Could not store token in the OS keychain: {err}");
+impl TokenStore {
+    pub fn new(path: impl Into<PathBuf>) -> Self {
+        Self { path: path.into() }
+    }
+
+    pub fn path(&self) -> &Path {
+        &self.path
+    }
+
+    pub fn load(&self) -> Option<String> {
+        let contents = fs::read_to_string(&self.path).ok()?;
+        let stored: StoredAuth = serde_json::from_str(&contents).ok()?;
+        let token = stored.token.trim().to_string();
+        (!token.is_empty()).then_some(token)
+    }
+
+    pub fn save(&self, token: Option<&str>) -> std::io::Result<()> {
+        match token {
+            Some(token) if !token.trim().is_empty() => {
+                if let Some(parent) = self.path.parent() {
+                    fs::create_dir_all(parent)?;
+                }
+                let data = serde_json::to_vec(&StoredAuth {
+                    token: token.trim().to_string(),
+                })?;
+                let tmp = self.path.with_extension("json.tmp");
+                {
+                    let mut options = fs::OpenOptions::new();
+                    options.write(true).create(true).truncate(true);
+                    #[cfg(unix)]
+                    {
+                        use std::os::unix::fs::OpenOptionsExt;
+                        options.mode(0o600);
+                    }
+                    let mut file = options.open(&tmp)?;
+                    file.write_all(&data)?;
+                    file.sync_all()?;
+                }
+                fs::rename(&tmp, &self.path)
             }
-        }
-        _ => {
-            let _ = entry.delete_credential();
+            _ => match fs::remove_file(&self.path) {
+                Ok(()) => Ok(()),
+                Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(()),
+                Err(err) => Err(err),
+            },
         }
     }
 }
@@ -44,5 +80,23 @@ mod tests {
         assert_eq!(nonce.len(), 64, "backend requires 43-128 chars");
         assert!(nonce.chars().all(|c| c.is_ascii_hexdigit()));
         assert_ne!(nonce, new_nonce());
+    }
+
+    #[test]
+    fn token_store_roundtrip_and_permissions() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = TokenStore::new(dir.path().join("auth.json"));
+        assert_eq!(store.load(), None);
+        store.save(Some("secret-token")).unwrap();
+        assert_eq!(store.load().as_deref(), Some("secret-token"));
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mode = fs::metadata(store.path()).unwrap().permissions().mode() & 0o777;
+            assert_eq!(mode, 0o600);
+        }
+        store.save(None).unwrap();
+        assert_eq!(store.load(), None);
+        store.save(None).unwrap();
     }
 }

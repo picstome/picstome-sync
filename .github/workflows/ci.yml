@@ -49,10 +49,10 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y libwebkit2gtk-4.1-dev libgtk-3-dev libayatana-appindicator3-dev \
-            librsvg2-dev patchelf libxdo-dev libssl-dev libdbus-1-dev build-essential \
+            librsvg2-dev patchelf libxdo-dev libssl-dev build-essential \
             xvfb xauth webkit2gtk-driver libgbm1 libasound2t64 libimage-exiftool-perl \
             || sudo apt-get install -y libwebkit2gtk-4.1-dev libgtk-3-dev libayatana-appindicator3-dev \
-              librsvg2-dev patchelf libxdo-dev libssl-dev libdbus-1-dev build-essential \
+              librsvg2-dev patchelf libxdo-dev libssl-dev build-essential \
               xvfb xauth webkit2gtk-driver libgbm1 libasound2 libimage-exiftool-perl
       - name: Clippy (workspace)
         run: cargo clippy --workspace --all-targets -- -D warnings
@@ -72,10 +72,10 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y libwebkit2gtk-4.1-dev libgtk-3-dev libayatana-appindicator3-dev \
-            librsvg2-dev patchelf libxdo-dev libssl-dev libdbus-1-dev build-essential \
+            librsvg2-dev patchelf libxdo-dev libssl-dev build-essential \
             xvfb xauth webkit2gtk-driver libgbm1 libasound2t64 libimage-exiftool-perl \
             || sudo apt-get install -y libwebkit2gtk-4.1-dev libgtk-3-dev libayatana-appindicator3-dev \
-              librsvg2-dev patchelf libxdo-dev libssl-dev libdbus-1-dev build-essential \
+              librsvg2-dev patchelf libxdo-dev libssl-dev build-essential \
               xvfb xauth webkit2gtk-driver libgbm1 libasound2 libimage-exiftool-perl
       - name: Install tauri-driver
         run: cargo install tauri-driver --locked

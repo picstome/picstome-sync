@@ -65,12 +65,13 @@ pub fn run() {
                 _ => app.path().app_data_dir()?,
             };
             let store = Store::new(data_dir)?;
+            let token_store = auth::TokenStore::new(store.root().join("auth.json"));
             let base_url = commands::api_base_from_env_or_config(&store);
             let token = std::env::var("PICSTOME_TOKEN")
                 .ok()
                 .filter(|value| !value.trim().is_empty())
                 .filter(|_| cfg!(debug_assertions) || mock)
-                .or_else(|| if mock { None } else { auth::load_token() });
+                .or_else(|| if mock { None } else { token_store.load() });
             let api = ApiClient::new(Some(&base_url), token)?;
             let exiftool = commands::exiftool_path(&handle);
 
@@ -78,6 +79,7 @@ pub fn run() {
                 store,
                 api,
                 mock,
+                token_store,
                 app.package_info().version.to_string(),
                 if cfg!(debug_assertions) {
                     "debug".to_string()
