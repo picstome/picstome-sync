@@ -98,6 +98,7 @@ const els = {
     syncLogTitle: document.getElementById("syncLogTitle"),
     syncLogCount: document.getElementById("syncLogCount"),
     syncLogEntries: document.getElementById("syncLogEntries"),
+    btnClearLog: document.getElementById("btnClearLog"),
     deleteBox: document.getElementById("deleteBox"),
     deleteTitle: document.getElementById("deleteTitle"),
     deleteHint: document.getElementById("deleteHint"),
@@ -264,6 +265,7 @@ function applyStrings() {
     els.btnRatingFolder.textContent = s.chooseFolder;
     els.remoteDeletedTitle.textContent = s.remoteDeletedTitle;
     els.syncLogTitle.textContent = s.activityLog;
+    els.btnClearLog.textContent = s.clearLog;
     els.btnRemoteClose.textContent = s.infoClose;
     els.btnRemoteDeleteLocal.textContent = s.deleteLocal;
     els.btnRemoteKeepLocal.textContent = s.keepLocal;
@@ -754,6 +756,18 @@ function renderLog() {
     }
 }
 
+async function clearLog() {
+    const galleryId = state.currentGalleryId;
+    if (!galleryId) return;
+    try {
+        await invoke("clear_sync_log", { galleryId });
+        state.syncLog = [];
+        renderLog();
+    } catch {
+        // Keep the existing log visible if the file cannot be cleared.
+    }
+}
+
 async function refreshLog() {
     const galleryId = state.currentGalleryId;
     if (!galleryId) {
@@ -1171,6 +1185,7 @@ els.galleryList.addEventListener("dblclick", (event) => {
 });
 
 els.btnSync.addEventListener("click", syncCurrent);
+els.btnClearLog.addEventListener("click", clearLog);
 els.btnIdleSync.addEventListener("click", syncCurrent);
 els.btnAddGallery.addEventListener("click", openPicstome);
 els.btnConnect.addEventListener("click", openPicstome);

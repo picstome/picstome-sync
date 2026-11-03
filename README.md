@@ -64,12 +64,14 @@ against the backend contract in
 - **Fast gallery search**: filter the sidebar by name or path, with `Ctrl+F` /
   `Cmd+F` focusing the search field and `Enter` selecting the first match.
 - **Sync evidence**: the report lists every uploaded/downloaded filename, and
-  each sync appends a JSON line to `sync.log` in the app data directory. Star
-  ratings are logged too (`kind: "rating"`, stars, source link/favorites,
-  files rated and errors). The same history is shown per gallery in the
-  collapsible **Activity log** panel. The app data directory (not the photo
-  folder) contains `index.json`, the per-gallery snapshots, `auth.json` and
-  `sync.log`; no hidden state file is added to the photos folder.
+  each gallery has its own log at `logs/<gallery-id>.log` in the app data
+  directory. Star ratings are logged too (`kind: "rating"`, stars, source
+  link/favorites, files rated and errors). The same history is shown per
+  gallery in the collapsible **Activity log** panel, which also has a
+  **Clear log** button. Logs rotate automatically at 512 KB, keeping the last
+  500 entries. The app data directory (not the photo folder) contains
+  `index.json`, the per-gallery snapshots, `auth.json` and `logs/`; no hidden
+  state file is added to the photos folder.
 - **Sensible rating target**: a `picstome://rate` link uses the selected
   gallery's folder automatically; the folder picker only appears when no
   gallery is linked/selected.

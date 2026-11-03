@@ -1088,6 +1088,12 @@ button.danger:hover {
     font-size: 10.5px;
 }
 
+.log-toolbar {
+    display: flex;
+    justify-content: flex-end;
+    padding: 0 14px 8px;
+}
+
 .log-entries {
     display: flex;
     flex-direction: column;

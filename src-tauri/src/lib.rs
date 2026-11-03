@@ -162,6 +162,7 @@ pub fn run() {
             commands::open_galleries_page,
             commands::set_api_base,
             commands::get_sync_log,
+            commands::clear_sync_log,
             commands::frontend_ready,
             commands::dev_handle_deep_link,
             commands::install_update,

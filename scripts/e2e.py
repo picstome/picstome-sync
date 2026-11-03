@@ -357,8 +357,8 @@ def main():
             log("upload:", third["counts"], "errors:", third["errors"])
             assert not third["errors"], third["errors"]
             assert len(third["uploaded"]) == 1, third["counts"]
-            sync_log_path = os.path.join(user_data, "sync.log")
-            assert os.path.exists(sync_log_path), "sync.log was not written"
+            sync_log_path = os.path.join(user_data, "logs", f"{gallery}.log")
+            assert os.path.exists(sync_log_path), "per-gallery log was not written"
             with open(sync_log_path, encoding="utf-8") as handle:
                 sync_log = handle.read()
             assert upload_name in sync_log, sync_log[-500:]
@@ -623,6 +623,13 @@ def main():
         after_rating = js_invoke(session, "sync_gallery", {"galleryId": gallery})
         log("after favorites:", after_rating["counts"], "favorites:", len(after_rating["favorites"]))
         assert not after_rating["favorites"], after_rating["favorites"]
+
+        cleared = js_invoke(session, "clear_sync_log", {"galleryId": gallery})
+        assert cleared.get("ok"), cleared
+        assert not os.path.exists(
+            os.path.join(user_data, "logs", f"{gallery}.log")
+        ), "per-gallery log was not removed"
+        assert not js_invoke(session, "get_sync_log", {"galleryId": gallery})
 
         logout = js_invoke(session, "logout", {})
         assert logout.get("ok"), logout

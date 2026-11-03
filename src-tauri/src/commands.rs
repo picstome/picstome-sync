@@ -239,6 +239,80 @@ fn not_linked() -> ErrorPayload {
     command_error("Gallery is not linked", "not_linked")
 }
 
+const LOG_MAX_BYTES: u64 = 512 * 1024;
+const LOG_KEEP_LINES: usize = 500;
+
+fn logs_dir(store: &Store) -> std::path::PathBuf {
+    store.root().join("logs")
+}
+
+fn gallery_log_path(store: &Store, gallery_id: &str) -> std::path::PathBuf {
+    logs_dir(store).join(format!("{gallery_id}.log"))
+}
+
+fn legacy_log_path(store: &Store) -> std::path::PathBuf {
+    store.root().join("sync.log")
+}
+
+fn write_log_file(path: &std::path::Path, lines: &[String]) -> std::io::Result<()> {
+    use std::io::Write;
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    let tmp = path.with_extension("log.tmp");
+    let mut options = std::fs::OpenOptions::new();
+    options.write(true).create(true).truncate(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
+    }
+    let mut file = options.open(&tmp)?;
+    for line in lines {
+        writeln!(file, "{line}")?;
+    }
+    file.sync_all()?;
+    drop(file);
+    std::fs::rename(tmp, path)
+}
+
+fn rotate_log_if_needed(path: &std::path::Path) {
+    let Ok(metadata) = std::fs::metadata(path) else {
+        return;
+    };
+    if metadata.len() <= LOG_MAX_BYTES {
+        return;
+    }
+    let Ok(text) = std::fs::read_to_string(path) else {
+        return;
+    };
+    let all: Vec<&str> = text.lines().collect();
+    let start = all.len().saturating_sub(LOG_KEEP_LINES);
+    let lines: Vec<String> = all[start..]
+        .iter()
+        .map(|line| (*line).to_string())
+        .collect();
+    let _ = write_log_file(path, &lines);
+}
+
+fn append_log_line(path: std::path::PathBuf, entry: serde_json::Value) {
+    use std::io::Write;
+    rotate_log_if_needed(&path);
+    if let Some(parent) = path.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    let mut options = std::fs::OpenOptions::new();
+    options.create(true).append(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
+    }
+    if let Ok(mut file) = options.open(path) {
+        let _ = writeln!(file, "{entry}");
+    }
+}
+
 fn append_rating_log(
     store: &Store,
     gallery_id: Option<&str>,
@@ -265,17 +339,11 @@ fn append_rating_log(
             "message": detail.msg,
         })).collect::<Vec<_>>(),
     });
-    use std::io::Write;
-    let mut options = std::fs::OpenOptions::new();
-    options.create(true).append(true);
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::OpenOptionsExt;
-        options.mode(0o600);
-    }
-    if let Ok(mut file) = options.open(store.root().join("sync.log")) {
-        let _ = writeln!(file, "{entry}");
-    }
+    let path = match gallery_id {
+        Some(id) => gallery_log_path(store, id),
+        None => logs_dir(store).join("_unlinked.log"),
+    };
+    append_log_line(path, entry);
 }
 
 fn append_sync_log(store: &Store, report: &SyncReport) {
@@ -296,17 +364,16 @@ fn append_sync_log(store: &Store, report: &SyncReport) {
         "downloaded": report.downloaded.iter().map(|item| item.filename.clone()).collect::<Vec<_>>(),
         "errors": report.errors.iter().map(|item| item.message.clone()).collect::<Vec<_>>(),
     });
-    use std::io::Write;
-    let mut options = std::fs::OpenOptions::new();
-    options.create(true).append(true);
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::OpenOptionsExt;
-        options.mode(0o600);
-    }
-    if let Ok(mut file) = options.open(store.root().join("sync.log")) {
-        let _ = writeln!(file, "{entry}");
-    }
+    append_log_line(gallery_log_path(store, &report.gallery_id), entry);
+}
+
+fn read_log_entries(path: &std::path::Path) -> Vec<serde_json::Value> {
+    let Ok(text) = std::fs::read_to_string(path) else {
+        return Vec::new();
+    };
+    text.lines()
+        .filter_map(|line| serde_json::from_str::<serde_json::Value>(line).ok())
+        .collect()
 }
 
 async fn sync_linked(
@@ -776,20 +843,48 @@ pub async fn get_sync_log(
     let Some(id) = sanitize_gallery_id(&gallery_id) else {
         return Err(invalid_gallery());
     };
-    let path = state.store.root().join("sync.log");
-    let Ok(text) = tokio::fs::read_to_string(path).await else {
-        return Ok(Vec::new());
-    };
-    let mut entries: Vec<serde_json::Value> = text
-        .lines()
-        .filter_map(|line| serde_json::from_str::<serde_json::Value>(line).ok())
-        .filter(|entry| {
-            entry.get("galleryId").and_then(serde_json::Value::as_str) == Some(id.as_str())
-        })
-        .collect();
-    entries.reverse();
+    let mut entries = read_log_entries(&gallery_log_path(&state.store, &id));
+    // Backwards compatibility with the old single sync.log.
+    entries.extend(
+        read_log_entries(&legacy_log_path(&state.store))
+            .into_iter()
+            .filter(|entry| {
+                entry.get("galleryId").and_then(serde_json::Value::as_str) == Some(id.as_str())
+            }),
+    );
+    entries.sort_by_key(|entry| {
+        std::cmp::Reverse(
+            entry
+                .get("at")
+                .and_then(serde_json::Value::as_i64)
+                .unwrap_or(0),
+        )
+    });
     entries.truncate(50);
     Ok(entries)
+}
+
+#[tauri::command]
+pub async fn clear_sync_log(
+    state: State<'_, AppState>,
+    gallery_id: String,
+) -> Result<Value, ErrorPayload> {
+    let Some(id) = sanitize_gallery_id(&gallery_id) else {
+        return Err(invalid_gallery());
+    };
+    let _ = std::fs::remove_file(gallery_log_path(&state.store, &id));
+    let legacy = legacy_log_path(&state.store);
+    if legacy.exists() {
+        let kept: Vec<String> = read_log_entries(&legacy)
+            .into_iter()
+            .filter(|entry| {
+                entry.get("galleryId").and_then(serde_json::Value::as_str) != Some(id.as_str())
+            })
+            .map(|entry| entry.to_string())
+            .collect();
+        let _ = write_log_file(&legacy, &kept);
+    }
+    Ok(json!({"ok": true}))
 }
 
 #[tauri::command]
