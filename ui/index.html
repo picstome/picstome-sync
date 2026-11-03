@@ -113,6 +113,13 @@
                         <button
                             type="button"
                             class="secondary"
+                            id="btnFavoritesList"
+                        >
+                            Favorites list
+                        </button>
+                        <button
+                            type="button"
+                            class="secondary"
                             id="btnChangeFolder"
                         >
                             Change folder…
@@ -376,6 +383,95 @@
                     class="rating-result hidden"
                     id="remoteDeletedResult"
                 ></div>
+            </div>
+        </div>
+
+        <div class="modal-backdrop hidden" id="favoritesModal">
+            <div class="modal favorites-modal" role="dialog" aria-modal="true">
+                <div class="modal-head">
+                    <h2 id="favoritesTitle">Export favorite list</h2>
+                    <button
+                        type="button"
+                        class="ghost small"
+                        id="btnFavoritesClose"
+                    >
+                        Close
+                    </button>
+                </div>
+                <p class="hint" id="favoritesSubtitle"></p>
+
+                <input
+                    id="favoritesFilter"
+                    class="favorites-filter"
+                    type="search"
+                    autocomplete="off"
+                    spellcheck="false"
+                />
+
+                <div class="favorites-tabs" id="favoritesTabs">
+                    <button
+                        type="button"
+                        class="favorites-tab"
+                        data-tab="app"
+                    >
+                        App
+                    </button>
+                    <button
+                        type="button"
+                        class="favorites-tab"
+                        data-tab="lightroom"
+                    >
+                        Lightroom
+                    </button>
+                    <button
+                        type="button"
+                        class="favorites-tab"
+                        data-tab="captureone"
+                    >
+                        Capture One
+                    </button>
+                    <button
+                        type="button"
+                        class="favorites-tab"
+                        data-tab="finder"
+                    >
+                        Finder/Explorer
+                    </button>
+                    <button
+                        type="button"
+                        class="favorites-tab"
+                        data-tab="list"
+                    >
+                        List
+                    </button>
+                </div>
+
+                <textarea
+                    id="favoritesText"
+                    class="favorites-text"
+                    readonly
+                    rows="7"
+                ></textarea>
+                <p class="hint" id="favoritesHint"></p>
+
+                <div class="rating-result hidden" id="favoritesResult"></div>
+
+                <div class="btn-row favorites-actions">
+                    <button
+                        type="button"
+                        class="primary"
+                        id="btnFavoritesCopy"
+                    >
+                        Copy
+                    </button>
+                    <button
+                        type="button"
+                        class="secondary hidden"
+                        id="btnFavoritesRate"
+                    >
+                        Rate these photos
+                    </button>
+                </div>
             </div>
         </div>
 

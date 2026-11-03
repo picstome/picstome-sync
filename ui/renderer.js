@@ -41,6 +41,15 @@ const state = {
         result: null,
         pendingFavorites: null,
     },
+    favorites: {
+        open: false,
+        galleryId: null,
+        items: [],
+        tab: "app",
+        query: "",
+        busy: false,
+        error: null,
+    },
 };
 
 const els = {
@@ -67,6 +76,7 @@ const els = {
     detailPath: document.getElementById("detailPath"),
     detailLastSync: document.getElementById("detailLastSync"),
     btnSync: document.getElementById("btnSync"),
+    btnFavoritesList: document.getElementById("btnFavoritesList"),
     btnChangeFolder: document.getElementById("btnChangeFolder"),
     btnOpenFolder: document.getElementById("btnOpenFolder"),
     btnUnlink: document.getElementById("btnUnlink"),
@@ -136,6 +146,21 @@ const els = {
     btnRatingClose: document.getElementById("btnRatingClose"),
     starButtons: Array.from(document.querySelectorAll("#ratingStars .star-btn")),
 
+    favoritesModal: document.getElementById("favoritesModal"),
+    favoritesTitle: document.getElementById("favoritesTitle"),
+    favoritesSubtitle: document.getElementById("favoritesSubtitle"),
+    favoritesFilter: document.getElementById("favoritesFilter"),
+    favoritesTabs: document.getElementById("favoritesTabs"),
+    favoritesText: document.getElementById("favoritesText"),
+    favoritesHint: document.getElementById("favoritesHint"),
+    favoritesResult: document.getElementById("favoritesResult"),
+    btnFavoritesClose: document.getElementById("btnFavoritesClose"),
+    btnFavoritesCopy: document.getElementById("btnFavoritesCopy"),
+    btnFavoritesRate: document.getElementById("btnFavoritesRate"),
+    favoritesTabButtons: Array.from(
+        document.querySelectorAll("#favoritesTabs .favorites-tab"),
+    ),
+
     remoteDeletedModal: document.getElementById("remoteDeletedModal"),
     remoteDeletedTitle: document.getElementById("remoteDeletedTitle"),
     remoteDeletedHint: document.getElementById("remoteDeletedHint"),
@@ -176,6 +201,32 @@ function show(el) {
 
 function hide(el) {
     el.classList.add("hidden");
+}
+
+async function copyText(text) {
+    if (!text) return false;
+    try {
+        if (navigator.clipboard?.writeText) {
+            await navigator.clipboard.writeText(text);
+            return true;
+        }
+    } catch {
+        // Fall through to the legacy textarea copy.
+    }
+    try {
+        const helper = document.createElement("textarea");
+        helper.value = text;
+        helper.setAttribute("readonly", "");
+        helper.style.position = "fixed";
+        helper.style.opacity = "0";
+        document.body.appendChild(helper);
+        helper.select();
+        const copied = document.execCommand("copy");
+        document.body.removeChild(helper);
+        return copied;
+    } catch {
+        return false;
+    }
 }
 
 function formatDateShort(value) {
@@ -259,6 +310,22 @@ function applyStrings() {
         state.rating.source === "favorites" ? s.ratingTitle : s.ratePhotosTitle;
     els.ratingSubtitle.textContent =
         state.rating.source === "favorites" ? s.favoritesHint : s.ratePhotosHint;
+    els.btnFavoritesList.textContent = s.favoritesList;
+    els.favoritesTitle.textContent = s.favoritesListTitle;
+    els.favoritesFilter.placeholder = s.favoritesListSearch;
+    els.btnFavoritesClose.textContent = s.infoClose;
+    els.btnFavoritesCopy.textContent = s.favoritesListCopy;
+    els.btnFavoritesRate.textContent = s.favoritesRateButton;
+    const favoritesTabs = {
+        app: s.favoritesTabApp,
+        lightroom: s.favoritesTabLightroom,
+        captureone: s.favoritesTabCaptureOne,
+        finder: s.favoritesTabFinder,
+        list: s.favoritesTabList,
+    };
+    for (const button of els.favoritesTabButtons) {
+        button.textContent = favoritesTabs[button.dataset.tab] || "";
+    }
     els.btnRatingApply.textContent = s.applyRating;
     els.btnRatingCancel.textContent = s.notNow;
     els.btnRatingClose.textContent = s.infoClose;
@@ -402,6 +469,7 @@ function renderMain() {
             state.galleries.length === 0 ? s.noGalleryTitle : s.noGalleryTitle;
         els.welcomeHint.textContent = s.noGalleryHint;
         els.btnSync.disabled = true;
+        els.btnFavoritesList.disabled = true;
         els.btnChangeFolder.disabled = true;
         els.btnOpenFolder.disabled = true;
         els.btnUnlink.disabled = true;
@@ -422,6 +490,7 @@ function renderMain() {
     });
     els.btnSync.disabled = state.syncBusy || !gallery.exists;
     els.btnSync.textContent = state.syncBusy ? s.syncing : s.sync;
+    els.btnFavoritesList.disabled = false;
     els.btnChangeFolder.disabled = false;
     els.btnOpenFolder.disabled = !gallery.exists;
     els.btnUnlink.disabled = false;
@@ -856,6 +925,7 @@ function renderAll() {
     renderProgress();
     renderReport();
     renderRating();
+    renderFavorites();
     renderRemoteDeleted();
     renderLog();
 }
@@ -918,6 +988,141 @@ function openFavoritesPrompt(report) {
         result: null,
     };
     renderRating();
+}
+
+function filteredFavoritePhotos() {
+    const query = state.favorites.query.trim().toLowerCase();
+    if (!query) return state.favorites.items;
+    return state.favorites.items.filter((photo) =>
+        String(photo.filename || "")
+            .toLowerCase()
+            .includes(query),
+    );
+}
+
+function favoritesTabText(items, tab) {
+    const names = items.map((photo) => photo.filename).filter(Boolean);
+    const stems = names.map(stem);
+    if (tab === "app") {
+        const params = new URLSearchParams();
+        if (stems.length > 0) params.set("files", stems.join(","));
+        if (state.favorites.galleryId) {
+            params.set("gallery", state.favorites.galleryId);
+        }
+        params.set("rating", "1");
+        return `picstome://rate?${params.toString()}`;
+    }
+    if (tab === "lightroom") return stems.join(", ");
+    if (tab === "captureone") return stems.join(" ");
+    if (tab === "finder") return stems.join(" OR ");
+    return names.join("\n");
+}
+
+function favoritesHintKey(tab) {
+    if (tab === "app") return "favoritesAppHint";
+    if (tab === "lightroom") return "favoritesLightroomHint";
+    if (tab === "captureone") return "favoritesCaptureOneHint";
+    if (tab === "finder") return "favoritesFinderHint";
+    return "favoritesTextHint";
+}
+
+function renderFavorites() {
+    const s = state.strings;
+    if (!s) return;
+    if (!state.favorites.open) {
+        hide(els.favoritesModal);
+        return;
+    }
+
+    show(els.favoritesModal);
+    const total = state.favorites.items.length;
+    const items = filteredFavoritePhotos();
+    const busy = state.favorites.busy;
+    const text = busy || total === 0
+        ? ""
+        : favoritesTabText(items, state.favorites.tab);
+
+    els.favoritesSubtitle.textContent = busy
+        ? s.favoritesListLoading
+        : total === 0
+          ? s.favoritesListEmpty
+          : fmt(s.favoritesListSubtitle, { n: total });
+    els.favoritesFilter.disabled = busy || total === 0;
+    els.favoritesText.value = text;
+    els.btnFavoritesCopy.disabled = busy || !text;
+    els.btnFavoritesRate.classList.toggle(
+        "hidden",
+        state.favorites.tab !== "app" || items.length === 0,
+    );
+    els.btnFavoritesRate.disabled = busy || items.length === 0;
+
+    for (const button of els.favoritesTabButtons) {
+        button.classList.toggle(
+            "active",
+            button.dataset.tab === state.favorites.tab,
+        );
+    }
+
+    if (state.favorites.error) {
+        show(els.favoritesResult);
+        els.favoritesResult.className = "rating-result error";
+        els.favoritesResult.textContent = state.favorites.error;
+    } else {
+        hide(els.favoritesResult);
+    }
+
+    els.favoritesHint.textContent = busy
+        ? s.favoritesListLoading
+        : total === 0
+          ? s.favoritesListEmpty
+          : items.length === 0
+            ? s.favoritesFilterEmpty
+            : s[favoritesHintKey(state.favorites.tab)] || "";
+}
+
+function closeFavorites() {
+    state.favorites.open = false;
+    renderFavorites();
+}
+
+async function openFavoritesList() {
+    const gallery = currentGallery();
+    if (!gallery) return;
+
+    state.favorites = {
+        open: true,
+        galleryId: gallery.galleryId,
+        items: [],
+        tab: "app",
+        query: "",
+        busy: true,
+        error: null,
+    };
+    els.favoritesFilter.value = "";
+    renderFavorites();
+
+    try {
+        const items = await invoke("get_gallery_favorites", {
+            galleryId: gallery.galleryId,
+        });
+        if (
+            !state.favorites.open ||
+            state.favorites.galleryId !== gallery.galleryId
+        ) {
+            return;
+        }
+        state.favorites.items = Array.isArray(items) ? items : [];
+    } catch (err) {
+        if (!state.favorites.open) return;
+        state.favorites.error = `${state.strings?.favoritesListLoadFailed || "Could not load favorites"}: ${
+            err?.message || String(err)
+        }`;
+    } finally {
+        if (state.favorites.galleryId === gallery.galleryId) {
+            state.favorites.busy = false;
+            renderFavorites();
+        }
+    }
 }
 
 function openRateLink({ files, rating, gallery }) {
@@ -1185,6 +1390,42 @@ els.galleryList.addEventListener("dblclick", (event) => {
 });
 
 els.btnSync.addEventListener("click", syncCurrent);
+els.btnFavoritesList.addEventListener("click", openFavoritesList);
+els.btnFavoritesClose.addEventListener("click", closeFavorites);
+els.favoritesModal.addEventListener("click", (event) => {
+    if (event.target === els.favoritesModal) closeFavorites();
+});
+els.favoritesFilter.addEventListener("input", () => {
+    state.favorites.query = els.favoritesFilter.value;
+    renderFavorites();
+});
+for (const button of els.favoritesTabButtons) {
+    button.addEventListener("click", () => {
+        state.favorites.tab = button.dataset.tab;
+        renderFavorites();
+    });
+}
+els.btnFavoritesCopy.addEventListener("click", async () => {
+    const text = els.favoritesText.value;
+    if (!(await copyText(text))) {
+        els.favoritesHint.textContent =
+            state.strings?.favoritesListCopyFailed || "Could not copy";
+        return;
+    }
+    const original = state.strings?.favoritesListCopy || "Copy";
+    els.btnFavoritesCopy.textContent =
+        state.strings?.favoritesListCopied || "Copied!";
+    setTimeout(() => {
+        els.btnFavoritesCopy.textContent = original;
+    }, 1600);
+});
+els.btnFavoritesRate.addEventListener("click", () => {
+    const favorites = filteredFavoritePhotos();
+    if (favorites.length === 0) return;
+    const galleryId = state.favorites.galleryId;
+    closeFavorites();
+    openFavoritesPrompt({ galleryId, favorites });
+});
 els.btnClearLog.addEventListener("click", clearLog);
 els.btnIdleSync.addEventListener("click", syncCurrent);
 els.btnAddGallery.addEventListener("click", openPicstome);

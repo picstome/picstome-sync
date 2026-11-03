@@ -523,6 +523,18 @@ pub async fn list_remote_galleries(
     Ok(state.api().await.galleries().await?)
 }
 
+#[tauri::command]
+pub async fn get_gallery_favorites(
+    state: State<'_, AppState>,
+    gallery_id: String,
+) -> Result<Vec<FavoritePhoto>, ErrorPayload> {
+    let Some(id) = sanitize_gallery_id(&gallery_id) else {
+        return Err(invalid_gallery());
+    };
+    let manifest = state.api().await.manifest(&id).await?;
+    Ok(manifest.favorite_photos())
+}
+
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct StartSyncResult {
