@@ -367,13 +367,68 @@ fn append_sync_log(store: &Store, report: &SyncReport) {
     append_log_line(gallery_log_path(store, &report.gallery_id), entry);
 }
 
-fn read_log_entries(path: &std::path::Path) -> Vec<serde_json::Value> {
+fn read_log_entries(path: &std::path::Path, max_lines: usize) -> Vec<serde_json::Value> {
     let Ok(text) = std::fs::read_to_string(path) else {
         return Vec::new();
     };
-    text.lines()
+    let lines: Vec<&str> = text.lines().collect();
+    let start = lines.len().saturating_sub(max_lines);
+    lines[start..]
+        .iter()
         .filter_map(|line| serde_json::from_str::<serde_json::Value>(line).ok())
         .collect()
+}
+
+fn append_raw_log_lines(path: &std::path::Path, lines: &[String]) {
+    use std::io::Write;
+    if lines.is_empty() {
+        return;
+    }
+    rotate_log_if_needed(path);
+    if let Some(parent) = path.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    let mut options = std::fs::OpenOptions::new();
+    options.create(true).append(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
+    }
+    if let Ok(mut file) = options.open(path) {
+        for line in lines {
+            let _ = writeln!(file, "{line}");
+        }
+    }
+}
+
+/// Moves the old single sync.log into the per-gallery logs once, then removes it.
+/// Existing lines are deduplicated, so an interrupted migration can be retried safely.
+pub fn migrate_legacy_log(store: &Store) {
+    let legacy = legacy_log_path(store);
+    let Ok(text) = std::fs::read_to_string(&legacy) else {
+        return;
+    };
+    let mut groups: std::collections::HashMap<std::path::PathBuf, Vec<String>> =
+        std::collections::HashMap::new();
+    for line in text.lines() {
+        let Ok(entry) = serde_json::from_str::<serde_json::Value>(line) else {
+            continue;
+        };
+        let target = match entry.get("galleryId").and_then(serde_json::Value::as_str) {
+            Some(id) if sanitize_gallery_id(id).is_some() => gallery_log_path(store, id),
+            _ => logs_dir(store).join("_unlinked.log"),
+        };
+        groups.entry(target).or_default().push(line.to_string());
+    }
+    for (path, mut lines) in groups {
+        let existing: std::collections::HashSet<String> = std::fs::read_to_string(&path)
+            .map(|text| text.lines().map(str::to_string).collect())
+            .unwrap_or_default();
+        lines.retain(|line| !existing.contains(line));
+        append_raw_log_lines(&path, &lines);
+    }
+    let _ = std::fs::remove_file(legacy);
 }
 
 async fn sync_linked(
@@ -855,10 +910,10 @@ pub async fn get_sync_log(
     let Some(id) = sanitize_gallery_id(&gallery_id) else {
         return Err(invalid_gallery());
     };
-    let mut entries = read_log_entries(&gallery_log_path(&state.store, &id));
-    // Backwards compatibility with the old single sync.log.
+    let mut entries = read_log_entries(&gallery_log_path(&state.store, &id), 50);
+    // Backwards compatibility if migration could not remove the old file yet.
     entries.extend(
-        read_log_entries(&legacy_log_path(&state.store))
+        read_log_entries(&legacy_log_path(&state.store), 200)
             .into_iter()
             .filter(|entry| {
                 entry.get("galleryId").and_then(serde_json::Value::as_str) == Some(id.as_str())
@@ -887,7 +942,7 @@ pub async fn clear_sync_log(
     let _ = std::fs::remove_file(gallery_log_path(&state.store, &id));
     let legacy = legacy_log_path(&state.store);
     if legacy.exists() {
-        let kept: Vec<String> = read_log_entries(&legacy)
+        let kept: Vec<String> = read_log_entries(&legacy, usize::MAX)
             .into_iter()
             .filter(|entry| {
                 entry.get("galleryId").and_then(serde_json::Value::as_str) != Some(id.as_str())
@@ -964,5 +1019,76 @@ mod tests {
         assert!(!state.should_process_link("picstome://sync?gallery=G1&name=Test"));
         state.mark_frontend_closed();
         assert!(!state.frontend_is_ready());
+    }
+
+    fn legacy_entry(at: i64, gallery: Option<&str>) -> String {
+        json!({
+            "kind": "sync",
+            "at": at,
+            "galleryId": gallery,
+            "counts": {},
+            "uploaded": [],
+            "downloaded": [],
+            "errors": [],
+        })
+        .to_string()
+    }
+
+    #[test]
+    fn migrates_legacy_log_into_per_gallery_logs_once() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::new(dir.path()).unwrap();
+        let legacy = store.root().join("sync.log");
+        let g1 = legacy_entry(1, Some("G1"));
+        let g2 = legacy_entry(2, Some("G2"));
+        let unlinked = legacy_entry(3, None);
+        let unsafe_gallery = legacy_entry(4, Some("../escape"));
+        std::fs::write(
+            &legacy,
+            [
+                g1.as_str(),
+                g2.as_str(),
+                unlinked.as_str(),
+                unsafe_gallery.as_str(),
+            ]
+            .join("\n"),
+        )
+        .unwrap();
+
+        migrate_legacy_log(&store);
+        assert!(!legacy.exists());
+        let logs = store.root().join("logs");
+        let g1_log = std::fs::read_to_string(logs.join("G1.log")).unwrap();
+        assert_eq!(g1_log.lines().collect::<Vec<_>>(), vec![g1.as_str()]);
+        assert!(std::fs::read_to_string(logs.join("G2.log"))
+            .unwrap()
+            .contains(&g2));
+        assert!(std::fs::read_to_string(logs.join("_unlinked.log"))
+            .unwrap()
+            .contains(&unlinked));
+        assert!(!store.root().join("escape.log").exists());
+
+        // Recreating the legacy file must not duplicate imported entries.
+        std::fs::write(&legacy, g1.as_str()).unwrap();
+        migrate_legacy_log(&store);
+        let g1_log = std::fs::read_to_string(logs.join("G1.log")).unwrap();
+        assert_eq!(g1_log.lines().count(), 1);
+        assert!(!legacy.exists());
+    }
+
+    #[test]
+    fn reads_only_the_requested_log_tail() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::new(dir.path()).unwrap();
+        let logs = store.root().join("logs");
+        std::fs::create_dir_all(&logs).unwrap();
+        let path = logs.join("G1.log");
+        let lines: Vec<String> = (0..60).map(|at| legacy_entry(at, Some("G1"))).collect();
+        std::fs::write(&path, lines.join("\n")).unwrap();
+
+        let entries = read_log_entries(&path, 50);
+        assert_eq!(entries.len(), 50);
+        assert_eq!(entries[0].get("at").unwrap().as_i64(), Some(10));
+        assert_eq!(entries[49].get("at").unwrap().as_i64(), Some(59));
     }
 }

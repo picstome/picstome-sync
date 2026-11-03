@@ -69,7 +69,8 @@ against the backend contract in
   link/favorites, files rated and errors). The same history is shown per
   gallery in the collapsible **Activity log** panel, which also has a
   **Clear log** button. Logs rotate automatically at 512 KB, keeping the last
-  500 entries. The app data directory (not the photo folder) contains
+  500 entries; the old single `sync.log` is imported into these files once and
+  removed on startup. The app data directory (not the photo folder) contains
   `index.json`, the per-gallery snapshots, `auth.json` and `logs/`; no hidden
   state file is added to the photos folder.
 - **Sensible rating target**: a `picstome://rate` link uses the selected

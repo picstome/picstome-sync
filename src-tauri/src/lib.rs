@@ -65,6 +65,7 @@ pub fn run() {
                 _ => app.path().app_data_dir()?,
             };
             let store = Store::new(data_dir)?;
+            commands::migrate_legacy_log(&store);
             let token_store = auth::TokenStore::new(store.root().join("auth.json"));
             let base_url = commands::api_base_from_env_or_config(&store);
             let token = std::env::var("PICSTOME_TOKEN")
