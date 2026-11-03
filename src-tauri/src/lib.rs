@@ -149,6 +149,7 @@ pub fn run() {
             commands::connect,
             commands::logout,
             commands::list_remote_galleries,
+            commands::get_gallery_favorites,
             commands::start_sync,
             commands::sync_gallery,
             commands::locate_gallery,

@@ -84,6 +84,14 @@ against the backend contract in
   or `CUSTOM` badge stays visible in the sidebar. The connected account shows
   the Picstome display name; clicking it opens `/settings/profile`.
 
+### Lightroom and Capture One workflow
+
+- Sync writes `Rating`/`RatingPercent` into the local files with exiftool (embedded XMP or sidecar, depending on the format). Favorites are matched recursively inside the linked folder (up to 8 levels); hidden and `Editadas/Edits` folders are skipped.
+- The **Favorites list** button copies the current gallery favorites in the same formats as the web app: App deep link, Lightroom (comma-separated filenames without extension), Capture One (space-separated), Finder/Explorer (`OR` query), and a plain list of full filenames.
+- **Lightroom Classic does not automatically re-read metadata** for photos that are already imported. After applying ratings, select the photos and use **Metadata → Read Metadata from File**. If the photos are not imported yet, importing the synced folder is enough.
+- Sync cannot trigger that Lightroom command itself: Lightroom Classic does not expose a supported external API for it without a plug-in.
+- **Lightroom Cloud** does not re-read external file metadata after import. Automatic catalog updates there require the Adobe Lightroom partner API (not implemented yet).
+
 ## Quick start (no backend)
 
 ```bash

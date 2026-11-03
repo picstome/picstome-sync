@@ -368,6 +368,21 @@ pub struct ConfigView {
     pub build_profile: String,
 }
 
+impl Manifest {
+    pub fn favorite_photos(&self) -> Vec<FavoritePhoto> {
+        self.photos
+            .iter()
+            .filter(|photo| photo.favorited_at.is_some())
+            .map(|photo| FavoritePhoto {
+                id: photo.id.clone(),
+                filename: photo.filename.clone(),
+                identity_key: photo.identity(),
+                favorited_at: photo.favorited_at.clone(),
+            })
+            .collect()
+    }
+}
+
 impl Photo {
     pub fn identity(&self) -> Option<String> {
         self.identity_key
@@ -463,6 +478,53 @@ mod tests {
         assert!(normalize_api_base("").is_err());
         assert!(normalize_api_base("ftp://example.test").is_err());
         assert!(normalize_api_base("not a url").is_err());
+    }
+
+    #[test]
+    fn manifest_favorites_keep_identity_and_timestamp() {
+        let manifest = Manifest {
+            gallery_id: "G1".into(),
+            name: "Gallery".into(),
+            rev: None,
+            photos: vec![
+                Photo {
+                    id: "p1".into(),
+                    filename: "IMG_0001.JPG".into(),
+                    size: None,
+                    hash: None,
+                    hash_algo: None,
+                    url: String::new(),
+                    updated_at: None,
+                    version_count: None,
+                    version_number: None,
+                    identity_key: None,
+                    favorited_at: Some("2026-01-01T12:00:00Z".into()),
+                },
+                Photo {
+                    id: "p2".into(),
+                    filename: "IMG_0002.JPG".into(),
+                    size: None,
+                    hash: None,
+                    hash_algo: None,
+                    url: String::new(),
+                    updated_at: None,
+                    version_count: None,
+                    version_number: None,
+                    identity_key: None,
+                    favorited_at: None,
+                },
+            ],
+        };
+
+        let favorites = manifest.favorite_photos();
+        assert_eq!(favorites.len(), 1);
+        assert_eq!(favorites[0].id, "p1");
+        assert_eq!(favorites[0].filename, "IMG_0001.JPG");
+        assert_eq!(favorites[0].identity_key.as_deref(), Some("image:img_0001"));
+        assert_eq!(
+            favorites[0].favorited_at.as_deref(),
+            Some("2026-01-01T12:00:00Z")
+        );
     }
 
     #[test]

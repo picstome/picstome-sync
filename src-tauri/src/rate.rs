@@ -5,6 +5,7 @@ use serde::Serialize;
 use tokio::process::Command;
 
 use picstome_sync_core::identity::{IMAGE_EXTS, RAW_EXTS};
+use picstome_sync_core::localfiles::{scan_local_photos, MAX_PHOTO_BYTES};
 use picstome_sync_core::sanitize::sanitize_file_names;
 
 pub const MAX_FILES: usize = 5000;
@@ -154,12 +155,6 @@ async fn run_exiftool(
     Err(if message.is_empty() { stdout } else { message })
 }
 
-fn find_case_insensitive(files: &HashMap<String, String>, base: &str, ext: &str) -> Option<String> {
-    files
-        .get(&format!("{}.{}", base.to_lowercase(), ext))
-        .cloned()
-}
-
 pub async fn rate_files(
     exiftool: Option<&Path>,
     requested_files: &[String],
@@ -187,16 +182,18 @@ pub async fn rate_files(
         return RateResult::error_for(&names, "Photo tool unavailable");
     };
 
-    let dir_files: HashMap<String, String> = match std::fs::read_dir(photos_dir) {
-        Ok(entries) => entries
-            .filter_map(Result::ok)
-            .map(|entry| {
-                let name = entry.file_name().to_string_lossy().to_string();
-                (name.to_lowercase(), name)
-            })
-            .collect(),
-        Err(_) => return RateResult::error_for(&names, "Folder not accessible"),
-    };
+    if !photos_dir.is_dir() {
+        return RateResult::error_for(&names, "Folder not accessible");
+    }
+
+    let (records, _) = scan_local_photos(photos_dir, 8, true, MAX_PHOTO_BYTES);
+    let mut dir_files: HashMap<String, Vec<(String, PathBuf)>> = HashMap::new();
+    for record in records {
+        dir_files
+            .entry(record.filename.to_lowercase())
+            .or_default()
+            .push((record.filename, record.path));
+    }
 
     struct Slot {
         file: Option<PathBuf>,
@@ -205,10 +202,11 @@ pub async fn rate_files(
 
     let mut slots: Vec<Slot> = Vec::new();
     for base in &names {
-        let mut matches: Vec<String> = Vec::new();
+        let mut matches: Vec<(String, PathBuf)> = Vec::new();
         for ext in IMAGE_EXTS.iter().chain(RAW_EXTS.iter()) {
-            if let Some(name) = find_case_insensitive(&dir_files, base, ext) {
-                matches.push(name);
+            let key = format!("{}.{}", base.to_lowercase(), ext);
+            if let Some(entries) = dir_files.get(&key) {
+                matches.extend(entries.iter().cloned());
             }
         }
 
@@ -225,11 +223,12 @@ pub async fn rate_files(
             continue;
         }
 
-        for name in matches {
+        for (name, path) in matches {
+            let detail_name = name.clone();
             slots.push(Slot {
-                file: Some(photos_dir.join(&name)),
+                file: Some(path),
                 detail: RateDetail {
-                    name: name.clone(),
+                    name: detail_name,
                     status: "ok".into(),
                     file: Some(name),
                     msg: None,
@@ -299,6 +298,35 @@ mod tests {
             } else {
                 "exiftool"
             })
+    }
+
+    #[tokio::test]
+    async fn writes_rating_for_files_in_subfolders() {
+        let exiftool = bundled_exiftool();
+        if !exiftool.is_file() {
+            eprintln!("skipping: bundled exiftool not present");
+            return;
+        }
+
+        let dir = tempfile::tempdir().unwrap();
+        let subfolder = dir.path().join("Shoot");
+        std::fs::create_dir_all(&subfolder).unwrap();
+        let path = subfolder.join("photo.jpg");
+        std::fs::write(&path, include_bytes!("../tests/fixtures/pixel.jpg")).unwrap();
+
+        let result = rate_files(Some(&exiftool), &["photo".to_string()], "5", dir.path()).await;
+        assert_eq!(result.errors, 0, "{:?}", result.details);
+        assert_eq!(result.rated, 1);
+
+        let invocation = resolve_exiftool(&exiftool).await.expect("exiftool");
+        let output = Command::new(&invocation.program)
+            .args(&invocation.prefix)
+            .args(["-Rating", "-s", "-s", "-s"])
+            .arg(&path)
+            .output()
+            .await
+            .unwrap();
+        assert_eq!(String::from_utf8_lossy(&output.stdout).trim(), "5");
     }
 
     #[tokio::test]
