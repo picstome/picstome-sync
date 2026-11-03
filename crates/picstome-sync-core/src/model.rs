@@ -241,6 +241,12 @@ pub struct DownloadedItem {
     pub filename: String,
     pub size: u64,
     pub skipped: bool,
+    #[serde(default)]
+    pub identity_key: Option<String>,
+    #[serde(default)]
+    pub hash: Option<String>,
+    #[serde(default)]
+    pub mtime: Option<i64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -254,6 +260,8 @@ pub struct UploadedItem {
     pub size: Option<u64>,
     pub version_count: Option<u64>,
     pub version_number: Option<u64>,
+    #[serde(default)]
+    pub identity_key: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

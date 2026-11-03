@@ -29,8 +29,11 @@ against the backend contract in
 - **First sync**: `picstome://sync?gallery=G123&name=MiBoda` opens the app,
   asks for a folder once, downloads the manifest with parallel range requests,
   verifies SHA-256 and writes `<galleryId>.json`.
-- **Updates**: three-way diff (remote / local / last snapshot) with downloads,
-  uploads, local deletions proposed as remote deletions, and conflict reporting.
+- **Updates**: explicit three-way state transitions (remote / local / last
+  snapshot) with downloads, uploads, local deletions proposed as remote
+  deletions, and conflict reporting. The snapshot is updated from confirmed
+  transfer results, without a second full local scan or a second manifest
+  request.
 - **Remote deletions are explicit**: if a photo disappears from Picstome, Sync
   opens a dialog with **Move to Trash / Keep local / Upload again**. Local files
   are moved to the OS Trash/Recycle Bin, or to a `.picstome-trash` folder inside
@@ -124,7 +127,7 @@ PICSTOME_API_BASE=http://127.0.0.1:8787 PICSTOME_MOCK=1 cargo run -p picstome-sy
 
 1. Open **GitHub → Releases** and download the latest **draft** asset (maintainers
    see drafts on the releases page), e.g. `Picstome.Sync_<version>_universal.dmg`.
-   With the CLI: `gh release download v0.1.17 --pattern '*.dmg'`.
+   With the CLI: `gh release download v0.1.18 --pattern '*.dmg'`.
    New test builds are produced locally with `scripts/release-local.sh`.
 2. Install it, open **Info** in the header and check **Version**, **Build**,
    **Mode** and **API target**.
