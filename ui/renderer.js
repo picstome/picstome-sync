@@ -1467,16 +1467,6 @@ async function resolveRemoteDeleted(action) {
         els.remoteDeletedList.querySelectorAll("input[type=checkbox]:checked"),
     ).map((checkbox) => checkbox.dataset.remoteId);
     if (ids.length === 0) return;
-    if (action === "delete_local") {
-        const confirmed = await askConfirm({
-            title: state.strings.confirmLocalDeleteTitle,
-            message: fmt(state.strings.confirmLocalDeleteMessage, {
-                n: ids.length,
-            }),
-            confirmLabel: state.strings.confirmLocalDeleteAction,
-        });
-        if (!confirmed) return;
-    }
     modal.busy = true;
     modal.result = null;
     renderRemoteDeleted();

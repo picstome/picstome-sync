@@ -41,9 +41,10 @@ against the backend contract in
   the gallery if the OS trash is unavailable. It never re-uploads a remotely
   deleted photo silently; the choice is persisted in the snapshot so the same
   photo is not proposed again after resolving it.
-- **Destructive actions need confirmation**: local-file moves to trash and
-  remote deletions both open a second confirmation dialog with the exact count.
-  Confirmed actions and failures are written to the gallery activity log.
+- **Destructive actions need confirmation**: the remote-deletion dialog is the
+  explicit confirmation for moving local files to trash, while deleting photos
+  in Picstome asks for a second confirmation with the exact count. Confirmed
+  actions and failures are written to the gallery activity log.
 - **Gallery deleted on the web**: Sync reports that the gallery no longer
   exists, explicitly states that local files will not be touched, and offers
   **Remove from app** or **Cancel**. Removing it only clears the link/snapshot;
@@ -140,7 +141,7 @@ PICSTOME_API_BASE=http://127.0.0.1:8787 PICSTOME_MOCK=1 cargo run -p picstome-sy
 
 1. Open **GitHub → Releases** and download the latest **draft** asset (maintainers
    see drafts on the releases page), e.g. `Picstome.Sync_<version>_universal.dmg`.
-   With the CLI: `gh release download v0.1.23 --pattern '*.dmg'`.
+   With the CLI: `gh release download v0.1.24 --pattern '*.dmg'`.
    New test builds are produced locally with `scripts/release-local.sh`.
 2. Install it, open **Info** in the header and check **Version**, **Build**,
    **Mode** and **API target**.

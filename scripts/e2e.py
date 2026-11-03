@@ -607,18 +607,12 @@ def main():
                     """
                     const done = arguments[arguments.length - 1];
                     done(JSON.stringify({
-                      visible: !document.getElementById('confirmModal').classList.contains('hidden'),
-                      message: document.getElementById('confirmMessage').textContent
+                      confirmVisible: !document.getElementById('confirmModal').classList.contains('hidden')
                     }));
                     """,
                 )
             )
-            log("local delete confirmation:", local_confirm)
-            assert local_confirm["visible"], "local delete confirmation did not open"
-            run_async(
-                session,
-                "const done = arguments[arguments.length - 1]; document.getElementById('btnConfirmOk').click(); done('confirmed');",
-            )
+            assert not local_confirm["confirmVisible"], "local trash must not ask twice"
             deadline = time.time() + 30
             while time.time() < deadline:
                 state_after = json.loads(
