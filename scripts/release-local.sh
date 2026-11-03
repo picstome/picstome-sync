@@ -65,9 +65,9 @@ if ! gh release view "$TAG" >/dev/null 2>&1; then
 fi
 
 if [[ "$PLATFORM" == "macos" ]]; then
-  ARTIFACTS=(target/universal-apple-darwin/release/bundle/dmg/*.dmg)
+  ARTIFACTS=(target/universal-apple-darwin/release/bundle/dmg/*"$VERSION"*.dmg)
 else
-  ARTIFACTS=(target/release/bundle/deb/*.deb target/release/bundle/appimage/*.AppImage)
+  ARTIFACTS=(target/release/bundle/deb/*"$VERSION"*.deb target/release/bundle/appimage/*"$VERSION"*.AppImage)
 fi
 
 echo "Uploading $PLATFORM artifacts..."
