@@ -3,6 +3,13 @@ name: ci
 # Automatic runs are disabled because the account has exhausted its included
 # Actions minutes. Run the checks locally, or trigger this workflow manually
 # only when you explicitly want to spend minutes.
+#
+# When the repository is made public, restore:
+# on:
+#   push:
+#     branches: [main]
+#   pull_request:
+#   workflow_dispatch:
 on:
   workflow_dispatch:
 

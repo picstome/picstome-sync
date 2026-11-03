@@ -1,5 +1,11 @@
 <p align="center"><img src="ui/assets/picstome-sync-logo.png" width="120" alt="Picstome Sync"></p>
 
+> **Development / testing build — not production software.**
+> This repository is published to test and iterate on Picstome Sync. The app can
+> read photo metadata, download, upload and delete photos, and write EXIF/XMP
+> ratings. Use test galleries and keep backups. Do not point it at a production
+> photo library without a backup and an explicit review.
+
 # Picstome Sync
 
 Desktop app to keep Picstome galleries and local photo folders in sync, while
@@ -243,7 +249,29 @@ config.json      {photosDir,lastRating,lastUpdateCheckAt,accountEmail,apiBase?}
   the atomic rename.
 - `version_count` changes count as remote changes even when bytes are identical.
 
-## Security
+## Security and repository visibility
+
+The repository is safe to make public **after reviewing these points**:
+
+- No credentials, tokens, `.env` files or devel Basic Auth passwords are
+  committed (checked across the git history). Workflows reference GitHub
+  secrets by name only; public visibility does not reveal their values.
+- The only automation that can write to a release runs on tags/manual dispatch
+  and uses `GITHUB_TOKEN`; fork pull requests do not receive repository secrets.
+- Commit metadata is public: the current history is authored with
+  `neo22s@gmail.com`. If you do not want that address on a public repository,
+  rewrite the author before changing visibility or use a GitHub noreply address
+  for future commits.
+- `resources/exiftool*` are third-party binaries; their license files are kept
+  alongside them. The app logo is the Picstome Sync logo supplied by the project.
+- Public GitHub repositories get free standard GitHub-hosted Actions runners,
+  subject to GitHub's fair-use policy. Once the repo is public, the automatic
+  `push`/`pull_request` triggers can be restored in `ci.yml`; they are commented
+  out here to avoid billing while the repository is private and minutes are
+  exhausted.
+- Making a repository public does not expose its secrets, but it does expose the
+  full source and history. Review the code for anything you consider private
+  before changing visibility.
 
 - Folder paths never come from deep links; only from native folder pickers.
 - Tauri capabilities are locked down to the `main` window (`core`, `dialog`,
