@@ -1,12 +1,14 @@
 use std::path::Path;
 
-pub const IMAGE_EXTS: &[&str] = &["jpg", "jpeg", "dng"];
-pub const RAW_EXTS: &[&str] = &["cr3", "cr2", "arw", "nef", "raf", "orf", "rw2"];
-pub const VIDEO_EXTS: &[&str] = &["mp4", "mov", "avi", "mkv", "webm", "m4v"];
+pub const IMAGE_EXTS: &[&str] = &["jpg", "jpeg", "png", "tiff", "dng"];
+pub const RAW_EXTS: &[&str] = &[
+    "cr3", "cr2", "arw", "nef", "raf", "orf", "rw2", "pef", "srw", "mos", "mrw", "3fr",
+];
+pub const VIDEO_EXTS: &[&str] = &["mp4", "mov", "avi", "mkv", "webm", "m4v", "ogg"];
 pub const DOC_EXTS: &[&str] = &["pdf"];
 pub const PHOTO_EXTS: &[&str] = &[
-    "jpg", "jpeg", "dng", "cr3", "cr2", "arw", "nef", "raf", "orf", "rw2", "mp4", "mov", "avi",
-    "mkv", "webm", "m4v", "pdf",
+    "jpg", "jpeg", "png", "tiff", "dng", "cr3", "cr2", "arw", "nef", "raf", "orf", "rw2", "pef",
+    "srw", "mos", "mrw", "3fr", "mp4", "mov", "avi", "mkv", "webm", "m4v", "ogg", "pdf",
 ];
 
 pub fn extension_of(filename: &str) -> String {
@@ -53,7 +55,7 @@ pub fn is_photo_file(filename: &str) -> bool {
 
 fn file_rank(filename: &str) -> u8 {
     match extension_of(filename).as_str() {
-        "jpg" | "jpeg" | "png" => 0,
+        "jpg" | "jpeg" | "png" | "tiff" => 0,
         "dng" => 1,
         "mp4" | "mov" => 2,
         _ => 3,
@@ -98,6 +100,14 @@ mod tests {
     }
 
     #[test]
+    fn collides_jpg_and_jpeg_with_the_same_stem() {
+        let files = ["1Z8A1081.jpeg", "1Z8A1081.JPG"];
+        assert_eq!(identity_key(files[0]), identity_key(files[1]));
+        let chosen = preferred_file(&files, |f| *f).unwrap();
+        assert_eq!(*chosen, "1Z8A1081.JPG");
+    }
+
+    #[test]
     fn picks_jpeg_over_raw() {
         let files = ["a.DNG", "a.jpg"];
         let chosen = preferred_file(&files, |f| f).unwrap();
@@ -117,6 +127,10 @@ mod extra_tests {
         assert_eq!(stem_of(""), "");
         assert!(!is_photo_file("notes.txt"));
         assert!(is_photo_file("photo.CR3"));
+        assert!(is_photo_file("photo.PNG"));
+        assert!(is_photo_file("photo.TIFF"));
+        assert!(is_photo_file("clip.OGG"));
+        assert!(is_photo_file("photo.3FR"));
     }
 
     #[test]
