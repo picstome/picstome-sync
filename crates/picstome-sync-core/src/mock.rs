@@ -802,6 +802,30 @@ async fn dev_remove(State(state): State<Arc<MockState>>, Json(body): Json<Value>
     )
 }
 
+async fn dev_remove_gallery(
+    State(state): State<Arc<MockState>>,
+    headers: HeaderMap,
+    Json(body): Json<Value>,
+) -> Response {
+    if !is_authorized(&headers, &state) {
+        return unauthorized();
+    }
+    let gallery_id = body
+        .get("gallery_id")
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .to_string();
+    let removed = state.galleries.write().await.remove(&gallery_id);
+    if removed.is_some() {
+        json_response(StatusCode::OK, json!({"removed": gallery_id}))
+    } else {
+        json_response(
+            StatusCode::NOT_FOUND,
+            json!({"message": "Unknown gallery", "code": "unknown_gallery"}),
+        )
+    }
+}
+
 pub async fn start_mock_server(options: MockServerOptions) -> std::io::Result<MockServer> {
     let state = Arc::new(MockState::new(options.photo_size, options.token.clone()));
 
@@ -813,6 +837,7 @@ pub async fn start_mock_server(options: MockServerOptions) -> std::io::Result<Mo
         .route("/api/v1/dev/add", post(dev_add))
         .route("/api/v1/dev/bump", post(dev_bump))
         .route("/api/v1/dev/remove", post(dev_remove))
+        .route("/api/v1/dev/remove-gallery", post(dev_remove_gallery))
         .route("/api/v1/tokens/exchange", post(exchange))
         .route("/api/v1/tokens/revoke", post(revoke))
         .route("/api/v1/me", get(me))

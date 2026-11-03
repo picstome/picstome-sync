@@ -1294,6 +1294,36 @@ function openRateLink({ files, rating, gallery }) {
     renderRating();
 }
 
+function isUnknownGalleryError(err) {
+    const code = err?.code || err?.error?.code;
+    return (
+        code === "unknown_gallery" ||
+        String(err?.message || err || "").includes("unknown_gallery")
+    );
+}
+
+async function handleUnknownGallery(gallery) {
+    const s = state.strings;
+    const remove = await askConfirm({
+        title: s.galleryMissingTitle,
+        message: fmt(s.galleryMissingMessage, {
+            name: gallery.name || gallery.galleryId,
+        }),
+        confirmLabel: s.galleryMissingRemove,
+        danger: false,
+    });
+    if (remove) {
+        await invoke("unlink_gallery", { galleryId: gallery.galleryId });
+        if (state.currentGalleryId === gallery.galleryId) {
+            state.currentGalleryId = null;
+        }
+        state.report = null;
+        state.syncLog = [];
+    }
+    await refreshState();
+    renderAll();
+}
+
 async function syncCurrent() {
     const gallery = currentGallery();
     if (!gallery || state.syncBusy) return;
@@ -1301,25 +1331,33 @@ async function syncCurrent() {
     state.progress = { phase: "manifest", done: 0, total: 1 };
     state.report = null;
     renderAll();
+    let missing = false;
     try {
         const report = await invoke("sync_gallery", { galleryId: gallery.galleryId });
         state.report = report;
     } catch (err) {
-        state.report = {
-            counts: {},
-            downloaded: [],
-            uploaded: [],
-            conflicts: [],
-            errors: [{ filename: "—", message: err?.message || String(err) }],
-            proposals: { deleteRemote: [] },
-            favorites: [],
-        };
+        if (isUnknownGalleryError(err)) {
+            missing = true;
+            await handleUnknownGallery(gallery);
+        } else {
+            state.report = {
+                counts: {},
+                downloaded: [],
+                uploaded: [],
+                conflicts: [],
+                errors: [{ filename: "—", message: err?.message || String(err) }],
+                proposals: { deleteRemote: [] },
+                favorites: [],
+            };
+        }
     } finally {
         state.syncBusy = false;
         state.progress = null;
-        await refreshState();
+        if (!missing) {
+            await refreshState();
+        }
         renderAll();
-        handlePostSync(state.report);
+        if (!missing) handlePostSync(state.report);
     }
 }
 
@@ -1329,6 +1367,7 @@ async function startSync(galleryId, name) {
     state.progress = { phase: "manifest", done: 0, total: 1 };
     state.report = null;
     renderAll();
+    let missing = false;
     try {
         const result = await invoke("start_sync", { galleryId, name });
         if (result?.report) {
@@ -1336,21 +1375,31 @@ async function startSync(galleryId, name) {
             state.report = result.report;
         }
     } catch (err) {
-        state.report = {
-            counts: {},
-            downloaded: [],
-            uploaded: [],
-            conflicts: [],
-            errors: [{ filename: "—", message: err?.message || String(err) }],
-            proposals: { deleteRemote: [] },
-            favorites: [],
-        };
+        if (isUnknownGalleryError(err)) {
+            missing = true;
+            await handleUnknownGallery({
+                galleryId,
+                name: name || galleryId,
+            });
+        } else {
+            state.report = {
+                counts: {},
+                downloaded: [],
+                uploaded: [],
+                conflicts: [],
+                errors: [{ filename: "—", message: err?.message || String(err) }],
+                proposals: { deleteRemote: [] },
+                favorites: [],
+            };
+        }
     } finally {
         state.syncBusy = false;
         state.progress = null;
-        await refreshState();
+        if (!missing) {
+            await refreshState();
+        }
         renderAll();
-        handlePostSync(state.report);
+        if (!missing) handlePostSync(state.report);
     }
 }
 

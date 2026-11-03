@@ -131,7 +131,7 @@ def prepare_state(user_data, photos, gallery, rating_dir):
     if MOCK:
         galleries.append(
             {
-                "galleryId": "G999",
+                "galleryId": "G456",
                 "name": "Other Gallery",
                 "localPath": rating_dir,
             }
@@ -781,6 +781,97 @@ def main():
             os.path.join(user_data, "logs", f"{gallery}.log")
         ), "per-gallery log was not removed"
         assert not js_invoke(session, "get_sync_log", {"galleryId": gallery})
+
+        # A gallery deleted on the web must not delete local files. The app asks
+        # whether to remove it locally; Cancel keeps it, Accept unlinks it.
+        remove_gallery_request = urllib.request.Request(
+            f"{api_base}/api/v1/dev/remove-gallery",
+            data=json.dumps({"gallery_id": "G456"}).encode(),
+            headers={
+                "Content-Type": "application/json",
+                "Authorization": "Bearer demo-token",
+            },
+            method="POST",
+        )
+        urllib.request.urlopen(remove_gallery_request, timeout=30).read()
+        run_async(
+            session,
+            """
+            const done = arguments[arguments.length - 1];
+            const row = Array.from(document.querySelectorAll('.gallery-row'))
+              .find((item) => item.dataset.galleryId === 'G456');
+            row.click();
+            document.getElementById('btnSync').click();
+            done('clicked');
+            """,
+        )
+        deadline = time.time() + 30
+        missing_prompt = None
+        while time.time() < deadline:
+            missing_prompt = json.loads(
+                run_async(
+                    session,
+                    """
+                    const done = arguments[arguments.length - 1];
+                    done(JSON.stringify({
+                      visible: !document.getElementById('confirmModal').classList.contains('hidden'),
+                      title: document.getElementById('confirmTitle').textContent,
+                      message: document.getElementById('confirmMessage').textContent
+                    }));
+                    """,
+                )
+            )
+            if missing_prompt["visible"]:
+                break
+            time.sleep(0.2)
+        log("missing gallery prompt:", missing_prompt)
+        assert missing_prompt and missing_prompt["visible"], "missing gallery prompt did not open"
+        assert "not found" in missing_prompt["title"].lower(), missing_prompt
+        assert "nothing will be deleted" in missing_prompt["message"].lower(), missing_prompt
+
+        run_async(
+            session,
+            "const done = arguments[arguments.length - 1]; document.getElementById('btnConfirmCancel').click(); done('cancelled');",
+        )
+        time.sleep(0.5)
+        state_after_cancel = js_invoke(session, "get_state", {})
+        assert any(
+            item["galleryId"] == "G456" for item in state_after_cancel["galleries"]
+        ), state_after_cancel["galleries"]
+
+        run_async(
+            session,
+            "const done = arguments[arguments.length - 1]; document.getElementById('btnSync').click(); done('clicked');",
+        )
+        deadline = time.time() + 30
+        while time.time() < deadline:
+            missing_prompt = json.loads(
+                run_async(
+                    session,
+                    "const done = arguments[arguments.length - 1]; done(JSON.stringify({ visible: !document.getElementById('confirmModal').classList.contains('hidden') }));",
+                )
+            )
+            if missing_prompt["visible"]:
+                break
+            time.sleep(0.2)
+        assert missing_prompt and missing_prompt["visible"], "missing gallery prompt did not reopen"
+        run_async(
+            session,
+            "const done = arguments[arguments.length - 1]; document.getElementById('btnConfirmOk').click(); done('confirmed');",
+        )
+        deadline = time.time() + 30
+        while time.time() < deadline:
+            state_after_remove = js_invoke(session, "get_state", {})
+            if not any(
+                item["galleryId"] == "G456"
+                for item in state_after_remove["galleries"]
+            ):
+                break
+            time.sleep(0.2)
+        assert not any(
+            item["galleryId"] == "G456" for item in state_after_remove["galleries"]
+        ), state_after_remove["galleries"]
+        assert os.path.isdir(rating_dir), "removing a gallery must not touch local files"
 
         logout = js_invoke(session, "logout", {})
         assert logout.get("ok"), logout
