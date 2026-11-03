@@ -1,21 +1,27 @@
 name: build
 
-# macOS-only test build. Windows/Linux test builds are produced locally with
-# scripts/release-local.sh; final releases use release.yml for all platforms.
+# macOS test builds. Windows test builds are intentionally disabled until the
+# app is stable; Windows installers are only produced by release.yml for final
+# tags. Linux test builds are produced locally with scripts/release-local.sh.
 on:
+  push:
+    branches: [main]
+    paths-ignore:
+      - ".github/**"
+      - "**/*.md"
   workflow_dispatch:
     inputs:
       tag:
-        description: "Draft tag to build/upload (e.g. v0.1.7)"
-        required: true
-        default: "v0.1.7"
+        description: "Optional draft tag (defaults to v<app version>)"
+        required: false
+        default: ""
 
 permissions:
   contents: write
 
 concurrency:
-  group: build-macos-${{ inputs.tag }}
-  cancel-in-progress: false
+  group: build-macos-${{ github.ref }}
+  cancel-in-progress: true
 
 env:
   CARGO_TERM_COLOR: always
@@ -33,6 +39,16 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - name: Install macOS targets
         run: rustup target add aarch64-apple-darwin x86_64-apple-darwin
+      - name: Resolve draft tag
+        id: tag
+        run: |
+          set -euo pipefail
+          if [ -n "${{ inputs.tag }}" ]; then
+            TAG="${{ inputs.tag }}"
+          else
+            TAG="v$(python3 -c 'import json; print(json.load(open("src-tauri/tauri.conf.json"))["version"])')"
+          fi
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
       - name: Build unsigned universal app
         env:
           CSC_IDENTITY_AUTO_DISCOVERY: "false"
@@ -42,11 +58,18 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
-          TAG="${{ inputs.tag }}"
+          TAG="${{ steps.tag.outputs.tag }}"
           if ! gh release view "$TAG" >/dev/null 2>&1; then
             gh release create "$TAG" \
               --draft \
               --title "Picstome Sync $TAG" \
-              --notes "macOS test build (universal, ad-hoc signed). Other platforms are built locally."
+              --notes "macOS test build (universal, ad-hoc signed). Linux is built locally; Windows is reserved for the final release."
           fi
           gh release upload "$TAG" target/universal-apple-darwin/release/bundle/dmg/*.dmg --clobber
+      - name: Upload macOS artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: picstome-sync-macos-universal-${{ github.sha }}
+          path: target/universal-apple-darwin/release/bundle/dmg/*.dmg
+          if-no-files-found: error
+          retention-days: 30

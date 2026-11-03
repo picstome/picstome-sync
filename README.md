@@ -185,9 +185,9 @@ state and logs out.
 
 | Workflow | Trigger | What it does |
 | --- | --- | --- |
-| `ci.yml` | manual only | Linux-only Rustfmt + Clippy + engine tests, workspace tests, app `--smoke`, full UI E2E and core coverage report. Automatic runs are disabled because the account exhausted its Actions minutes. |
-| `build.yml` | manual only | macOS universal test DMG uploaded to a draft release. Use only when a Mac test build is needed. |
-| `release.yml` | version tag/manual (final releases) | builds and attaches Linux/macOS/Windows installers to a **draft** GitHub release |
+| `ci.yml` | push/PR/manual | Linux-only Rustfmt + Clippy + engine tests, workspace tests, app `--smoke`, full UI E2E and core coverage report. |
+| `build.yml` | push to `main`/manual | macOS universal test DMG uploaded to the `v<version>` draft release (and as a workflow artifact). Windows test builds stay disabled until the app is stable. |
+| `release.yml` | version tag/manual (final releases) | builds and attaches Linux/macOS/Windows installers to a **draft** GitHub release. Windows belongs here only for stable/final tags. |
 | `real-api.yml` | manual | engine + UI E2E against a real API (`PICSTOME_REAL_API`, `PICSTOME_REAL_TOKEN`, `PICSTOME_REAL_GALLERY`; optional write round-trip) |
 
 ## Local tests and builds (no Actions minutes)
@@ -264,11 +264,10 @@ The repository is safe to make public **after reviewing these points**:
   for future commits.
 - `resources/exiftool*` are third-party binaries; their license files are kept
   alongside them. The app logo is the Picstome Sync logo supplied by the project.
-- Public GitHub repositories get free standard GitHub-hosted Actions runners,
-  subject to GitHub's fair-use policy. Once the repo is public, the automatic
-  `push`/`pull_request` triggers can be restored in `ci.yml`; they are commented
-  out here to avoid billing while the repository is private and minutes are
-  exhausted.
+- This repository is public: standard GitHub-hosted Actions runners are free,
+  subject to GitHub's fair-use policy. CI runs on pushes/PRs and `build.yml`
+  produces a macOS test DMG on every push to `main`. Windows test builds remain
+  disabled until the app is stable; final tagged releases build Windows.
 - Making a repository public does not expose its secrets, but it does expose the
   full source and history. Review the code for anything you consider private
   before changing visibility.
