@@ -221,6 +221,10 @@ fn english() -> Value {
         "noActivity": "No sync activity yet",
         "localNewReason": "new local file",
         "localModifiedReason": "modified locally",
+        "ratingLogLine": "Rating {stars}★ · {n} file(s)",
+        "ratingSourceLink": "from Picstome link",
+        "ratingSourceFavorites": "favorites",
+        "ratedFiles": "Rated",
     })
 }
 
@@ -351,6 +355,10 @@ fn spanish() -> Value {
         "noActivity": "Todavía no hay actividad de sync",
         "localNewReason": "archivo nuevo en local",
         "localModifiedReason": "modificado en local",
+        "ratingLogLine": "Valoración {stars}★ · {n} archivo(s)",
+        "ratingSourceLink": "desde enlace de Picstome",
+        "ratingSourceFavorites": "favoritas",
+        "ratedFiles": "Valoradas",
     })
 }
 

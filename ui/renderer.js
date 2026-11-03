@@ -688,6 +688,37 @@ function renderLog() {
 
         const head = document.createElement("div");
         head.className = "log-entry-head";
+        const body = document.createElement("div");
+        body.className = "log-entry-body";
+
+        if (entry.kind === "rating") {
+            const source =
+                entry.source === "favorites"
+                    ? s.ratingSourceFavorites
+                    : s.ratingSourceLink;
+            head.textContent = `${formatDate(entry.at)} · ${fmt(
+                s.ratingLogLine,
+                { stars: entry.rating, n: entry.rated },
+            )} · ${source}`;
+            card.appendChild(head);
+            for (const item of entry.files || []) {
+                if (item.status !== "ok") continue;
+                const line = document.createElement("div");
+                line.textContent = `${s.ratedFiles}: ${item.file || item.name}`;
+                body.appendChild(line);
+            }
+            for (const item of entry.files || []) {
+                if (item.status === "ok") continue;
+                const line = document.createElement("div");
+                line.className = "log-error";
+                line.textContent = `${item.name} — ${item.message || item.status}`;
+                body.appendChild(line);
+            }
+            card.appendChild(body);
+            els.syncLogEntries.appendChild(card);
+            continue;
+        }
+
         const counts = entry.counts || {};
         const parts = [
             `${s.downloadedFiles}: ${counts.remoteNew + counts.remoteModified || 0}`,
@@ -697,8 +728,6 @@ function renderLog() {
         head.textContent = `${formatDate(entry.at)} · ${parts.join(" · ")}`;
         card.appendChild(head);
 
-        const body = document.createElement("div");
-        body.className = "log-entry-body";
         for (const item of entry.uploaded || []) {
             const line = document.createElement("div");
             const reason =

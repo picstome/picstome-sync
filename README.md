@@ -64,11 +64,12 @@ against the backend contract in
 - **Fast gallery search**: filter the sidebar by name or path, with `Ctrl+F` /
   `Cmd+F` focusing the search field and `Enter` selecting the first match.
 - **Sync evidence**: the report lists every uploaded/downloaded filename, and
-  each sync appends a JSON line to `sync.log` in the app data directory. The
-  app data directory (not the photo folder) contains `index.json`, the
-  per-gallery snapshots, `auth.json` and `sync.log`; no hidden state file is
-  added to the photos folder, so moving/uploading that folder does not upload
-  app state.
+  each sync appends a JSON line to `sync.log` in the app data directory. Star
+  ratings are logged too (`kind: "rating"`, stars, source link/favorites,
+  files rated and errors). The same history is shown per gallery in the
+  collapsible **Activity log** panel. The app data directory (not the photo
+  folder) contains `index.json`, the per-gallery snapshots, `auth.json` and
+  `sync.log`; no hidden state file is added to the photos folder.
 - **Sensible rating target**: a `picstome://rate` link uses the selected
   gallery's folder automatically; the folder picker only appears when no
   gallery is linked/selected.
@@ -104,7 +105,7 @@ PICSTOME_API_BASE=http://127.0.0.1:8787 PICSTOME_MOCK=1 cargo run -p picstome-sy
 
 1. Open **GitHub → Releases** and download the latest **draft** asset (maintainers
    see drafts on the releases page), e.g. `Picstome.Sync_<version>_universal.dmg`.
-   With the CLI: `gh release download v0.1.12 --pattern '*.dmg'`.
+   With the CLI: `gh release download v0.1.13 --pattern '*.dmg'`.
    New test builds are produced locally with `scripts/release-local.sh`.
 2. Install it, open **Info** in the header and check **Version**, **Build**,
    **Mode** and **API target**.

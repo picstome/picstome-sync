@@ -239,8 +239,48 @@ fn not_linked() -> ErrorPayload {
     command_error("Gallery is not linked", "not_linked")
 }
 
+fn append_rating_log(
+    store: &Store,
+    gallery_id: Option<&str>,
+    rating: &str,
+    result: &RateResult,
+    source: &str,
+) {
+    let entry = json!({
+        "kind": "rating",
+        "at": std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|duration| duration.as_millis() as i64)
+            .unwrap_or(0),
+        "galleryId": gallery_id,
+        "rating": rating,
+        "source": source,
+        "rated": result.rated,
+        "notFound": result.not_found,
+        "errors": result.errors,
+        "files": result.details.iter().map(|detail| json!({
+            "name": detail.name,
+            "file": detail.file,
+            "status": detail.status,
+            "message": detail.msg,
+        })).collect::<Vec<_>>(),
+    });
+    use std::io::Write;
+    let mut options = std::fs::OpenOptions::new();
+    options.create(true).append(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
+    }
+    if let Ok(mut file) = options.open(store.root().join("sync.log")) {
+        let _ = writeln!(file, "{entry}");
+    }
+}
+
 fn append_sync_log(store: &Store, report: &SyncReport) {
     let entry = json!({
+        "kind": "sync",
         "at": std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .map(|duration| duration.as_millis() as i64)
@@ -629,7 +669,8 @@ pub async fn rate_files(
 
     let result = rate::rate_files(state.exiftool.as_deref(), &files, &rating, &trusted_path).await;
 
-    if let (Some(gallery_id), Some(favorites)) = (gallery_for_marks, favorites) {
+    let has_favorites = favorites.is_some();
+    if let (Some(gallery_id), Some(favorites)) = (gallery_for_marks.clone(), favorites) {
         let successful: std::collections::HashSet<String> = result
             .details
             .iter()
@@ -658,6 +699,15 @@ pub async fn rate_files(
             .collect();
         let _ = mark_favorites_rated(&state.store, &gallery_id, &marks);
     }
+
+    let source = if has_favorites { "favorites" } else { "link" };
+    append_rating_log(
+        &state.store,
+        gallery_for_marks.as_deref(),
+        &rating,
+        &result,
+        source,
+    );
 
     Ok(result)
 }

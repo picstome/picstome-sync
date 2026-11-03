@@ -612,6 +612,14 @@ def main():
             file for file in snapshot["files"] if file.get("favoriteRatedFor")
         ]
         assert len(rated_favorites) >= 5, rated_favorites
+        rating_log = js_invoke(session, "get_sync_log", {"galleryId": gallery})
+        assert any(
+            entry.get("kind") == "rating"
+            and entry.get("rating") == "4"
+            and entry.get("source") == "favorites"
+            and entry.get("rated", 0) >= 5
+            for entry in rating_log
+        ), rating_log
         after_rating = js_invoke(session, "sync_gallery", {"galleryId": gallery})
         log("after favorites:", after_rating["counts"], "favorites:", len(after_rating["favorites"]))
         assert not after_rating["favorites"], after_rating["favorites"]
