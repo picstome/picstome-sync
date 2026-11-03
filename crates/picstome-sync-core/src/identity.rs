@@ -53,7 +53,7 @@ pub fn is_photo_file(filename: &str) -> bool {
     PHOTO_EXTS.contains(&extension_of(filename).as_str())
 }
 
-fn file_rank(filename: &str) -> u8 {
+pub fn preference_rank(filename: &str) -> u8 {
     match extension_of(filename).as_str() {
         "jpg" | "jpeg" | "png" | "tiff" => 0,
         "dng" => 1,
@@ -67,8 +67,8 @@ where
     F: Fn(&T) -> &str,
 {
     files.iter().min_by(|a, b| {
-        let ra = file_rank(filename(a));
-        let rb = file_rank(filename(b));
+        let ra = preference_rank(filename(a));
+        let rb = preference_rank(filename(b));
         ra.cmp(&rb).then_with(|| filename(a).cmp(filename(b)))
     })
 }

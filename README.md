@@ -141,7 +141,7 @@ PICSTOME_API_BASE=http://127.0.0.1:8787 PICSTOME_MOCK=1 cargo run -p picstome-sy
 
 1. Open **GitHub → Releases** and download the latest **draft** asset (maintainers
    see drafts on the releases page), e.g. `Picstome.Sync_<version>_universal.dmg`.
-   With the CLI: `gh release download v0.1.26 --pattern '*.dmg'`.
+   With the CLI: `gh release download v0.1.27 --pattern '*.dmg'`.
    New test builds are produced locally with `scripts/release-local.sh`.
 2. Install it, open **Info** in the header and check **Version**, **Build**,
    **Mode** and **API target**.
@@ -284,7 +284,8 @@ config.json      {photosDir,lastRating,lastUpdateCheckAt,accountEmail,apiBase?}
 - Identity is `family:stem` (lowercase, extension ignored for images), so
   `IMG_1.JPG` and `IMG_1.DNG` are one logical photo. If two files only differ
   by case/extension (`1Z8A1081.JPG` and `1Z8A1081.jpeg`), only the preferred
-  one is synced; the other stays on disk untouched.
+  one is synced; the other stays on disk untouched and the app shows a warning
+  in the sync report and activity log naming the file that will not be uploaded.
 - Local upload extensions are `jpg`, `jpeg`, `png`, `tiff`, `dng`, `cr2`,
   `cr3`, `nef`, `arw`, `orf`, `rw2`, `pef`, `srw`, `mos`, `mrw`, `3fr`, `mp4`,
   `mov`, `avi`, `mkv`, `webm`, `m4v`, `ogg` and `pdf`. Extension matching is

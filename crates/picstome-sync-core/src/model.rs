@@ -255,6 +255,19 @@ pub struct SyncErrorItem {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub struct SyncWarningItem {
+    pub kind: String,
+    #[serde(default)]
+    pub filename: Option<String>,
+    #[serde(default)]
+    pub preferred: Option<String>,
+    #[serde(default)]
+    pub path: Option<String>,
+    pub message: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct DownloadedItem {
     pub id: String,
     pub filename: String,
@@ -336,6 +349,8 @@ pub struct SyncReport {
     pub proposals: DeleteProposals,
     pub favorites: Vec<FavoritePhoto>,
     pub errors: Vec<SyncErrorItem>,
+    #[serde(default)]
+    pub warnings: Vec<SyncWarningItem>,
     pub skipped: bool,
 }
 

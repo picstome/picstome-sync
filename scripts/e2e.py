@@ -863,6 +863,44 @@ def main():
             "const done = arguments[arguments.length - 1]; document.getElementById('btnFavoritesClose').click(); done('closed');",
         )
 
+        with open(os.path.join(photos, "DUP-WARN.JPG"), "wb") as handle:
+            handle.write(b"preferred duplicate")
+        with open(os.path.join(photos, "DUP-WARN.jpeg"), "wb") as handle:
+            handle.write(b"ignored duplicate")
+        run_async(
+            session,
+            "const done = arguments[arguments.length - 1]; document.getElementById('btnSync').click(); done('clicked');",
+        )
+        deadline = time.time() + 60
+        duplicate_warning = None
+        while time.time() < deadline:
+            duplicate_warning = json.loads(
+                run_async(
+                    session,
+                    """
+                    const done = arguments[arguments.length - 1];
+                    done(JSON.stringify({
+                      visible: !document.getElementById('reportWarnings').classList.contains('hidden'),
+                      text: document.getElementById('reportWarnings').textContent
+                    }));
+                    """,
+                )
+            )
+            if duplicate_warning["visible"] and duplicate_warning["text"]:
+                break
+            time.sleep(0.2)
+        log("duplicate warning:", duplicate_warning)
+        assert duplicate_warning and duplicate_warning["visible"], duplicate_warning
+        assert "DUP-WARN.jpeg" in duplicate_warning["text"], duplicate_warning
+        assert "won't be uploaded" in duplicate_warning["text"], duplicate_warning
+        warning_log = js_invoke(session, "get_sync_log", {"galleryId": gallery})
+        assert any(
+            warning.get("kind") == "duplicate_local_ignored"
+            and warning.get("filename") == "DUP-WARN.jpeg"
+            for entry in warning_log
+            for warning in entry.get("warnings", [])
+        ), warning_log
+
         cleared = js_invoke(session, "clear_sync_log", {"galleryId": gallery})
         assert cleared.get("ok"), cleared
         assert not os.path.exists(

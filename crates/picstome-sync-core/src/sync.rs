@@ -9,14 +9,14 @@ use crate::api::ApiClient;
 use crate::config::Store;
 use crate::diff::compute_diff;
 use crate::error::{CoreError, CoreResult};
-use crate::identity::{identity_key, preferred_file};
+use crate::identity::{identity_key, preference_rank, preferred_file};
 use crate::localfiles::{
     folder_exists as path_is_dir, scan_and_hash, scan_local_photos, MAX_PHOTO_BYTES,
 };
 use crate::model::{
     DeleteProposal, DeleteProposals, DeleteResponse, Diff, DownloadedItem, FavoritePhoto,
     GalleryEntry, Manifest, Photo, Progress, Snapshot, SnapshotFile, SyncErrorItem, SyncReport,
-    UploadedItem, SNAPSHOT_SCHEMA,
+    SyncWarningItem, UploadedItem, SNAPSHOT_SCHEMA,
 };
 use crate::sanitize::{is_inside, safe_join, sanitize_file_name};
 use crate::transfer::{download_file, DownloadOptions, ProgressFn};
@@ -683,6 +683,49 @@ pub async fn resolve_remote_deletions(
     })
 }
 
+fn duplicate_local_warnings(local_files: &[crate::model::LocalFile]) -> Vec<SyncWarningItem> {
+    let mut groups: HashMap<String, Vec<&crate::model::LocalFile>> = HashMap::new();
+    for file in local_files {
+        if let Some(key) = file.identity() {
+            groups.entry(key).or_default().push(file);
+        }
+    }
+
+    let mut warnings = Vec::new();
+    for group in groups.values().filter(|group| group.len() > 1) {
+        let Some(preferred) = preferred_file(group, |file| file.filename.as_str()).copied() else {
+            continue;
+        };
+        let preferred_rank = preference_rank(&preferred.filename);
+        for file in group {
+            if file.relative_path == preferred.relative_path
+                || preference_rank(&file.filename) != preferred_rank
+            {
+                continue;
+            }
+            let same_content = match (file.hash.as_deref(), preferred.hash.as_deref()) {
+                (Some(left), Some(right)) => left == right,
+                _ => file.size == preferred.size,
+            };
+            if same_content {
+                continue;
+            }
+            warnings.push(SyncWarningItem {
+                kind: "duplicate_local_ignored".into(),
+                filename: Some(file.filename.clone()),
+                preferred: Some(preferred.filename.clone()),
+                path: Some(file.relative_path.clone()),
+                message: format!(
+                    "{} won't be uploaded; {} is used for this photo",
+                    file.filename, preferred.filename
+                ),
+            });
+        }
+    }
+    warnings.sort_by(|a, b| a.filename.cmp(&b.filename));
+    warnings
+}
+
 pub async fn run_gallery_sync(
     api: &ApiClient,
     store: &Store,
@@ -763,6 +806,7 @@ pub async fn run_gallery_sync(
         },
         favorites: Vec::new(),
         errors: scan_error_items,
+        warnings: duplicate_local_warnings(&local_files),
         skipped: false,
     };
     if scan_had_errors && diff.counts.local_deleted > 0 {

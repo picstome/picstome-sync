@@ -757,6 +757,26 @@ button.danger:hover {
     line-height: 1.45;
 }
 
+.report-warnings {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    margin-top: 6px;
+}
+
+.report-warning,
+.log-warning {
+    color: #8a5a14;
+    font-size: 12px;
+    line-height: 1.45;
+}
+
+.report-warning {
+    padding: 7px 10px;
+    border-radius: 8px;
+    background: rgba(184, 133, 50, 0.1);
+}
+
 .report-error {
     font-size: 12px;
     color: #b64538;

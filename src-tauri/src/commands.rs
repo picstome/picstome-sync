@@ -399,6 +399,13 @@ fn append_sync_log(store: &Store, report: &SyncReport) {
             "remoteFilename": item.remote.filename,
         })).collect::<Vec<_>>(),
         "errors": report.errors.iter().map(|item| item.message.clone()).collect::<Vec<_>>(),
+        "warnings": report.warnings.iter().map(|item| json!({
+            "kind": item.kind,
+            "filename": item.filename,
+            "preferred": item.preferred,
+            "path": item.path,
+            "message": item.message,
+        })).collect::<Vec<_>>(),
     });
     append_log_line(gallery_log_path(store, &report.gallery_id), entry);
 }

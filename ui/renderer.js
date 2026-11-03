@@ -112,6 +112,7 @@ const els = {
     reportTime: document.getElementById("reportTime"),
     reportCounts: document.getElementById("reportCounts"),
     reportErrors: document.getElementById("reportErrors"),
+    reportWarnings: document.getElementById("reportWarnings"),
     reportFiles: document.getElementById("reportFiles"),
     syncLog: document.getElementById("syncLog"),
     syncLogTitle: document.getElementById("syncLogTitle"),
@@ -241,6 +242,17 @@ async function copyText(text) {
     } catch {
         return false;
     }
+}
+
+function warningText(warning) {
+    const s = state.strings;
+    if (warning.kind === "duplicate_local_ignored" && s?.duplicateLocalIgnored) {
+        return fmt(s.duplicateLocalIgnored, {
+            filename: warning.filename || "—",
+            preferred: warning.preferred || "—",
+        });
+    }
+    return warning.message || "";
 }
 
 function syncButtonLabel(s, busy) {
@@ -666,6 +678,20 @@ function renderReport() {
         els.reportErrors.appendChild(line);
     }
 
+    els.reportWarnings.replaceChildren();
+    const warnings = report.warnings || [];
+    if (warnings.length === 0) {
+        hide(els.reportWarnings);
+    } else {
+        show(els.reportWarnings);
+        for (const warning of warnings) {
+            const line = document.createElement("div");
+            line.className = "report-warning";
+            line.textContent = warningText(warning);
+            els.reportWarnings.appendChild(line);
+        }
+    }
+
     els.reportFiles.replaceChildren();
     const fileLines = [];
     for (const item of report.uploaded || []) {
@@ -947,6 +973,12 @@ function renderLog() {
             line.textContent = `${s.conflicts}: ${
                 item.filename || item.remoteFilename || "—"
             }`;
+            body.appendChild(line);
+        }
+        for (const warning of entry.warnings || []) {
+            const line = document.createElement("div");
+            line.className = "log-warning";
+            line.textContent = warningText(warning);
             body.appendChild(line);
         }
         for (const error of entry.errors || []) {
