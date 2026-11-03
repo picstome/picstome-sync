@@ -88,6 +88,8 @@ fn snapshot_entry(
     base_size: Option<u64>,
     mtime: Option<i64>,
     local_present: bool,
+    local_hash: Option<String>,
+    local_size: Option<u64>,
     version_count: Option<u64>,
     version_number: Option<u64>,
     remote_deleted: bool,
@@ -104,6 +106,8 @@ fn snapshot_entry(
         size: base_size,
         mtime,
         local_present,
+        local_hash,
+        local_size,
         version_count,
         version_number,
         remote_deleted,
@@ -179,6 +183,8 @@ fn build_snapshot(
             photo.size.or(Some(local.size)),
             Some(local.mtime_ms),
             true,
+            local.hash.clone(),
+            Some(local.size),
             photo.version_count,
             photo.version_number.or(photo.version_count),
             false,
@@ -205,6 +211,8 @@ fn build_snapshot(
                 Some(item.size),
                 item.mtime,
                 true,
+                item.hash.clone(),
+                Some(item.size),
                 photo.version_count,
                 photo.version_number.or(photo.version_count),
                 false,
@@ -237,6 +245,8 @@ fn build_snapshot(
                 Some(file.size),
                 Some(file.mtime_ms),
                 true,
+                file.hash.clone(),
+                Some(file.size),
                 item.version_count
                     .or_else(|| previous.and_then(|file| file.version_count)),
                 item.version_number
@@ -262,6 +272,8 @@ fn build_snapshot(
             entry.id = photo.id.clone();
             entry.filename = photo.filename.clone();
             entry.local_present = false;
+            entry.local_hash = None;
+            entry.local_size = None;
             entry.version_count = photo.version_count.or(previous.version_count);
             entry.version_number = photo
                 .version_number
@@ -293,6 +305,8 @@ fn build_snapshot(
         entry.relative_path = Some(local.relative_path.clone());
         entry.mtime = Some(local.mtime_ms);
         entry.local_present = true;
+        entry.local_hash = local.hash.clone();
+        entry.local_size = Some(local.size);
         entry.remote_deleted = true;
         entry.keep_local = previous.keep_local;
         files.push(entry);
@@ -308,6 +322,8 @@ fn build_snapshot(
                 entry.relative_path = Some(local.relative_path.clone());
                 entry.mtime = Some(local.mtime_ms);
                 entry.local_present = true;
+                entry.local_hash = local.hash.clone();
+                entry.local_size = Some(local.size);
             }
             files.push(entry);
         }
@@ -333,6 +349,8 @@ fn build_snapshot(
         entry.relative_path = Some(local.relative_path.clone());
         entry.mtime = Some(local.mtime_ms);
         entry.local_present = true;
+        entry.local_hash = local.hash.clone();
+        entry.local_size = Some(local.size);
         entry.remote_deleted = true;
         entry.keep_local = previous.keep_local;
         files.push(entry);
@@ -1089,6 +1107,8 @@ mod tests {
             size: Some(10),
             mtime,
             local_present: mtime.is_some(),
+            local_hash: mtime.map(|_| "h1".to_string()),
+            local_size: mtime.map(|_| 10),
             version_count: Some(1),
             version_number: Some(1),
             remote_deleted: false,

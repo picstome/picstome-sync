@@ -31,9 +31,10 @@ against the backend contract in
   verifies SHA-256 and writes `<galleryId>.json`.
 - **Updates**: explicit three-way state transitions (remote / local / last
   snapshot) with downloads, uploads, local deletions proposed as remote
-  deletions, and conflict reporting. The snapshot is updated from confirmed
-  transfer results, without a second full local scan or a second manifest
-  request.
+  deletions, and conflict reporting. Remote changes are detected by
+  `version_count`; local changes by the local content hash/size/mtime. A
+  processed/resized remote copy is therefore not treated as a conflict with
+  the original local file.
 - **Remote deletions are explicit**: if a photo disappears from Picstome, Sync
   opens a dialog with **Move to Trash / Keep local / Upload again**. Local files
   are moved to the OS Trash/Recycle Bin, or to a `.picstome-trash` folder inside
@@ -139,7 +140,7 @@ PICSTOME_API_BASE=http://127.0.0.1:8787 PICSTOME_MOCK=1 cargo run -p picstome-sy
 
 1. Open **GitHub → Releases** and download the latest **draft** asset (maintainers
    see drafts on the releases page), e.g. `Picstome.Sync_<version>_universal.dmg`.
-   With the CLI: `gh release download v0.1.22 --pattern '*.dmg'`.
+   With the CLI: `gh release download v0.1.23 --pattern '*.dmg'`.
    New test builds are produced locally with `scripts/release-local.sh`.
 2. Install it, open **Info** in the header and check **Version**, **Build**,
    **Mode** and **API target**.
@@ -272,8 +273,10 @@ The release draft body repeats these steps.
 
 ```
 index.json       [{galleryId,name,localPath,lastSyncAt,remoteRev,parentGalleryId?}]
-<galleryId>.json {galleryId,localPath,lastSyncAt,remoteRev,files:[{id,filename,
-                  identity_key,hash,size,mtime,version_count,version_number}]}
+<galleryId>.json {schema,galleryId,localPath,lastSyncAt,remoteRev,
+                  localPhotoCount,localBytes,files:[{id,filename,identity_key,
+                  hash,size,version_count,version_number,localPresent,
+                  localHash,localSize,mtime}]}
 config.json      {photosDir,lastRating,lastUpdateCheckAt,accountEmail,apiBase?}
 ```
 
@@ -281,9 +284,11 @@ config.json      {photosDir,lastRating,lastUpdateCheckAt,accountEmail,apiBase?}
   `IMG_1.JPG` and `IMG_1.DNG` are one logical photo.
 - The app data directory is the OS app-data dir; override for tests with
   `PICSTOME_USER_DATA_DIR`.
-- Downloads never trust the manifest alone: bytes are hashed and compared before
-  the atomic rename.
+- Downloads are hash-verified when the manifest provides `download_hash`; the
+  source `hash` is not used for local files.
 - `version_count` changes count as remote changes even when bytes are identical.
+- Local originals are adopted on first link even when the remote copy has a
+  different size because the gallery auto-resizes photos.
 
 ## Security and repository visibility
 

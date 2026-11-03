@@ -5,7 +5,7 @@ pub const DEFAULT_API_BASE: &str = "https://app.picstome.com";
 pub const CLIENT_NAME: &str = "picstome-sync";
 /// Snapshot schema written by this engine. Older snapshots are discarded and
 /// rebuilt from the current remote/local state.
-pub const SNAPSHOT_SCHEMA: u32 = 3;
+pub const SNAPSHOT_SCHEMA: u32 = 4;
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 #[serde(rename_all = "camelCase", default)]
@@ -70,6 +70,10 @@ pub struct SnapshotFile {
     pub mtime: Option<i64>,
     #[serde(default)]
     pub local_present: bool,
+    #[serde(default)]
+    pub local_hash: Option<String>,
+    #[serde(default)]
+    pub local_size: Option<u64>,
     #[serde(default)]
     pub version_count: Option<u64>,
     #[serde(default)]

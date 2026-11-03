@@ -5,50 +5,24 @@ use crate::model::{
     Conflict, ConflictPhoto, Diff, DiffCounts, LocalFile, Photo, RemoteDeletedItem, SnapshotFile,
 };
 
-fn content_equal(
-    a_hash: Option<&str>,
-    a_size: Option<u64>,
-    b_hash: Option<&str>,
-    b_size: Option<u64>,
-) -> bool {
-    match (a_hash, b_hash) {
-        (Some(a), Some(b)) => a == b,
-        _ => match (a_size, b_size) {
-            (Some(a), Some(b)) => a == b,
-            _ => false,
-        },
-    }
-}
-
 fn snapshot_had_local(base: &SnapshotFile) -> bool {
     base.local_present
 }
 
-fn remote_matches_base(photo: &Photo, base: &SnapshotFile) -> bool {
-    content_equal(
-        photo.content_hash(),
-        photo.size,
-        base.hash.as_deref(),
-        base.size,
-    )
-}
-
-fn local_matches_base(file: &LocalFile, base: &SnapshotFile) -> bool {
-    content_equal(
-        file.hash.as_deref(),
-        Some(file.size),
-        base.hash.as_deref(),
-        base.size,
-    )
-}
-
 fn remote_changed(photo: &Photo, base: &SnapshotFile) -> bool {
-    if !remote_matches_base(photo, base) {
-        return true;
-    }
     match (photo.version_count, base.version_count) {
         (Some(current), Some(previous)) => current != previous,
         _ => false,
+    }
+}
+
+fn local_changed(file: &LocalFile, base: &SnapshotFile) -> bool {
+    if !base.local_present {
+        return true;
+    }
+    match (file.hash.as_deref(), base.local_hash.as_deref()) {
+        (Some(current), Some(previous)) => current != previous,
+        _ => base.local_size != Some(file.size) || base.mtime != Some(file.mtime_ms),
     }
 }
 
@@ -124,29 +98,16 @@ pub fn compute_diff(
                 _ => diff.local_new.push(file.clone()),
             },
             (Some(photo), Some(file)) => {
-                let version_changed =
-                    match (photo.version_count, base.and_then(|b| b.version_count)) {
-                        (Some(current), Some(previous)) => current != previous,
-                        _ => false,
-                    };
-
-                if !version_changed
-                    && content_equal(
-                        photo.content_hash(),
-                        photo.size,
-                        file.hash.as_deref(),
-                        Some(file.size),
-                    )
-                {
+                let Some(base) = base else {
+                    // First time this identity is seen on both sides. Adopt it as
+                    // the common baseline; the remote may be a resized version of
+                    // the original local file, so sizes/hashes must not conflict.
                     diff.in_sync.push(photo.clone());
                     continue;
-                }
+                };
 
-                let remote_was_changed =
-                    base.map(|base| remote_changed(photo, base)).unwrap_or(true);
-                let local_was_changed = base
-                    .map(|base| !local_matches_base(file, base))
-                    .unwrap_or(true);
+                let remote_was_changed = remote_changed(photo, base);
+                let local_was_changed = local_changed(file, base);
 
                 if remote_was_changed && local_was_changed {
                     diff.conflicts.push(Conflict {
@@ -158,14 +119,16 @@ pub fn compute_diff(
                         },
                         local: ConflictPhoto {
                             filename: file.filename.clone(),
-                            version_count: base.and_then(|b| b.version_count),
+                            version_count: base.version_count,
                             size: Some(file.size),
                         },
                     });
                 } else if remote_was_changed {
                     diff.remote_modified.push(photo.clone());
-                } else {
+                } else if local_was_changed {
                     diff.local_modified.push(file.clone());
+                } else {
+                    diff.in_sync.push(photo.clone());
                 }
             }
         }
@@ -245,6 +208,8 @@ mod tests {
             size: Some(100),
             mtime: Some(1),
             local_present: true,
+            local_hash: Some(hash.into()),
+            local_size: Some(100),
             version_count: Some(version),
             version_number: Some(version),
             remote_deleted: false,
@@ -282,7 +247,7 @@ mod tests {
 
         let remote_mod = compute_diff(
             &[snapshot("p1", "a.jpg", "h1", 1)],
-            &[remote("p1", "a.jpg", "h2", 1)],
+            &[remote("p1", "a.jpg", "h2", 2)],
             &[local("a.jpg", "h1")],
         );
         assert_eq!(remote_mod.counts.remote_modified, 1);
@@ -292,7 +257,7 @@ mod tests {
     fn both_sides_changed_is_conflict() {
         let diff = compute_diff(
             &[snapshot("p1", "a.jpg", "h1", 1)],
-            &[remote("p1", "a.jpg", "h2", 1)],
+            &[remote("p1", "a.jpg", "h2", 2)],
             &[local("a.jpg", "h3")],
         );
         assert_eq!(diff.counts.conflicts, 1);
@@ -405,6 +370,8 @@ mod extra_tests {
             size,
             mtime: None,
             local_present: false,
+            local_hash: hash.map(str::to_string),
+            local_size: size,
             version_count: version,
             version_number: version,
             remote_deleted: false,
@@ -415,19 +382,67 @@ mod extra_tests {
 
     #[test]
     fn compares_by_size_when_hashes_are_missing() {
+        let mut base = snapshot_with("p1", "a.jpg", None, Some(10), Some(1));
+        base.local_present = true;
+        base.local_size = Some(10);
+        base.mtime = Some(1);
         let diff = compute_diff(
-            &[snapshot_with("p1", "a.jpg", None, Some(10), None)],
-            &[photo_with("p1", "a.jpg", None, Some(10), None)],
+            &[base.clone()],
+            &[photo_with("p1", "a.jpg", None, Some(10), Some(1))],
             &[local_with("a.jpg", None, 10)],
         );
         assert_eq!(diff.counts.in_sync, 1);
 
         let changed = compute_diff(
-            &[snapshot_with("p1", "a.jpg", None, Some(10), None)],
-            &[photo_with("p1", "a.jpg", None, Some(10), None)],
+            &[base],
+            &[photo_with("p1", "a.jpg", None, Some(10), Some(1))],
             &[local_with("a.jpg", None, 11)],
         );
         assert_eq!(changed.counts.local_modified, 1);
+    }
+
+    #[test]
+    fn resized_remote_copy_does_not_conflict_with_the_local_original() {
+        let diff = compute_diff(
+            &[],
+            &[photo_with("p1", "a.jpg", None, Some(500), Some(1))],
+            &[local_with("a.jpg", Some("original"), 6_000_000)],
+        );
+        assert_eq!(diff.counts.in_sync, 1);
+        assert_eq!(diff.counts.conflicts, 0);
+
+        let mut base = snapshot_with("p1", "a.jpg", Some("remote"), Some(500), Some(1));
+        base.local_present = true;
+        base.local_hash = Some("original".into());
+        base.local_size = Some(6_000_000);
+        base.mtime = Some(1);
+        let local = local_with("a.jpg", Some("original"), 6_000_000);
+        let diff = compute_diff(
+            &[base.clone()],
+            &[photo_with(
+                "p1",
+                "a.jpg",
+                Some("remote"),
+                Some(500),
+                Some(1),
+            )],
+            std::slice::from_ref(&local),
+        );
+        assert_eq!(diff.counts.in_sync, 1);
+
+        let remote_updated = compute_diff(
+            &[base],
+            &[photo_with(
+                "p1",
+                "a.jpg",
+                Some("remote-v2"),
+                Some(500),
+                Some(2),
+            )],
+            &[local],
+        );
+        assert_eq!(remote_updated.counts.remote_modified, 1);
+        assert_eq!(remote_updated.counts.conflicts, 0);
     }
 
     #[test]
@@ -440,13 +455,14 @@ mod extra_tests {
     }
 
     #[test]
-    fn unknown_baseline_with_both_sides_is_a_conflict() {
+    fn unknown_baseline_is_adopted_as_in_sync() {
         let diff = compute_diff(
             &[],
             &[photo_with("p1", "a.jpg", Some("remote"), Some(10), None)],
             &[local_with("a.jpg", Some("local"), 10)],
         );
-        assert_eq!(diff.counts.conflicts, 1);
+        assert_eq!(diff.counts.in_sync, 1);
+        assert_eq!(diff.counts.conflicts, 0);
     }
 
     #[test]

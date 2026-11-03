@@ -155,7 +155,7 @@ fn cache_key(file: &SnapshotFile) -> String {
 fn build_cache(snapshot_files: &[SnapshotFile]) -> HashMap<String, SnapshotFile> {
     let mut cache = HashMap::new();
     for file in snapshot_files {
-        if file.hash.is_some() {
+        if file.local_present && file.local_hash.is_some() {
             cache.entry(cache_key(file)).or_insert_with(|| file.clone());
         }
     }
@@ -174,11 +174,11 @@ pub async fn hash_local_records(
             let cached = cache.get(&record.relative_path);
             let cached_hash = cached
                 .filter(|file| {
-                    file.hash.is_some()
-                        && file.size == Some(record.size)
+                    file.local_hash.is_some()
+                        && file.local_size == Some(record.size)
                         && file.mtime == Some(record.mtime_ms)
                 })
-                .and_then(|file| file.hash.clone());
+                .and_then(|file| file.local_hash.clone());
 
             let hash = match cached_hash {
                 Some(hash) => hash,
@@ -300,6 +300,8 @@ mod extra_tests {
             size: Some(std::fs::metadata(path).unwrap().len()),
             mtime: Some(mtime_ms),
             local_present: true,
+            local_hash: Some(hash.into()),
+            local_size: Some(std::fs::metadata(path).unwrap().len()),
             version_count: Some(1),
             version_number: Some(1),
             remote_deleted: false,

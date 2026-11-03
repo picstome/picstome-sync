@@ -216,6 +216,32 @@ async fn sync_downloads_then_is_a_noop() {
 }
 
 #[tokio::test]
+async fn existing_local_original_is_adopted_even_if_remote_copy_is_resized() {
+    let (mock, api, _dir, store, gallery) = setup_sync().await;
+    let manifest = api.manifest("G123").await.unwrap();
+    let target = &manifest.photos[0];
+    let local_path = std::path::Path::new(&gallery.local_path).join(&target.filename);
+    tokio::fs::write(&local_path, vec![7u8; 6000])
+        .await
+        .unwrap();
+
+    let report = run_gallery_sync(&api, &store, &gallery, SyncOptions::default(), silence())
+        .await
+        .unwrap();
+    assert_eq!(report.counts.conflicts, 0);
+    assert_eq!(report.counts.local_modified, 0);
+    assert_eq!(report.uploaded.len(), 0);
+    assert!(std::fs::metadata(&local_path).unwrap().len() == 6000);
+    assert!(store
+        .load_snapshot("G123")
+        .unwrap()
+        .files
+        .iter()
+        .any(|file| file.filename == target.filename && file.local_present));
+    mock.close().await;
+}
+
+#[tokio::test]
 async fn remote_only_snapshot_entries_are_downloaded_not_deleted_remotely() {
     let (mock, api, _dir, store, gallery) = setup_sync().await;
     let manifest = api.manifest("G123").await.unwrap();
@@ -241,6 +267,8 @@ async fn remote_only_snapshot_entries_are_downloaded_not_deleted_remotely() {
                 size: photo.size,
                 mtime: None,
                 local_present: false,
+                local_hash: None,
+                local_size: None,
                 version_count: photo.version_count,
                 version_number: photo.version_number,
                 remote_deleted: false,
