@@ -76,42 +76,82 @@ fn build_snapshot(
         .filter_map(|file| file.identity().map(|key| (key, file)))
         .collect();
 
-    let mut files: Vec<SnapshotFile> = manifest
-        .photos
-        .iter()
-        .map(|photo| {
-            let key = photo.identity();
-            let local = key.as_ref().and_then(|key| local_by_key.get(key)).copied();
-            SnapshotFile {
+    let mut files: Vec<SnapshotFile> = Vec::new();
+    for photo in &manifest.photos {
+        let key = photo.identity();
+        let local = key.as_ref().and_then(|key| local_by_key.get(key)).copied();
+        let previous = key
+            .as_ref()
+            .and_then(|key| previous_by_key.get(key))
+            .copied();
+        if let Some(file) = local {
+            let sides_match = match (photo.hash.as_deref(), file.hash.as_deref()) {
+                (Some(remote), Some(local)) => remote == local,
+                _ => photo.size == Some(file.size),
+            };
+            // When local and remote differ, a transfer failed or there is a
+            // conflict. Keep the last common base so the next sync retries the
+            // correct direction instead of treating one side as authoritative.
+            let base = if sides_match { None } else { previous };
+            files.push(SnapshotFile {
                 id: photo.id.clone(),
-                filename: local
-                    .map(|file| file.filename.clone())
-                    .unwrap_or_else(|| photo.filename.clone()),
+                filename: file.filename.clone(),
                 identity_key: key.clone(),
-                relative_path: local
-                    .map(|file| file.relative_path.clone())
-                    .or_else(|| Some(photo.filename.clone())),
-                hash: photo
-                    .hash
+                relative_path: Some(file.relative_path.clone()),
+                hash: base
+                    .and_then(|file| file.hash.clone())
+                    .or_else(|| photo.hash.clone())
+                    .or_else(|| file.hash.clone()),
+                hash_algo: base
+                    .and_then(|file| file.hash_algo.clone())
+                    .or_else(|| photo.hash_algo.clone())
+                    .or_else(|| Some("sha256".to_string())),
+                size: base
+                    .and_then(|file| file.size)
+                    .or(photo.size)
+                    .or(Some(file.size)),
+                mtime: Some(file.mtime_ms),
+                version_count: base
+                    .and_then(|file| file.version_count)
+                    .or(photo.version_count),
+                version_number: base
+                    .and_then(|file| file.version_number)
+                    .or(photo.version_number)
+                    .or(photo.version_count),
+                remote_deleted: false,
+                keep_local: false,
+                favorite_rated_for: previous.and_then(|file| file.favorite_rated_for.clone()),
+            });
+        } else if let Some(previous) = previous.filter(|file| file.mtime.is_some()) {
+            // Keep the last known local state so a genuinely deleted local photo
+            // is still surfaced, but never persist a remote-only entry: otherwise
+            // a failed download would look like a local deletion on the next run.
+            files.push(SnapshotFile {
+                id: photo.id.clone(),
+                filename: previous.filename.clone(),
+                identity_key: key.clone(),
+                relative_path: previous
+                    .relative_path
                     .clone()
-                    .or_else(|| local.and_then(|file| file.hash.clone())),
+                    .or_else(|| Some(previous.filename.clone())),
+                hash: photo.hash.clone().or_else(|| previous.hash.clone()),
                 hash_algo: photo
                     .hash_algo
                     .clone()
-                    .or_else(|| Some("sha256".to_string())),
-                size: photo.size.or_else(|| local.map(|file| file.size)),
-                mtime: local.map(|file| file.mtime_ms),
-                version_count: photo.version_count,
-                version_number: photo.version_number.or(photo.version_count),
+                    .or_else(|| previous.hash_algo.clone()),
+                size: photo.size.or(previous.size),
+                mtime: previous.mtime,
+                version_count: photo.version_count.or(previous.version_count),
+                version_number: photo
+                    .version_number
+                    .or(photo.version_count)
+                    .or(previous.version_number),
                 remote_deleted: false,
                 keep_local: false,
-                favorite_rated_for: key
-                    .as_ref()
-                    .and_then(|key| previous_by_key.get(key))
-                    .and_then(|file| file.favorite_rated_for.clone()),
-            }
-        })
-        .collect();
+                favorite_rated_for: previous.favorite_rated_for.clone(),
+            });
+        }
+    }
 
     let remote_keys: std::collections::HashSet<String> = manifest
         .photos
@@ -623,7 +663,45 @@ pub async fn run_gallery_sync(
         })
         .collect();
 
-    let snapshot = build_snapshot(gallery, &final_manifest, &local_files, &previous_files, now);
+    let snapshot_local_files = if changed {
+        match scan_and_hash(
+            Path::new(&gallery.local_path),
+            &previous_files,
+            options.hash_concurrency,
+        )
+        .await
+        {
+            Ok((files, errors)) => {
+                report
+                    .errors
+                    .extend(errors.into_iter().map(|error| SyncErrorItem {
+                        phase: "scan".into(),
+                        filename: None,
+                        path: Some(error.path),
+                        message: error.error,
+                    }));
+                files
+            }
+            Err(error) => {
+                report.errors.push(SyncErrorItem {
+                    phase: "scan".into(),
+                    filename: None,
+                    path: Some(gallery.local_path.clone()),
+                    message: error.to_string(),
+                });
+                local_files.clone()
+            }
+        }
+    } else {
+        local_files.clone()
+    };
+    let snapshot = build_snapshot(
+        gallery,
+        &final_manifest,
+        &snapshot_local_files,
+        &previous_files,
+        now,
+    );
     store.save_snapshot(&snapshot)?;
 
     if store
@@ -693,4 +771,185 @@ pub async fn apply_remote_deletions(
 
 pub fn folder_exists(folder: &str) -> bool {
     path_is_dir(folder)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::model::LocalFile;
+
+    fn gallery() -> GalleryEntry {
+        GalleryEntry {
+            gallery_id: "G1".into(),
+            name: "Gallery".into(),
+            local_path: "/tmp/gallery".into(),
+            last_sync_at: None,
+            remote_rev: None,
+            parent_gallery_id: None,
+        }
+    }
+
+    fn remote() -> Photo {
+        Photo {
+            id: "p1".into(),
+            filename: "a.jpg".into(),
+            size: Some(10),
+            hash: Some("h1".into()),
+            hash_algo: Some("sha256".into()),
+            url: String::new(),
+            updated_at: None,
+            version_count: Some(1),
+            version_number: Some(1),
+            identity_key: None,
+            favorited_at: None,
+        }
+    }
+
+    fn local() -> LocalFile {
+        LocalFile {
+            filename: "a.jpg".into(),
+            relative_path: "a.jpg".into(),
+            path: PathBuf::from("/tmp/gallery/a.jpg"),
+            size: 10,
+            mtime_ms: 123,
+            hash: Some("h1".into()),
+            identity_key: "image:a".into(),
+        }
+    }
+
+    fn previous(mtime: Option<i64>) -> SnapshotFile {
+        SnapshotFile {
+            id: "p1".into(),
+            filename: "a.jpg".into(),
+            identity_key: None,
+            relative_path: Some("a.jpg".into()),
+            hash: Some("h1".into()),
+            hash_algo: Some("sha256".into()),
+            size: Some(10),
+            mtime,
+            version_count: Some(1),
+            version_number: Some(1),
+            remote_deleted: false,
+            keep_local: false,
+            favorite_rated_for: None,
+        }
+    }
+
+    #[test]
+    fn remote_only_photos_are_not_saved_to_the_snapshot() {
+        let manifest = Manifest {
+            gallery_id: "G1".into(),
+            name: "Gallery".into(),
+            rev: None,
+            photos: vec![remote()],
+        };
+        let snapshot = build_snapshot(&gallery(), &manifest, &[], &[], 1);
+        assert!(snapshot.files.is_empty());
+    }
+
+    #[test]
+    fn snapshot_keeps_local_evidence_when_a_synced_file_disappears() {
+        let manifest = Manifest {
+            gallery_id: "G1".into(),
+            name: "Gallery".into(),
+            rev: None,
+            photos: vec![remote()],
+        };
+        let snapshot = build_snapshot(&gallery(), &manifest, &[], &[previous(Some(123))], 1);
+        assert_eq!(snapshot.files.len(), 1);
+        assert_eq!(snapshot.files[0].mtime, Some(123));
+    }
+
+    #[test]
+    fn downloaded_photo_is_recorded_with_local_metadata() {
+        let manifest = Manifest {
+            gallery_id: "G1".into(),
+            name: "Gallery".into(),
+            rev: None,
+            photos: vec![remote()],
+        };
+        let snapshot = build_snapshot(&gallery(), &manifest, &[local()], &[], 1);
+        assert_eq!(snapshot.files.len(), 1);
+        assert_eq!(snapshot.files[0].mtime, Some(123));
+        assert_eq!(snapshot.files[0].relative_path.as_deref(), Some("a.jpg"));
+    }
+
+    fn manifest_with(photo: Photo) -> Manifest {
+        Manifest {
+            gallery_id: "G1".into(),
+            name: "Gallery".into(),
+            rev: None,
+            photos: vec![photo],
+        }
+    }
+
+    #[test]
+    fn failed_remote_download_keeps_the_previous_base() {
+        let mut photo = remote();
+        photo.hash = Some("h2".into());
+        photo.version_count = Some(2);
+        photo.version_number = Some(2);
+        let snapshot = build_snapshot(
+            &gallery(),
+            &manifest_with(photo),
+            &[local()],
+            &[previous(Some(123))],
+            1,
+        );
+        assert_eq!(snapshot.files[0].hash.as_deref(), Some("h1"));
+        assert_eq!(snapshot.files[0].version_count, Some(1));
+    }
+
+    #[test]
+    fn failed_local_upload_keeps_the_previous_base() {
+        let mut file = local();
+        file.hash = Some("h2".into());
+        let snapshot = build_snapshot(
+            &gallery(),
+            &manifest_with(remote()),
+            &[file],
+            &[previous(Some(123))],
+            1,
+        );
+        assert_eq!(snapshot.files[0].hash.as_deref(), Some("h1"));
+        assert_eq!(snapshot.files[0].version_count, Some(1));
+    }
+
+    #[test]
+    fn successful_transfer_records_the_new_remote_state() {
+        let mut photo = remote();
+        photo.hash = Some("h2".into());
+        photo.version_count = Some(2);
+        photo.version_number = Some(2);
+        let mut file = local();
+        file.hash = Some("h2".into());
+        let snapshot = build_snapshot(
+            &gallery(),
+            &manifest_with(photo),
+            &[file],
+            &[previous(Some(123))],
+            1,
+        );
+        assert_eq!(snapshot.files[0].hash.as_deref(), Some("h2"));
+        assert_eq!(snapshot.files[0].version_count, Some(2));
+    }
+
+    #[test]
+    fn conflict_keeps_the_previous_base() {
+        let mut photo = remote();
+        photo.hash = Some("h2".into());
+        photo.version_count = Some(2);
+        photo.version_number = Some(2);
+        let mut file = local();
+        file.hash = Some("h3".into());
+        let snapshot = build_snapshot(
+            &gallery(),
+            &manifest_with(photo),
+            &[file],
+            &[previous(Some(123))],
+            1,
+        );
+        assert_eq!(snapshot.files[0].hash.as_deref(), Some("h1"));
+        assert_eq!(snapshot.files[0].version_count, Some(1));
+    }
 }

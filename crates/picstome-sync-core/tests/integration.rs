@@ -4,7 +4,7 @@ use picstome_sync_core::api::ApiClient;
 use picstome_sync_core::config::Store;
 use picstome_sync_core::localfiles::hash_file;
 use picstome_sync_core::mock::{start_mock_server, MockServerOptions};
-use picstome_sync_core::model::GalleryEntry;
+use picstome_sync_core::model::{GalleryEntry, Snapshot, SnapshotFile};
 use picstome_sync_core::sync::{
     apply_remote_deletions, mark_favorites_rated, resolve_remote_deletions, run_gallery_sync,
     RemoteDeleteAction, SyncOptions,
@@ -204,6 +204,52 @@ async fn sync_downloads_then_is_a_noop() {
     assert_eq!(second.downloaded.len(), 0);
     assert_eq!(second.uploaded.len(), 0);
     assert!(second.skipped);
+    mock.close().await;
+}
+
+#[tokio::test]
+async fn remote_only_snapshot_entries_are_downloaded_not_deleted_remotely() {
+    let (mock, api, _dir, store, gallery) = setup_sync().await;
+    let manifest = api.manifest("G123").await.unwrap();
+    let snapshot = Snapshot {
+        gallery_id: "G123".into(),
+        name: "MiBoda".into(),
+        local_path: gallery.local_path.clone(),
+        last_sync_at: 1,
+        remote_rev: manifest.rev.clone(),
+        files: manifest
+            .photos
+            .iter()
+            .map(|photo| SnapshotFile {
+                id: photo.id.clone(),
+                filename: photo.filename.clone(),
+                identity_key: photo.identity(),
+                relative_path: Some(photo.filename.clone()),
+                hash: photo.hash.clone(),
+                hash_algo: photo.hash_algo.clone(),
+                size: photo.size,
+                mtime: None,
+                version_count: photo.version_count,
+                version_number: photo.version_number,
+                remote_deleted: false,
+                keep_local: false,
+                favorite_rated_for: None,
+            })
+            .collect(),
+    };
+    store.save_snapshot(&snapshot).unwrap();
+
+    let report = run_gallery_sync(&api, &store, &gallery, SyncOptions::default(), silence())
+        .await
+        .unwrap();
+    assert_eq!(report.counts.remote_new, 50);
+    assert_eq!(report.counts.local_deleted, 0);
+    assert!(report.proposals.delete_remote.is_empty());
+    assert_eq!(report.downloaded.len(), 50);
+
+    let repaired = store.load_snapshot("G123").unwrap();
+    assert_eq!(repaired.files.len(), 50);
+    assert!(repaired.files.iter().all(|file| file.mtime.is_some()));
     mock.close().await;
 }
 

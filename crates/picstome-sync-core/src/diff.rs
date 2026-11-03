@@ -20,6 +20,10 @@ fn content_equal(
     }
 }
 
+fn snapshot_had_local(base: &SnapshotFile) -> bool {
+    base.mtime.is_some()
+}
+
 fn remote_matches_base(photo: &Photo, base: &SnapshotFile) -> bool {
     content_equal(
         photo.hash.as_deref(),
@@ -98,7 +102,10 @@ pub fn compute_diff(
         match (remote_photo, local_file) {
             (None, None) => continue,
             (Some(photo), None) => {
-                if base.is_some() {
+                // A remote photo only counts as locally deleted if the last snapshot
+                // proves it was actually present on disk. Remote-only entries from an
+                // interrupted download must be downloaded, never proposed for deletion.
+                if base.is_some_and(snapshot_had_local) {
                     diff.local_deleted.push(photo.clone());
                 } else {
                     diff.remote_new.push(photo.clone());
@@ -106,7 +113,7 @@ pub fn compute_diff(
             }
             (None, Some(file)) => match base {
                 Some(base) if base.keep_local => {}
-                Some(base) => {
+                Some(base) if snapshot_had_local(base) => {
                     diff.remote_deleted.push(RemoteDeletedItem {
                         id: base.id.clone(),
                         filename: file.filename.clone(),
@@ -114,7 +121,7 @@ pub fn compute_diff(
                         relative_path: Some(file.relative_path.clone()),
                     });
                 }
-                None => diff.local_new.push(file.clone()),
+                _ => diff.local_new.push(file.clone()),
             },
             (Some(photo), Some(file)) => {
                 let version_changed =
@@ -233,7 +240,7 @@ mod tests {
             hash: Some(hash.into()),
             hash_algo: Some("sha256".into()),
             size: Some(100),
-            mtime: None,
+            mtime: Some(1),
             version_count: Some(version),
             version_number: Some(version),
             remote_deleted: false,
@@ -450,5 +457,41 @@ mod extra_tests {
         no_key.identity_key.clear();
         let diff = compute_diff(&[], &[], &[no_key]);
         assert_eq!(diff.counts.remote_new + diff.counts.local_new, 1);
+    }
+
+    #[test]
+    fn remote_only_snapshot_entry_is_downloaded_not_deleted() {
+        let base = snapshot_with("p1", "a.jpg", Some("h1"), Some(10), Some(1));
+        let diff = compute_diff(
+            &[base],
+            &[photo_with("p1", "a.jpg", Some("h1"), Some(10), Some(1))],
+            &[],
+        );
+        assert_eq!(diff.counts.local_deleted, 0);
+        assert_eq!(diff.counts.remote_new, 1);
+    }
+
+    #[test]
+    fn missing_previously_local_photo_is_still_reported_as_deleted() {
+        let mut base = snapshot_with("p1", "a.jpg", Some("h1"), Some(10), Some(1));
+        base.mtime = Some(1);
+        let diff = compute_diff(
+            &[base.clone()],
+            &[photo_with("p1", "a.jpg", Some("h1"), Some(10), Some(1))],
+            &[],
+        );
+        assert_eq!(diff.counts.local_deleted, 1);
+        assert_eq!(diff.counts.remote_new, 0);
+    }
+
+    #[test]
+    fn remote_deleted_photo_not_previously_local_is_a_new_local_file() {
+        let diff = compute_diff(
+            &[snapshot_with("p1", "a.jpg", Some("h1"), Some(10), Some(1))],
+            &[],
+            &[local_with("a.jpg", Some("h1"), 10)],
+        );
+        assert_eq!(diff.counts.remote_deleted, 0);
+        assert_eq!(diff.counts.local_new, 1);
     }
 }
