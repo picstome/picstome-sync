@@ -50,6 +50,14 @@ const state = {
         busy: false,
         error: null,
     },
+    confirm: {
+        open: false,
+        title: "",
+        message: "",
+        confirmLabel: "",
+        danger: true,
+        resolve: null,
+    },
 };
 
 const els = {
@@ -170,6 +178,12 @@ const els = {
     btnRemoteDeleteLocal: document.getElementById("btnRemoteDeleteLocal"),
     btnRemoteKeepLocal: document.getElementById("btnRemoteKeepLocal"),
     btnRemoteUploadAgain: document.getElementById("btnRemoteUploadAgain"),
+
+    confirmModal: document.getElementById("confirmModal"),
+    confirmTitle: document.getElementById("confirmTitle"),
+    confirmMessage: document.getElementById("confirmMessage"),
+    btnConfirmOk: document.getElementById("btnConfirmOk"),
+    btnConfirmCancel: document.getElementById("btnConfirmCancel"),
 };
 
 for (const [key, el] of Object.entries(els)) {
@@ -337,6 +351,7 @@ function applyStrings() {
     els.btnRemoteDeleteLocal.textContent = s.deleteLocal;
     els.btnRemoteKeepLocal.textContent = s.keepLocal;
     els.btnRemoteUploadAgain.textContent = s.uploadAgain;
+    els.btnConfirmCancel.textContent = s.cancel;
 
 }
 
@@ -762,6 +777,66 @@ function renderLog() {
         const body = document.createElement("div");
         body.className = "log-entry-body";
 
+        if (entry.kind === "sync_error") {
+            head.textContent = `${formatDate(entry.at)} · ${s.syncFailed}`;
+            card.appendChild(head);
+            const line = document.createElement("div");
+            line.className = "log-error";
+            line.textContent = entry.message || "";
+            body.appendChild(line);
+            card.appendChild(body);
+            els.syncLogEntries.appendChild(card);
+            continue;
+        }
+
+        if (entry.kind === "deletion") {
+            const labels = {
+                remote_delete: s.deletionRemoteDelete,
+                delete_local: s.deletionLocalDelete,
+                keep_local: s.deletionKeepLocal,
+                upload: s.deletionUploadAgain,
+            };
+            const statuses = {
+                deleted: s.deletionStatusDeleted,
+                not_found: s.deletionStatusNotFound,
+                failed: s.deletionStatusFailed,
+            };
+            const files = entry.files || [];
+            head.textContent = `${formatDate(entry.at)} · ${
+                labels[entry.action] || entry.action
+            } · ${files.length}`;
+            card.appendChild(head);
+            for (const item of files) {
+                const line = document.createElement("div");
+                const status = statuses[item.status];
+                line.textContent = `${item.filename || item.id}${
+                    status ? ` — ${status}` : ""
+                }`;
+                body.appendChild(line);
+            }
+            for (const item of entry.trashed || []) {
+                const line = document.createElement("div");
+                const target =
+                    item.trashPath ||
+                    (item.location === "gallery"
+                        ? s.deletionTrashGallery
+                        : s.deletionTrashSystem);
+                line.textContent = `${item.filename} — ${fmt(s.trashedTo, {
+                    path: target,
+                })}`;
+                body.appendChild(line);
+            }
+            for (const error of entry.errors || []) {
+                const line = document.createElement("div");
+                line.className = "log-error";
+                line.textContent = `${s.errors}: ${error}`;
+                body.appendChild(line);
+            }
+            card.appendChild(body);
+            els.syncLogEntries.appendChild(card);
+            continue;
+        }
+
         if (entry.kind === "rating") {
             const source =
                 entry.source === "favorites"
@@ -812,6 +887,23 @@ function renderLog() {
         for (const filename of entry.downloaded || []) {
             const line = document.createElement("div");
             line.textContent = `${s.downloadedFiles}: ${filename}`;
+            body.appendChild(line);
+        }
+        for (const item of entry.localDeletedProposed || []) {
+            const line = document.createElement("div");
+            line.textContent = `${s.localDeletionProposed}: ${item.filename}`;
+            body.appendChild(line);
+        }
+        for (const item of entry.remoteDeleted || []) {
+            const line = document.createElement("div");
+            line.textContent = `${s.remoteDeletionDetected}: ${item.filename}`;
+            body.appendChild(line);
+        }
+        for (const item of entry.conflicts || []) {
+            const line = document.createElement("div");
+            line.textContent = `${s.conflicts}: ${
+                item.filename || item.remoteFilename || "—"
+            }`;
             body.appendChild(line);
         }
         for (const error of entry.errors || []) {
@@ -889,11 +981,25 @@ function renderRemoteDeleted() {
         }`;
         const resolved = modal.result.resolved?.length || 0;
         const errors = modal.result.errors || [];
-        els.remoteDeletedResult.textContent = errors.length
-            ? `${s.remoteDeletedError}: ${errors
-                  .map((error) => error.message)
-                  .join(" · ")}`
-            : `${s.remoteDeletedDone} (${resolved})`;
+        if (errors.length) {
+            els.remoteDeletedResult.textContent = `${s.remoteDeletedError}: ${errors
+                .map((error) => error.message)
+                .join(" · ")}`;
+        } else {
+            const trashed = modal.result.trashed || [];
+            const details = trashed.map((item) => {
+                const target =
+                    item.trashPath ||
+                    (item.location === "gallery"
+                        ? s.deletionTrashGallery
+                        : s.deletionTrashSystem);
+                return `${item.filename} — ${fmt(s.trashedTo, { path: target })}`;
+            });
+            els.remoteDeletedResult.textContent = [
+                `${s.remoteDeletedDone} (${resolved})`,
+                ...details,
+            ].join("\n");
+        }
     } else {
         hide(els.remoteDeletedResult);
     }
@@ -916,6 +1022,48 @@ function handlePostSync(report) {
     openFavoritesPrompt(report);
 }
 
+function renderConfirm() {
+    const modal = state.confirm;
+    if (!modal.open) {
+        hide(els.confirmModal);
+        return;
+    }
+    show(els.confirmModal);
+    els.confirmTitle.textContent = modal.title;
+    els.confirmMessage.textContent = modal.message;
+    els.btnConfirmOk.textContent = modal.confirmLabel;
+    els.btnConfirmOk.className = modal.danger ? "danger" : "primary";
+}
+
+function settleConfirm(value) {
+    const resolve = state.confirm.resolve;
+    state.confirm = {
+        open: false,
+        title: "",
+        message: "",
+        confirmLabel: "",
+        danger: true,
+        resolve: null,
+    };
+    renderConfirm();
+    if (resolve) resolve(Boolean(value));
+}
+
+function askConfirm({ title, message, confirmLabel, danger = true }) {
+    if (state.confirm.resolve) settleConfirm(false);
+    return new Promise((resolve) => {
+        state.confirm = {
+            open: true,
+            title,
+            message,
+            confirmLabel,
+            danger,
+            resolve,
+        };
+        renderConfirm();
+    });
+}
+
 function renderAll() {
     applyStrings();
     renderAccount();
@@ -927,6 +1075,7 @@ function renderAll() {
     renderRating();
     renderFavorites();
     renderRemoteDeleted();
+    renderConfirm();
     renderLog();
 }
 
@@ -1249,6 +1398,16 @@ async function resolveRemoteDeleted(action) {
         els.remoteDeletedList.querySelectorAll("input[type=checkbox]:checked"),
     ).map((checkbox) => checkbox.dataset.remoteId);
     if (ids.length === 0) return;
+    if (action === "delete_local") {
+        const confirmed = await askConfirm({
+            title: state.strings.confirmLocalDeleteTitle,
+            message: fmt(state.strings.confirmLocalDeleteMessage, {
+                n: ids.length,
+            }),
+            confirmLabel: state.strings.confirmLocalDeleteAction,
+        });
+        if (!confirmed) return;
+    }
     modal.busy = true;
     modal.result = null;
     renderRemoteDeleted();
@@ -1489,6 +1648,14 @@ els.btnDeleteRemote.addEventListener("click", async () => {
         els.deleteList.querySelectorAll("input[type=checkbox]:checked"),
     ).map((checkbox) => checkbox.dataset.photoId);
     if (ids.length === 0) return;
+    const confirmed = await askConfirm({
+        title: state.strings.confirmRemoteDeleteTitle,
+        message: fmt(state.strings.confirmRemoteDeleteMessage, {
+            n: ids.length,
+        }),
+        confirmLabel: state.strings.confirmRemoteDeleteAction,
+    });
+    if (!confirmed) return;
     try {
         await invoke("apply_deletions", {
             galleryId: state.currentGalleryId,
@@ -1568,6 +1735,12 @@ els.remoteDeletedModal.addEventListener("click", (event) => {
     }
 });
 
+els.btnConfirmOk.addEventListener("click", () => settleConfirm(true));
+els.btnConfirmCancel.addEventListener("click", () => settleConfirm(false));
+els.confirmModal.addEventListener("click", (event) => {
+    if (event.target === els.confirmModal) settleConfirm(false);
+});
+
 els.gallerySearch.addEventListener("input", () => {
     state.galleryQuery = els.gallerySearch.value;
     renderGalleryList();
@@ -1601,6 +1774,7 @@ document.addEventListener("keydown", (event) => {
     hide(els.infoModal);
     state.rating.open = false;
     state.remoteDeleted.open = false;
+    if (state.confirm.open) settleConfirm(false);
     renderRating();
     renderRemoteDeleted();
 });

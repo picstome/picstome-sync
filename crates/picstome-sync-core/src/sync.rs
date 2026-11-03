@@ -16,7 +16,7 @@ use crate::model::{
     GalleryEntry, Manifest, Photo, Progress, Snapshot, SnapshotFile, SyncErrorItem, SyncReport,
     UploadedItem,
 };
-use crate::sanitize::{is_inside, safe_join};
+use crate::sanitize::{is_inside, safe_join, sanitize_file_name};
 use crate::transfer::{download_file, DownloadOptions, ProgressFn};
 
 pub type SyncProgressFn = Arc<dyn Fn(Progress) + Send + Sync>;
@@ -92,7 +92,13 @@ fn build_snapshot(
             // When local and remote differ, a transfer failed or there is a
             // conflict. Keep the last common base so the next sync retries the
             // correct direction instead of treating one side as authoritative.
-            let base = if sides_match { None } else { previous };
+            let previous_local = previous.filter(|file| file.mtime.is_some());
+            if !sides_match && previous_local.is_none() {
+                // No common base and the contents differ: this is a conflict.
+                // Do not invent a baseline that would silently resolve it later.
+                continue;
+            }
+            let base = if sides_match { None } else { previous_local };
             files.push(SnapshotFile {
                 id: photo.id.clone(),
                 filename: file.filename.clone(),
@@ -225,6 +231,8 @@ pub enum RemoteDeleteAction {
 #[serde(rename_all = "camelCase")]
 pub struct RemoteDeleteResolution {
     pub resolved: Vec<String>,
+    #[serde(default)]
+    pub trashed: Vec<TrashedFile>,
     pub errors: Vec<SyncErrorItem>,
 }
 
@@ -236,6 +244,85 @@ fn local_path_for(gallery: &GalleryEntry, file: &SnapshotFile) -> Option<PathBuf
         return Some(candidate);
     }
     safe_join(root, &file.filename).filter(|path| path.is_file())
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TrashedFile {
+    pub id: String,
+    pub filename: String,
+    pub original_path: String,
+    pub location: String,
+    #[serde(default)]
+    pub trash_path: Option<String>,
+}
+
+fn gallery_trash_destination(root: &Path, filename: &str) -> PathBuf {
+    let dir = root.join(".picstome-trash");
+    let stamp = now_millis();
+    let filename = sanitize_file_name(filename).unwrap_or_else(|| "photo".to_string());
+    let candidate = dir.join(format!("{stamp}-{filename}"));
+    if !candidate.exists() {
+        return candidate;
+    }
+    for suffix in 1..1000 {
+        let candidate = dir.join(format!("{stamp}-{suffix}-{filename}"));
+        if !candidate.exists() {
+            return candidate;
+        }
+    }
+    dir.join(format!("{stamp}-{filename}"))
+}
+
+fn move_to_gallery_trash(
+    root: &Path,
+    filename: &str,
+    path: &Path,
+    system_error: &str,
+) -> Result<PathBuf, String> {
+    let destination = gallery_trash_destination(root, filename);
+    if let Some(parent) = destination.parent() {
+        std::fs::create_dir_all(parent).map_err(|error| {
+            format!("system trash failed ({system_error}); gallery trash folder failed ({error})")
+        })?;
+    }
+    std::fs::rename(path, &destination).map_err(|error| {
+        format!("system trash failed ({system_error}); moving to gallery trash failed ({error})")
+    })?;
+    Ok(destination)
+}
+
+fn trash_local_file(
+    gallery: &GalleryEntry,
+    id: &str,
+    filename: &str,
+    path: &Path,
+) -> Result<TrashedFile, String> {
+    let original_path = path.display().to_string();
+    match trash::delete(path) {
+        Ok(()) => Ok(TrashedFile {
+            id: id.to_string(),
+            filename: filename.to_string(),
+            original_path,
+            location: "system".into(),
+            trash_path: None,
+        }),
+        Err(system_error) => {
+            let destination = move_to_gallery_trash(
+                Path::new(&gallery.local_path),
+                filename,
+                path,
+                &system_error.to_string(),
+            )?;
+            Ok(TrashedFile {
+                id: id.to_string(),
+                filename: filename.to_string(),
+                original_path,
+                location: "gallery".into(),
+                trash_path: Some(destination.display().to_string()),
+            })
+        }
+    }
 }
 
 pub fn mark_favorites_rated(
@@ -279,6 +366,7 @@ pub async fn resolve_remote_deletions(
         .load_snapshot(&gallery.gallery_id)
         .ok_or_else(|| CoreError::InvalidData("gallery snapshot not found".into()))?;
     let mut resolved = Vec::new();
+    let mut trashed = Vec::new();
     let mut errors = Vec::new();
 
     for id in ids {
@@ -299,15 +387,22 @@ pub async fn resolve_remote_deletions(
         match action {
             RemoteDeleteAction::DeleteLocal => {
                 if let Some(path) = local_path_for(gallery, &snapshot.files[index]) {
-                    let trash_path = path.clone();
-                    match tokio::task::spawn_blocking(move || trash::delete(&trash_path)).await {
-                        Ok(Ok(())) => {}
+                    let gallery = gallery.clone();
+                    let id = id.clone();
+                    let filename = snapshot.files[index].filename.clone();
+                    let path_for_error = path.display().to_string();
+                    let result = tokio::task::spawn_blocking(move || {
+                        trash_local_file(&gallery, &id, &filename, &path)
+                    })
+                    .await;
+                    match result {
+                        Ok(Ok(item)) => trashed.push(item),
                         Ok(Err(err)) => {
                             errors.push(SyncErrorItem {
                                 phase: "remote_delete".into(),
                                 filename: Some(snapshot.files[index].filename.clone()),
-                                path: Some(path.display().to_string()),
-                                message: err.to_string(),
+                                path: Some(path_for_error),
+                                message: err,
                             });
                             continue;
                         }
@@ -315,7 +410,7 @@ pub async fn resolve_remote_deletions(
                             errors.push(SyncErrorItem {
                                 phase: "remote_delete".into(),
                                 filename: Some(snapshot.files[index].filename.clone()),
-                                path: Some(path.display().to_string()),
+                                path: Some(path_for_error),
                                 message: err.to_string(),
                             });
                             continue;
@@ -390,7 +485,11 @@ pub async fn resolve_remote_deletions(
         entry.last_sync_at = Some(now);
     })?;
 
-    Ok(RemoteDeleteResolution { resolved, errors })
+    Ok(RemoteDeleteResolution {
+        resolved,
+        trashed,
+        errors,
+    })
 }
 
 pub async fn run_gallery_sync(
@@ -444,6 +543,16 @@ pub async fn run_gallery_sync(
 
     let diff = compute_diff(&previous_files, &manifest.photos, &local_files);
 
+    let scan_error_items: Vec<SyncErrorItem> = scan_errors
+        .into_iter()
+        .map(|error| SyncErrorItem {
+            phase: "scan".into(),
+            filename: None,
+            path: Some(error.path),
+            message: error.error,
+        })
+        .collect();
+    let scan_had_errors = !scan_error_items.is_empty();
     let mut report = SyncReport {
         gallery_id: gallery.gallery_id.clone(),
         name: manifest.name.clone(),
@@ -454,21 +563,28 @@ pub async fn run_gallery_sync(
         uploaded: Vec::new(),
         conflicts: diff.conflicts.clone(),
         remote_deleted: diff.remote_deleted.clone(),
-        proposals: DeleteProposals {
-            delete_remote: download_proposals(&diff),
+        proposals: if scan_had_errors {
+            DeleteProposals::default()
+        } else {
+            DeleteProposals {
+                delete_remote: download_proposals(&diff),
+            }
         },
         favorites: Vec::new(),
-        errors: scan_errors
-            .into_iter()
-            .map(|error| SyncErrorItem {
-                phase: "scan".into(),
-                filename: None,
-                path: Some(error.path),
-                message: error.error,
-            })
-            .collect(),
+        errors: scan_error_items,
         skipped: false,
     };
+    if scan_had_errors && diff.counts.local_deleted > 0 {
+        report.errors.push(SyncErrorItem {
+            phase: "scan".into(),
+            filename: None,
+            path: None,
+            message: format!(
+                "{} local deletion(s) were not proposed because the local scan had errors; fix the scan errors and sync again",
+                diff.counts.local_deleted
+            ),
+        });
+    }
 
     let to_download: Vec<Photo> = diff
         .remote_new
@@ -932,6 +1048,38 @@ mod tests {
         );
         assert_eq!(snapshot.files[0].hash.as_deref(), Some("h2"));
         assert_eq!(snapshot.files[0].version_count, Some(2));
+    }
+
+    #[test]
+    fn local_files_can_be_moved_to_the_gallery_trash_folder() {
+        let dir = tempfile::tempdir().unwrap();
+        let gallery_dir = dir.path().join("gallery");
+        std::fs::create_dir_all(&gallery_dir).unwrap();
+        let source = gallery_dir.join("photo.jpg");
+        std::fs::write(&source, b"photo-bytes").unwrap();
+
+        let destination = move_to_gallery_trash(
+            &gallery_dir,
+            "photo.jpg",
+            &source,
+            "system trash unavailable",
+        )
+        .unwrap();
+        assert!(!source.exists());
+        assert!(destination.starts_with(gallery_dir.join(".picstome-trash")));
+        assert_eq!(std::fs::read(&destination).unwrap(), b"photo-bytes");
+    }
+
+    #[test]
+    fn conflict_without_a_common_base_is_not_saved_to_the_snapshot() {
+        let mut photo = remote();
+        photo.hash = Some("h2".into());
+        photo.version_count = Some(2);
+        photo.version_number = Some(2);
+        let mut file = local();
+        file.hash = Some("h3".into());
+        let snapshot = build_snapshot(&gallery(), &manifest_with(photo), &[file], &[], 1);
+        assert!(snapshot.files.is_empty());
     }
 
     #[test]

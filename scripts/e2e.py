@@ -387,17 +387,121 @@ def main():
             assert int(log_dom["count"] or 0) > 0, log_dom
 
             os.remove(os.path.join(photos, upload_name))
-            proposal = js_invoke(session, "sync_gallery", {"galleryId": gallery})
-            log("proposal:", proposal["counts"], "errors:", proposal["errors"])
-            assert not proposal["errors"], proposal["errors"]
-            ids = [item["id"] for item in proposal["proposals"]["deleteRemote"]]
-            assert len(ids) == 1, proposal["proposals"]
-
-            deleted = js_invoke(
-                session, "apply_deletions", {"galleryId": gallery, "photoIds": ids}
+            run_async(
+                session,
+                "const done = arguments[arguments.length - 1]; document.getElementById('btnSync').click(); done('clicked');",
             )
-            log("deleted:", deleted["deleted"], "notFound:", deleted["not_found"])
-            assert len(deleted["deleted"]) == 1, deleted
+            deadline = time.time() + 60
+            proposal_state = None
+            while time.time() < deadline:
+                proposal_state = json.loads(
+                    run_async(
+                        session,
+                        """
+                        const done = arguments[arguments.length - 1];
+                        const checks = Array.from(
+                          document.querySelectorAll('#deleteList input[type=checkbox]')
+                        );
+                        done(JSON.stringify({
+                          visible: !document.getElementById('deleteBox').classList.contains('hidden'),
+                          ids: checks.map((item) => item.dataset.photoId),
+                          names: checks.map((item) => item.nextElementSibling.textContent)
+                        }));
+                        """,
+                    )
+                )
+                if proposal_state["visible"]:
+                    break
+                time.sleep(0.2)
+            log("proposal:", proposal_state)
+            assert proposal_state and proposal_state["visible"], "deletion proposal did not render"
+            ids = proposal_state["ids"]
+            assert len(ids) == 1, proposal_state
+
+            run_async(
+                session,
+                "const done = arguments[arguments.length - 1]; document.getElementById('btnDeleteRemote').click(); done('clicked');",
+            )
+            confirm_state = json.loads(
+                run_async(
+                    session,
+                    """
+                    const done = arguments[arguments.length - 1];
+                    done(JSON.stringify({
+                      visible: !document.getElementById('confirmModal').classList.contains('hidden'),
+                      message: document.getElementById('confirmMessage').textContent
+                    }));
+                    """,
+                )
+            )
+            log("remote delete confirmation:", confirm_state)
+            assert confirm_state["visible"], "remote delete confirmation did not open"
+            assert "1" in confirm_state["message"], confirm_state
+
+            run_async(
+                session,
+                "const done = arguments[arguments.length - 1]; document.getElementById('btnConfirmCancel').click(); done('cancelled');",
+            )
+            cancelled_state = json.loads(
+                run_async(
+                    session,
+                    """
+                    const done = arguments[arguments.length - 1];
+                    done(JSON.stringify({
+                      confirm: !document.getElementById('confirmModal').classList.contains('hidden'),
+                      deleteBox: !document.getElementById('deleteBox').classList.contains('hidden')
+                    }));
+                    """,
+                )
+            )
+            assert not cancelled_state["confirm"], cancelled_state
+            assert cancelled_state["deleteBox"], "cancel must keep the deletion proposal"
+
+            run_async(
+                session,
+                "const done = arguments[arguments.length - 1]; document.getElementById('btnDeleteRemote').click(); done('clicked');",
+            )
+            run_async(
+                session,
+                "const done = arguments[arguments.length - 1]; document.getElementById('btnConfirmOk').click(); done('confirmed');",
+            )
+            deadline = time.time() + 30
+            while time.time() < deadline:
+                deleted_state = json.loads(
+                    run_async(
+                        session,
+                        """
+                        const done = arguments[arguments.length - 1];
+                        done(JSON.stringify({
+                          deleteBox: !document.getElementById('deleteBox').classList.contains('hidden')
+                        }));
+                        """,
+                    )
+                )
+                if not deleted_state["deleteBox"]:
+                    break
+                time.sleep(0.2)
+            assert not deleted_state["deleteBox"], "confirmed remote deletion did not run"
+            deletion_log = js_invoke(session, "get_sync_log", {"galleryId": gallery})
+            assert any(
+                entry.get("kind") == "deletion"
+                and entry.get("action") == "remote_delete"
+                and entry.get("resolved") == 1
+                for entry in deletion_log
+            ), deletion_log
+            log_text = json.loads(
+                run_async(
+                    session,
+                    """
+                    const done = arguments[arguments.length - 1];
+                    done(JSON.stringify(
+                      document.getElementById('syncLogEntries').textContent
+                    ));
+                    """,
+                )
+            )
+            assert "Deleted in Picstome" in log_text, log_text
+            assert upload_name in log_text, log_text
 
             final = js_invoke(session, "sync_gallery", {"galleryId": gallery})
             log("final:", final["counts"], "skipped:", final["skipped"])
@@ -461,6 +565,24 @@ def main():
                 session,
                 "const done = arguments[arguments.length - 1]; document.getElementById('btnRemoteDeleteLocal').click(); done('clicked');",
             )
+            local_confirm = json.loads(
+                run_async(
+                    session,
+                    """
+                    const done = arguments[arguments.length - 1];
+                    done(JSON.stringify({
+                      visible: !document.getElementById('confirmModal').classList.contains('hidden'),
+                      message: document.getElementById('confirmMessage').textContent
+                    }));
+                    """,
+                )
+            )
+            log("local delete confirmation:", local_confirm)
+            assert local_confirm["visible"], "local delete confirmation did not open"
+            run_async(
+                session,
+                "const done = arguments[arguments.length - 1]; document.getElementById('btnConfirmOk').click(); done('confirmed');",
+            )
             deadline = time.time() + 30
             while time.time() < deadline:
                 state_after = json.loads(
@@ -479,6 +601,35 @@ def main():
                     break
                 time.sleep(0.2)
             assert not os.path.exists(removed_path), "Delete locally should remove the file"
+            local_delete_log = js_invoke(session, "get_sync_log", {"galleryId": gallery})
+            local_delete_entry = next(
+                (
+                    entry
+                    for entry in local_delete_log
+                    if entry.get("kind") == "deletion"
+                    and entry.get("action") == "delete_local"
+                ),
+                None,
+            )
+            assert local_delete_entry, local_delete_log
+            assert local_delete_entry.get("trashed"), local_delete_entry
+            for trashed in local_delete_entry["trashed"]:
+                assert trashed["location"] in {"system", "gallery"}, trashed
+                if trashed["location"] == "gallery":
+                    assert os.path.exists(trashed["trashPath"]), trashed
+            log_text = json.loads(
+                run_async(
+                    session,
+                    """
+                    const done = arguments[arguments.length - 1];
+                    done(JSON.stringify(
+                      document.getElementById('syncLogEntries').textContent
+                    ));
+                    """,
+                )
+            )
+            assert "Moved local files to trash" in log_text, log_text
+            assert removed["filename"] in log_text, log_text
             run_async(
                 session,
                 "const done = arguments[arguments.length - 1]; if (!document.getElementById('ratingModal').classList.contains('hidden')) document.getElementById('btnRatingClose').click(); done('closed');",

@@ -254,6 +254,38 @@ async fn remote_only_snapshot_entries_are_downloaded_not_deleted_remotely() {
 }
 
 #[tokio::test]
+async fn scan_errors_do_not_generate_remote_deletion_proposals() {
+    let (mock, api, _dir, store, gallery) = setup_sync().await;
+    run_gallery_sync(&api, &store, &gallery, SyncOptions::default(), silence())
+        .await
+        .unwrap();
+
+    let mut files: Vec<_> = std::fs::read_dir(&gallery.local_path)
+        .unwrap()
+        .filter_map(Result::ok)
+        .map(|entry| entry.path())
+        .collect();
+    files.sort();
+    let file = std::fs::OpenOptions::new()
+        .write(true)
+        .open(&files[0])
+        .unwrap();
+    file.set_len(501 * 1024 * 1024).unwrap();
+    drop(file);
+
+    let report = run_gallery_sync(&api, &store, &gallery, SyncOptions::default(), silence())
+        .await
+        .unwrap();
+    assert!(report.counts.local_deleted > 0);
+    assert!(report.proposals.delete_remote.is_empty());
+    assert!(report
+        .errors
+        .iter()
+        .any(|error| error.message.contains("not proposed")));
+    mock.close().await;
+}
+
+#[tokio::test]
 async fn sync_handles_remote_and_local_changes() {
     let (mock, api, _dir, store, gallery) = setup_sync().await;
     run_gallery_sync(&api, &store, &gallery, SyncOptions::default(), silence())
@@ -432,6 +464,14 @@ async fn remote_deletions_are_reported_and_resolved_explicitly() {
     .unwrap();
     assert_eq!(resolution.resolved, vec![deleted.id.clone()]);
     assert!(!deleted_path.exists());
+    assert_eq!(resolution.trashed.len(), 1);
+    assert!(
+        resolution.trashed[0].location == "system" || resolution.trashed[0].location == "gallery"
+    );
+    if resolution.trashed[0].location == "gallery" {
+        let trash_path = resolution.trashed[0].trash_path.as_deref().unwrap();
+        assert!(std::path::Path::new(trash_path).exists());
+    }
     let after_delete = run_gallery_sync(&api, &store, &gallery, SyncOptions::default(), silence())
         .await
         .unwrap();

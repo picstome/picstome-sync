@@ -362,9 +362,61 @@ fn append_sync_log(store: &Store, report: &SyncReport) {
             "size": item.size,
         })).collect::<Vec<_>>(),
         "downloaded": report.downloaded.iter().map(|item| item.filename.clone()).collect::<Vec<_>>(),
+        "localDeletedProposed": report.proposals.delete_remote.iter().map(|item| json!({
+            "id": item.id,
+            "filename": item.filename,
+        })).collect::<Vec<_>>(),
+        "remoteDeleted": report.remote_deleted.iter().map(|item| json!({
+            "id": item.id,
+            "filename": item.filename,
+            "relativePath": item.relative_path,
+        })).collect::<Vec<_>>(),
+        "conflicts": report.conflicts.iter().map(|item| json!({
+            "filename": item.local.filename,
+            "remoteFilename": item.remote.filename,
+        })).collect::<Vec<_>>(),
         "errors": report.errors.iter().map(|item| item.message.clone()).collect::<Vec<_>>(),
     });
     append_log_line(gallery_log_path(store, &report.gallery_id), entry);
+}
+
+fn append_sync_error_log(store: &Store, gallery_id: &str, message: &str) {
+    let entry = json!({
+        "kind": "sync_error",
+        "at": std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|duration| duration.as_millis() as i64)
+            .unwrap_or(0),
+        "galleryId": gallery_id,
+        "message": message,
+    });
+    append_log_line(gallery_log_path(store, gallery_id), entry);
+}
+
+#[allow(clippy::too_many_arguments)]
+fn append_deletion_log(
+    store: &Store,
+    gallery_id: &str,
+    action: &str,
+    files: Vec<Value>,
+    resolved: usize,
+    trashed: Vec<Value>,
+    errors: Vec<String>,
+) {
+    let entry = json!({
+        "kind": "deletion",
+        "at": std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|duration| duration.as_millis() as i64)
+            .unwrap_or(0),
+        "galleryId": gallery_id,
+        "action": action,
+        "resolved": resolved,
+        "files": files,
+        "trashed": trashed,
+        "errors": errors,
+    });
+    append_log_line(gallery_log_path(store, gallery_id), entry);
 }
 
 fn read_log_entries(path: &std::path::Path, max_lines: usize) -> Vec<serde_json::Value> {
@@ -443,19 +495,27 @@ async fn sync_linked(
         return Err(not_linked());
     };
     if !folder_exists(&gallery.local_path) {
+        append_sync_error_log(&state.store, &id, "Folder not found");
         return Err(folder_missing());
     }
 
     show_main(app);
     let api = state.api().await;
-    let report = run_gallery_sync(
+    let report = match run_gallery_sync(
         &api,
         &state.store,
         &gallery,
         SyncOptions::default(),
         progress_emitter(app.clone()),
     )
-    .await?;
+    .await
+    {
+        Ok(report) => report,
+        Err(error) => {
+            append_sync_error_log(&state.store, &id, &error.to_string());
+            return Err(error.into());
+        }
+    };
     append_sync_log(&state.store, &report);
     emit_state(app, state).await;
     Ok(report)
@@ -715,6 +775,7 @@ pub async fn resolve_remote_deletions(
     let Some(gallery) = state.store.get_gallery(&id) else {
         return Err(not_linked());
     };
+    let action_name = action.clone();
     let action = match action.as_str() {
         "delete_local" => RemoteDeleteAction::DeleteLocal,
         "keep_local" => RemoteDeleteAction::KeepLocal,
@@ -727,13 +788,67 @@ pub async fn resolve_remote_deletions(
         }
     };
     let api = state.api().await;
+    let snapshot = state.store.load_snapshot(&id);
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|duration| duration.as_millis() as i64)
         .unwrap_or(0);
+    let files: Vec<Value> = photo_ids
+        .iter()
+        .map(|photo_id| {
+            let file = snapshot
+                .as_ref()
+                .and_then(|snapshot| snapshot.files.iter().find(|file| &file.id == photo_id));
+            json!({
+                "id": photo_id,
+                "filename": file.map(|file| file.filename.clone()).unwrap_or_default(),
+                "path": file.and_then(|file| file.relative_path.clone()),
+            })
+        })
+        .collect();
     let result =
-        resolve_remote_deletions_core(&api, &state.store, &gallery, &photo_ids, action, now)
-            .await?;
+        match resolve_remote_deletions_core(&api, &state.store, &gallery, &photo_ids, action, now)
+            .await
+        {
+            Ok(result) => result,
+            Err(error) => {
+                append_deletion_log(
+                    &state.store,
+                    &id,
+                    &action_name,
+                    files,
+                    0,
+                    Vec::new(),
+                    vec![error.to_string()],
+                );
+                return Err(error.into());
+            }
+        };
+    append_deletion_log(
+        &state.store,
+        &id,
+        &action_name,
+        files,
+        result.resolved.len(),
+        result
+            .trashed
+            .iter()
+            .map(|item| {
+                json!({
+                    "id": item.id,
+                    "filename": item.filename,
+                    "originalPath": item.original_path,
+                    "location": item.location,
+                    "trashPath": item.trash_path,
+                })
+            })
+            .collect(),
+        result
+            .errors
+            .iter()
+            .map(|error| error.message.clone())
+            .collect(),
+    );
     emit_state(&app, &state).await;
     serde_json::to_value(result).map_err(|err| command_error(err.to_string(), "invalid_data"))
 }
@@ -748,8 +863,61 @@ pub async fn apply_deletions(
     let Some(id) = sanitize_gallery_id(&gallery_id) else {
         return Err(invalid_gallery());
     };
+    let snapshot = state.store.load_snapshot(&id);
     let api = state.api().await;
-    let result = apply_remote_deletions(&api, &state.store, &id, &photo_ids).await?;
+    let result = match apply_remote_deletions(&api, &state.store, &id, &photo_ids).await {
+        Ok(result) => result,
+        Err(error) => {
+            append_deletion_log(
+                &state.store,
+                &id,
+                "remote_delete",
+                photo_ids
+                    .iter()
+                    .map(|photo_id| json!({"id": photo_id, "status": "failed"}))
+                    .collect(),
+                0,
+                Vec::new(),
+                vec![error.to_string()],
+            );
+            return Err(error.into());
+        }
+    };
+    let deleted: std::collections::HashSet<&String> = result.deleted.iter().collect();
+    let not_found: std::collections::HashSet<&String> = result.not_found.iter().collect();
+    let files: Vec<Value> = photo_ids
+        .iter()
+        .map(|photo_id| {
+            let filename = snapshot.as_ref().and_then(|snapshot| {
+                snapshot
+                    .files
+                    .iter()
+                    .find(|file| &file.id == photo_id)
+                    .map(|file| file.filename.clone())
+            });
+            let status = if deleted.contains(photo_id) {
+                "deleted"
+            } else if not_found.contains(photo_id) {
+                "not_found"
+            } else {
+                "unknown"
+            };
+            json!({
+                "id": photo_id,
+                "filename": filename,
+                "status": status,
+            })
+        })
+        .collect();
+    append_deletion_log(
+        &state.store,
+        &id,
+        "remote_delete",
+        files,
+        result.deleted.len(),
+        Vec::new(),
+        Vec::new(),
+    );
     emit_state(&app, &state).await;
     Ok(result)
 }
