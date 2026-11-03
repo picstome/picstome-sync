@@ -7,7 +7,7 @@ use futures::StreamExt;
 
 use crate::api::ApiClient;
 use crate::config::Store;
-use crate::diff::compute_diff;
+use crate::diff::{compute_diff, repair_legacy_bases};
 use crate::error::{CoreError, CoreResult};
 use crate::identity::{identity_key, preferred_file};
 use crate::localfiles::{
@@ -16,7 +16,7 @@ use crate::localfiles::{
 use crate::model::{
     DeleteProposal, DeleteProposals, DeleteResponse, Diff, DownloadedItem, FavoritePhoto,
     GalleryEntry, Manifest, Photo, Progress, Snapshot, SnapshotFile, SyncErrorItem, SyncReport,
-    UploadedItem,
+    UploadedItem, HASH_SEMANTICS,
 };
 use crate::sanitize::{is_inside, safe_join, sanitize_file_name};
 use crate::transfer::{download_file, DownloadOptions, ProgressFn};
@@ -361,6 +361,7 @@ fn build_snapshot(
         local_path: gallery.local_path.clone(),
         last_sync_at: now,
         remote_rev: manifest.rev.clone(),
+        hash_semantics: HASH_SEMANTICS,
         local_photo_count,
         local_bytes,
         files,
@@ -681,6 +682,10 @@ pub async fn run_gallery_sync(
     });
 
     let previous = store.load_snapshot(&gallery.gallery_id);
+    let previous_semantics = previous
+        .as_ref()
+        .map(|snapshot| snapshot.hash_semantics)
+        .unwrap_or(0);
     let previous_files = previous.map(|snapshot| snapshot.files).unwrap_or_default();
 
     progress(Progress {
@@ -690,9 +695,23 @@ pub async fn run_gallery_sync(
         total: 1,
         ..Default::default()
     });
+    let legacy_scan_cache: Vec<SnapshotFile>;
+    let scan_cache: &[SnapshotFile] = if previous_semantics >= HASH_SEMANTICS {
+        &previous_files
+    } else {
+        legacy_scan_cache = previous_files
+            .iter()
+            .map(|file| {
+                let mut file = file.clone();
+                file.hash = None;
+                file
+            })
+            .collect();
+        &legacy_scan_cache
+    };
     let (local_files, scan_errors) = scan_and_hash(
         Path::new(&gallery.local_path),
-        &previous_files,
+        scan_cache,
         options.hash_concurrency,
     )
     .await?;
@@ -704,6 +723,7 @@ pub async fn run_gallery_sync(
         ..Default::default()
     });
 
+    let previous_files = repair_legacy_bases(&previous_files, &manifest.photos, &local_files);
     let diff = compute_diff(&previous_files, &manifest.photos, &local_files);
 
     let scan_error_items: Vec<SyncErrorItem> = scan_errors
@@ -1108,10 +1128,12 @@ mod tests {
             remote: crate::model::ConflictPhoto {
                 filename: "a.jpg".into(),
                 version_count: Some(2),
+                size: Some(10),
             },
             local: crate::model::ConflictPhoto {
                 filename: "a.jpg".into(),
                 version_count: Some(1),
+                size: Some(10),
             },
         }
     }

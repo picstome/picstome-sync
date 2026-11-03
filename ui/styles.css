@@ -645,6 +645,16 @@ button.danger:hover {
     overflow-y: auto;
 }
 
+.report-conflict-hint {
+    margin: 6px 0;
+    padding: 8px 10px;
+    border-radius: 8px;
+    background: rgba(238, 105, 88, 0.08);
+    color: var(--coral);
+    font-size: 12px;
+    line-height: 1.45;
+}
+
 .report-error {
     font-size: 12px;
     color: #b64538;

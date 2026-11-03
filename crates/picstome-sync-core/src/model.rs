@@ -3,6 +3,9 @@ use serde_json::Value;
 
 pub const DEFAULT_API_BASE: &str = "https://app.picstome.com";
 pub const CLIENT_NAME: &str = "picstome-sync";
+/// Bumped when the meaning of snapshot hashes changes. Old snapshots are
+/// rehashed once instead of trusting their legacy source hashes.
+pub const HASH_SEMANTICS: u32 = 2;
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 #[serde(rename_all = "camelCase", default)]
@@ -38,6 +41,8 @@ pub struct Snapshot {
     pub last_sync_at: i64,
     #[serde(default)]
     pub remote_rev: Option<Value>,
+    #[serde(default)]
+    pub hash_semantics: u32,
     #[serde(default)]
     pub local_photo_count: u64,
     #[serde(default)]
@@ -219,6 +224,8 @@ pub struct ConflictPhoto {
     pub filename: String,
     #[serde(default)]
     pub version_count: Option<u64>,
+    #[serde(default)]
+    pub size: Option<u64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

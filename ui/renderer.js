@@ -643,10 +643,21 @@ function renderReport() {
         line.textContent = `${error.filename || error.path || "—"} — ${error.message}`;
         els.reportErrors.appendChild(line);
     }
+    if ((report.conflicts || []).length > 0) {
+        const hint = document.createElement("div");
+        hint.className = "report-conflict-hint";
+        hint.textContent = s.conflictHint;
+        els.reportErrors.appendChild(hint);
+    }
     for (const conflict of report.conflicts || []) {
         const line = document.createElement("div");
         line.className = "report-error";
-        line.textContent = `${conflict.local?.filename || conflict.remote?.filename} — ${s.conflicts}`;
+        line.textContent = fmt(s.conflictDetail, {
+            filename: conflict.local?.filename || conflict.remote?.filename || "—",
+            remote: conflict.remote?.versionCount ?? 1,
+            remoteSize: formatBytes(conflict.remote?.size || 0),
+            localSize: formatBytes(conflict.local?.size || 0),
+        });
         els.reportErrors.appendChild(line);
     }
 

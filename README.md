@@ -48,8 +48,11 @@ against the backend contract in
   **Remove from app** or **Cancel**. Removing it only clears the link/snapshot;
   the local folder and photos stay untouched.
 - **Conflicts are not auto-resolved**: when both sides changed, Sync keeps the
-  last common baseline, reports the conflict, and never overwrites either copy
-  until it can be resolved explicitly.
+  last common baseline, reports the conflict with remote/local sizes, and
+  never overwrites either copy. Legacy snapshots whose hashes came from the
+  old source-hash field are rehashed once; if the local file is unchanged
+  (same size and mtime), the common baseline is repaired automatically so
+  those files do not show up as false conflicts.
 - **Resume**: `.part` + `.part.json` chunk map; a killed download resumes
   completed chunks before renaming.
 - **Safety**: manifest filenames are sanitized, every write is checked to stay
@@ -137,7 +140,7 @@ PICSTOME_API_BASE=http://127.0.0.1:8787 PICSTOME_MOCK=1 cargo run -p picstome-sy
 
 1. Open **GitHub → Releases** and download the latest **draft** asset (maintainers
    see drafts on the releases page), e.g. `Picstome.Sync_<version>_universal.dmg`.
-   With the CLI: `gh release download v0.1.20 --pattern '*.dmg'`.
+   With the CLI: `gh release download v0.1.21 --pattern '*.dmg'`.
    New test builds are produced locally with `scripts/release-local.sh`.
 2. Install it, open **Info** in the header and check **Version**, **Build**,
    **Mode** and **API target**.

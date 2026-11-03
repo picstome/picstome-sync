@@ -52,6 +52,67 @@ fn remote_changed(photo: &Photo, base: &SnapshotFile) -> bool {
     }
 }
 
+/// Older snapshots stored the upload/source hash in `hash`, while the file on
+/// disk is the processed download. When the local file has not changed
+/// (same size and mtime), repair the base hash so the first sync after the
+/// `download_hash` change does not report a false conflict.
+pub fn repair_legacy_bases(
+    snapshot_files: &[SnapshotFile],
+    remote_photos: &[Photo],
+    local_files: &[LocalFile],
+) -> Vec<SnapshotFile> {
+    let mut remote: HashMap<String, &Photo> = HashMap::new();
+    for photo in remote_photos {
+        if let Some(key) = photo.identity() {
+            remote.entry(key).or_insert(photo);
+        }
+    }
+
+    let mut local_groups: HashMap<String, Vec<&LocalFile>> = HashMap::new();
+    for file in local_files {
+        if let Some(key) = file.identity() {
+            local_groups.entry(key).or_default().push(file);
+        }
+    }
+    let mut local: HashMap<String, &LocalFile> = HashMap::new();
+    for (key, group) in &local_groups {
+        if let Some(chosen) = preferred_file(group, |file| file.filename.as_str()) {
+            local.insert(key.clone(), chosen);
+        }
+    }
+
+    snapshot_files
+        .iter()
+        .map(|base| {
+            let Some(key) = base.identity() else {
+                return base.clone();
+            };
+            let Some(photo) = remote.get(&key).copied() else {
+                return base.clone();
+            };
+            let Some(file) = local.get(&key).copied() else {
+                return base.clone();
+            };
+            if base.mtime != Some(file.mtime_ms) || base.size != Some(file.size) {
+                return base.clone();
+            }
+            let mut repaired = base.clone();
+            if repaired.hash != file.hash {
+                repaired.hash = file.hash.clone();
+                repaired.hash_algo = Some("sha256".to_string());
+                repaired.size = Some(file.size);
+            }
+            if let Some(remote_hash) = photo.content_hash() {
+                if file.hash.as_deref() == Some(remote_hash) {
+                    repaired.hash = Some(remote_hash.to_string());
+                    repaired.size = photo.size.or(Some(file.size));
+                }
+            }
+            repaired
+        })
+        .collect()
+}
+
 pub fn compute_diff(
     snapshot_files: &[SnapshotFile],
     remote_photos: &[Photo],
@@ -154,10 +215,12 @@ pub fn compute_diff(
                         remote: ConflictPhoto {
                             filename: photo.filename.clone(),
                             version_count: photo.version_count,
+                            size: photo.size,
                         },
                         local: ConflictPhoto {
                             filename: file.filename.clone(),
                             version_count: base.and_then(|b| b.version_count),
+                            size: Some(file.size),
                         },
                     });
                 } else if remote_was_changed {
@@ -312,6 +375,19 @@ mod tests {
         );
         assert_eq!(remote_deleted.counts.remote_deleted, 1);
         assert_eq!(remote_deleted.remote_deleted[0].id, "p1");
+    }
+
+    #[test]
+    fn repairs_legacy_source_hash_when_local_file_is_unchanged() {
+        let base = snapshot("p1", "a.jpg", "source-hash", 1);
+        let mut photo = remote("p1", "a.jpg", "source-hash", 1);
+        photo.download_hash = None;
+        let local = local("a.jpg", "served-hash");
+        let repaired = repair_legacy_bases(&[base], &[photo.clone()], std::slice::from_ref(&local));
+        assert_eq!(repaired[0].hash.as_deref(), Some("served-hash"));
+        let diff = compute_diff(&repaired, &[photo], &[local]);
+        assert_eq!(diff.counts.in_sync, 1);
+        assert_eq!(diff.counts.conflicts, 0);
     }
 
     #[test]
