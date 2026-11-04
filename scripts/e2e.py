@@ -1076,6 +1076,13 @@ def main():
         state = js_invoke(session, "get_state", {})
         assert not state["auth"]["connected"], "logout did not disconnect"
 
+        state = js_invoke(session, "set_test_mode", {"enabled": True})
+        assert state["config"]["apiKind"] == "development", state["config"]
+        assert state["config"]["apiBase"] == "https://devel.picstome.com", state["config"]
+        state = js_invoke(session, "set_test_mode", {"enabled": False})
+        assert state["config"]["apiKind"] == "production", state["config"]
+        assert state["config"]["apiBase"] == "https://app.picstome.com", state["config"]
+
         log("E2E PASSED")
     finally:
         if session:

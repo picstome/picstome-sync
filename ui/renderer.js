@@ -153,6 +153,8 @@ const els = {
     infoProfile: document.getElementById("infoProfile"),
     infoAccount: document.getElementById("infoAccount"),
     btnInfoClose: document.getElementById("btnInfoClose"),
+    btnTestMode: document.getElementById("btnTestMode"),
+    testModeHint: document.getElementById("testModeHint"),
 
     ratingModal: document.getElementById("ratingModal"),
     ratingTitle: document.getElementById("ratingTitle"),
@@ -368,6 +370,7 @@ function applyStrings() {
     els.infoProfileLabel.textContent = s.infoProfile;
     els.infoAccountLabel.textContent = s.infoAccount;
     els.btnInfoClose.textContent = s.infoClose;
+    els.btnTestMode.textContent = s.testMode;
 
     els.ratingTitle.textContent =
         state.rating.source === "favorites" ? s.ratingTitle : s.ratePhotosTitle;
@@ -446,6 +449,9 @@ function renderRuntimeInfo() {
     els.infoAccount.textContent = state.auth.connected
         ? [state.auth.name, state.auth.email].filter(Boolean).join(" · ")
         : "—";
+    const testMode = kind === "development";
+    els.btnTestMode.textContent = testMode ? s.testModeActive : s.testMode;
+    els.testModeHint.textContent = testMode ? s.testModeActiveHint : s.testModeHint;
 }
 
 function filteredGalleries() {
@@ -1997,8 +2003,28 @@ els.accountChip.addEventListener("click", async () => {
     }
 });
 
+async function toggleTestMode() {
+    const testMode = state.config.apiKind === "development";
+    const s = state.strings;
+    const confirmed = await askConfirm({
+        title: testMode ? s.disableTestModeTitle : s.enableTestModeTitle,
+        message: testMode ? s.disableTestModeMessage : s.enableTestModeMessage,
+        confirmLabel: testMode ? s.disableTestModeAction : s.enableTestModeAction,
+        danger: false,
+    });
+    if (!confirmed) return;
+    try {
+        await invoke("set_test_mode", { enabled: !testMode });
+        hide(els.infoModal);
+        await refreshState();
+    } catch (err) {
+        els.testModeHint.textContent = err?.message || String(err);
+    }
+}
+
 els.btnInfo.addEventListener("click", () => show(els.infoModal));
 els.btnInfoClose.addEventListener("click", () => hide(els.infoModal));
+els.btnTestMode.addEventListener("click", toggleTestMode);
 els.infoModal.addEventListener("click", (event) => {
     if (event.target === els.infoModal) hide(els.infoModal);
 });

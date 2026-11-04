@@ -174,6 +174,7 @@ pub fn run() {
             commands::open_account_profile,
             commands::open_galleries_page,
             commands::open_gallery_in_picstome,
+            commands::set_test_mode,
             commands::get_sync_log,
             commands::clear_sync_log,
             commands::frontend_ready,

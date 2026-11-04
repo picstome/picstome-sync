@@ -1088,6 +1088,41 @@ pub async fn open_account_profile(
 }
 
 #[tauri::command]
+pub async fn set_test_mode(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    enabled: bool,
+) -> Result<AppStateView, ErrorPayload> {
+    let base = if enabled {
+        "https://devel.picstome.com".to_string()
+    } else {
+        DEFAULT_API_BASE.to_string()
+    };
+    let old_api = state.api().await;
+    if old_api.has_token().await {
+        let _ = old_api.revoke().await;
+    }
+    let _ = state.token_store.save(None);
+
+    let new_api = ApiClient::new(Some(&base), None)?;
+    state.replace_api(new_api).await;
+    state.set_mock(false);
+    let _ = state.store.update_config(|config| {
+        config.api_base = None;
+        config.account_email = None;
+        config.account_name = None;
+    });
+
+    let view = build_state(&state).await;
+    let _ = app.emit("app-state", view.clone());
+    let _ = app.emit(
+        "auth-status",
+        json!({"connected": false, "reason": "api_changed"}),
+    );
+    Ok(view)
+}
+
+#[tauri::command]
 pub async fn get_sync_log(
     state: State<'_, AppState>,
     gallery_id: String,

@@ -87,7 +87,7 @@ cargo run -p picstome-sync
 # development
 PICSTOME_API_BASE=https://devel.picstome.com cargo run -p picstome-sync
 
-# hidden developer mode; shows a DEV badge in the sidebar
+# developer mode; shows a DEV badge in the sidebar
 cargo run -p picstome-sync -- --devel
 
 # local API
@@ -95,8 +95,10 @@ PICSTOME_API_BASE=http://127.0.0.1:8000 cargo run -p picstome-sync
 ```
 
 Normal app builds always use production (`https://app.picstome.com`). A
-previous development target stored by an older version is ignored. Use
-`--devel` or `PICSTOME_API_BASE` only for development.
+previous development target stored by an older version is ignored. The
+**Info → Test mode** button switches to devel for the current session and
+shows a DEV badge; it returns to production on restart. `--devel` or
+`PICSTOME_API_BASE` remain available for development.
 
 The app opens the Picstome authorization page. After approving, the
 `picstome://auth` deep link completes token exchange.
