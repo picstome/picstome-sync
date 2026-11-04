@@ -1044,6 +1044,74 @@ button.danger:hover {
     }
 }
 
+.modal-backdrop.sync-backdrop {
+    z-index: 45;
+}
+
+.sync-modal {
+    width: min(460px, 100%);
+    padding: 26px;
+    text-align: center;
+}
+
+.sync-modal-icon {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 46px;
+    height: 46px;
+    margin: 0 auto 12px;
+    border-radius: 14px;
+    background: var(--surface-muted);
+    font-size: 22px;
+    animation: sync-spin 1.2s linear infinite;
+}
+
+.sync-modal h2 {
+    font-size: 22px;
+}
+
+.sync-modal .hint {
+    margin-top: 6px;
+}
+
+.sync-modal-bar {
+    height: 8px;
+    margin-top: 18px;
+    border-radius: 999px;
+    background: var(--surface-muted);
+    overflow: hidden;
+}
+
+.sync-modal-bar span {
+    display: block;
+    width: 0;
+    height: 100%;
+    border-radius: inherit;
+    background: linear-gradient(90deg, var(--pine), var(--tea));
+    transition: width 160ms ease;
+}
+
+.sync-modal-meta {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    margin-top: 8px;
+    color: var(--muted);
+    font-size: 11.5px;
+}
+
+.sync-modal-meta strong {
+    color: var(--pine);
+}
+
+@keyframes sync-spin {
+    to {
+        transform: rotate(360deg);
+    }
+}
+
 /* Modals */
 
 .modal-backdrop {

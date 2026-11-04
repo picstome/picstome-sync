@@ -33,6 +33,7 @@ const state = {
     },
     currentGalleryId: null,
     syncBusy: false,
+    syncTarget: null,
     progress: null,
     report: null,
     rating: {
@@ -124,6 +125,13 @@ const els = {
     progressBar: document.getElementById("progressBar"),
     progressFill: document.getElementById("progressFill"),
     progressText: document.getElementById("progressText"),
+    syncModal: document.getElementById("syncModal"),
+    syncModalTitle: document.getElementById("syncModalTitle"),
+    syncModalPhase: document.getElementById("syncModalPhase"),
+    syncModalFill: document.getElementById("syncModalFill"),
+    syncModalFile: document.getElementById("syncModalFile"),
+    syncModalPercent: document.getElementById("syncModalPercent"),
+    syncModalHint: document.getElementById("syncModalHint"),
 
     report: document.getElementById("report"),
     reportSummary: document.getElementById("reportSummary"),
@@ -851,15 +859,7 @@ function renderMain() {
     els.btnUnlink.disabled = false;
 }
 
-function renderProgress() {
-    const s = state.strings;
-    if (!s) return;
-    if (!state.syncBusy || !state.progress) {
-        hide(els.progressWrap);
-        return;
-    }
-    show(els.progressWrap);
-    const progress = state.progress;
+function syncProgressView(progress, s) {
     let title = s.checkingChanges;
     let ratio = null;
     let detail = "";
@@ -890,18 +890,55 @@ function renderProgress() {
         title = s.progressDone;
         ratio = 1;
     }
+    return { title, ratio, detail };
+}
 
-    const determinate = typeof ratio === "number";
-    els.progressTitle.textContent = title;
+function renderProgress() {
+    const s = state.strings;
+    if (!s) return;
+    if (!state.syncBusy || !state.progress) {
+        hide(els.progressWrap);
+        return;
+    }
+    show(els.progressWrap);
+    const view = syncProgressView(state.progress, s);
+    const determinate = typeof view.ratio === "number";
+    els.progressTitle.textContent = view.title;
     els.progressBar.classList.toggle("indeterminate", !determinate);
     if (determinate) {
-        els.progressFill.style.width = `${Math.max(2, ratio * 100)}%`;
-        els.progressPercent.textContent = `${Math.round(ratio * 100)}%`;
+        els.progressFill.style.width = `${Math.max(2, view.ratio * 100)}%`;
+        els.progressPercent.textContent = `${Math.round(view.ratio * 100)}%`;
     } else {
         els.progressFill.style.width = "";
         els.progressPercent.textContent = "";
     }
-    els.progressText.textContent = detail;
+    els.progressText.textContent = view.detail;
+}
+
+function renderSyncModal() {
+    if (!state.strings) return;
+    if (!state.syncBusy) {
+        hide(els.syncModal);
+        return;
+    }
+    const s = state.strings;
+    const progress = state.progress || { phase: "manifest" };
+    const view = syncProgressView(progress, s);
+    const name = state.syncTarget?.name;
+    show(els.syncModal);
+    els.syncModalTitle.textContent = name
+        ? fmt(s.syncingGallery, { name })
+        : s.syncing;
+    els.syncModalPhase.textContent = view.title;
+    els.syncModalFile.textContent = view.detail;
+    els.syncModalHint.textContent = s.syncModalHint;
+    if (typeof view.ratio === "number") {
+        els.syncModalFill.style.width = `${Math.max(2, view.ratio * 100)}%`;
+        els.syncModalPercent.textContent = `${Math.round(view.ratio * 100)}%`;
+    } else {
+        els.syncModalFill.style.width = "";
+        els.syncModalPercent.textContent = "";
+    }
 }
 
 function renderReport() {
@@ -1442,6 +1479,7 @@ function renderAll() {
     renderGalleryList();
     renderMain();
     renderProgress();
+    renderSyncModal();
     renderReport();
     renderRating();
     renderFavorites();
@@ -1684,6 +1722,10 @@ async function handleUnknownGallery(gallery) {
 async function syncCurrent() {
     const gallery = currentGallery();
     if (!gallery || state.syncBusy) return;
+    state.syncTarget = {
+        galleryId: gallery.galleryId,
+        name: gallery.name,
+    };
     state.syncBusy = true;
     state.progress = { phase: "manifest", done: 0, total: 1 };
     state.report = null;
@@ -1701,6 +1743,7 @@ async function syncCurrent() {
         }
     } finally {
         state.syncBusy = false;
+        state.syncTarget = null;
         state.progress = null;
         if (!missing) {
             await refreshState();
@@ -1712,6 +1755,10 @@ async function syncCurrent() {
 
 async function startSync(galleryId, name) {
     if (state.syncBusy) return;
+    state.syncTarget = {
+        galleryId,
+        name: name || "Gallery",
+    };
     state.syncBusy = true;
     state.progress = { phase: "manifest", done: 0, total: 1 };
     state.report = null;
@@ -1735,6 +1782,7 @@ async function startSync(galleryId, name) {
         }
     } finally {
         state.syncBusy = false;
+        state.syncTarget = null;
         state.progress = null;
         if (!missing) {
             await refreshState();
@@ -1894,16 +1942,15 @@ async function init() {
     });
     await listen("sync-progress", (event) => {
         const progress = event.payload || {};
-        if (
-            state.currentGalleryId &&
-            progress.galleryId !== state.currentGalleryId
-        ) {
+        const activeGallery = state.syncTarget?.galleryId || state.currentGalleryId;
+        if (activeGallery && progress.galleryId !== activeGallery) {
             return;
         }
         state.progress = progress;
         if (progress.phase === "done") {
             state.syncBusy = false;
             renderProgress();
+            renderSyncModal();
             renderMain();
             setTimeout(() => {
                 if (!state.syncBusy) {
@@ -1914,6 +1961,7 @@ async function init() {
         } else {
             state.syncBusy = true;
             renderProgress();
+            renderSyncModal();
             renderMain();
         }
     });

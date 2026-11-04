@@ -383,6 +383,20 @@
             </div>
         </div>
 
+        <div class="modal-backdrop sync-backdrop hidden" id="syncModal">
+            <div class="modal sync-modal" role="status" aria-live="polite">
+                <div class="sync-modal-icon" aria-hidden="true">🔄</div>
+                <h2 id="syncModalTitle">Syncing…</h2>
+                <p class="hint" id="syncModalPhase"></p>
+                <div class="sync-modal-bar"><span id="syncModalFill"></span></div>
+                <div class="sync-modal-meta">
+                    <span id="syncModalFile"></span>
+                    <strong id="syncModalPercent"></strong>
+                </div>
+                <p class="hint" id="syncModalHint"></p>
+            </div>
+        </div>
+
         <div class="modal-backdrop hidden" id="confirmModal">
             <div class="modal" role="dialog" aria-modal="true">
                 <div class="modal-head">
