@@ -301,6 +301,7 @@ def main():
                   favorites: document.getElementById('btnFavoritesList').textContent,
                   unlinkParent: document.getElementById('btnUnlink').closest('.main-footer')?.id || '',
                   changeTitle: document.getElementById('btnChangeFolder').title,
+                  changeText: document.getElementById('btnChangeFolder').textContent,
                   footerVisible: !document.getElementById('mainFooter').classList.contains('hidden')
                 }));
                 """,
@@ -314,6 +315,7 @@ def main():
         assert layout["unlinkParent"] == "mainFooter", layout
         assert layout["footerVisible"], layout
         assert "Change folder" in layout["changeTitle"] or "Cambiar carpeta" in layout["changeTitle"], layout
+        assert "Change folder" in layout["changeText"] or "Cambiar carpeta" in layout["changeText"], layout
         assert state["config"]["appVersion"] in dom["infoText"], "info modal must show the version"
         kind = state["config"]["apiKind"]
         expected_badge = {

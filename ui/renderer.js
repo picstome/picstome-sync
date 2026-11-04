@@ -339,6 +339,7 @@ function applyStrings() {
     els.btnIdleSync.textContent = s.sync;
     els.idleTitle.textContent = s.readyToSync;
     els.idleHint.textContent = s.syncHint;
+    els.btnChangeFolder.textContent = s.changeFolder;
     els.btnChangeFolder.title = s.changeFolder;
     els.btnChangeFolder.setAttribute("aria-label", s.changeFolder);
     els.btnUnlink.textContent = s.unlink;
@@ -1718,13 +1719,33 @@ els.btnApiDevelopment.addEventListener("click", () =>
 );
 
 els.btnChangeFolder.addEventListener("click", async () => {
-    if (!state.currentGalleryId) return;
-    const result = await invoke("change_folder", {
-        galleryId: state.currentGalleryId,
-    });
-    if (result.ok) {
-        state.report = null;
-        await refreshState();
+    if (!state.currentGalleryId || els.btnChangeFolder.disabled) return;
+    const s = state.strings;
+    const original = s.changeFolder;
+    els.btnChangeFolder.disabled = true;
+    els.btnChangeFolder.textContent = s.choosingFolder || original;
+    try {
+        const result = await invoke("change_folder", {
+            galleryId: state.currentGalleryId,
+        });
+        if (result.ok) {
+            state.report = null;
+            await refreshState();
+        }
+    } catch (err) {
+        state.report = {
+            counts: {},
+            downloaded: [],
+            uploaded: [],
+            conflicts: [],
+            errors: [{ filename: "—", message: err?.message || String(err) }],
+            proposals: { deleteRemote: [] },
+            favorites: [],
+        };
+        renderAll();
+    } finally {
+        els.btnChangeFolder.disabled = false;
+        els.btnChangeFolder.textContent = state.strings?.changeFolder || original;
     }
 });
 

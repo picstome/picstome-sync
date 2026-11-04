@@ -551,7 +551,7 @@ async fn sync_linked(
     Ok(report)
 }
 
-fn patch_linked_folder(
+async fn patch_linked_folder(
     app: &AppHandle,
     state: &AppState,
     gallery_id: &str,
@@ -560,7 +560,7 @@ fn patch_linked_folder(
     let Some(id) = sanitize_gallery_id(gallery_id) else {
         return Err(invalid_gallery());
     };
-    let Some(folder) = pick_folder(app) else {
+    let Some(folder) = pick_folder(app).await else {
         return Ok(json!({"ok": false, "canceled": true}));
     };
     state.store.patch_gallery(&id, |entry| {
@@ -572,10 +572,18 @@ fn patch_linked_folder(
     Ok(json!({"ok": true, "localPath": folder}))
 }
 
-pub fn pick_folder(app: &AppHandle) -> Option<String> {
-    app.dialog()
-        .file()
-        .blocking_pick_folder()
+/// Opens the native folder picker without blocking Tauri's main thread.
+/// The dialog callback sends the selected path through a oneshot channel so
+/// async commands can await it safely on every desktop platform.
+pub async fn pick_folder(app: &AppHandle) -> Option<String> {
+    let (sender, receiver) = tokio::sync::oneshot::channel();
+    app.dialog().file().pick_folder(move |path| {
+        let _ = sender.send(path);
+    });
+    receiver
+        .await
+        .ok()
+        .flatten()
         .and_then(|path| path.into_path().ok())
         .map(|path| path.to_string_lossy().to_string())
 }
@@ -599,13 +607,18 @@ pub async fn get_config(state: State<'_, AppState>) -> Result<Value, ErrorPayloa
 }
 
 #[tauri::command]
-pub fn choose_folder(app: AppHandle, state: State<'_, AppState>) -> Option<String> {
-    let dir = pick_folder(&app)?;
+pub async fn choose_folder(
+    app: AppHandle,
+    state: State<'_, AppState>,
+) -> Result<Option<String>, ErrorPayload> {
+    let Some(dir) = pick_folder(&app).await else {
+        return Ok(None);
+    };
     let _ = state.store.update_config(|config| {
         config.photos_dir = Some(dir.clone());
     });
     show_main(&app);
-    Some(dir)
+    Ok(Some(dir))
 }
 
 #[tauri::command]
@@ -705,7 +718,7 @@ pub async fn start_sync(
     };
 
     if state.store.get_gallery(&id).is_none() {
-        let Some(folder) = pick_folder(&app) else {
+        let Some(folder) = pick_folder(&app).await else {
             return Ok(StartSyncResult {
                 canceled: true,
                 report: None,
@@ -740,21 +753,21 @@ pub async fn sync_gallery(
 }
 
 #[tauri::command]
-pub fn locate_gallery(
+pub async fn locate_gallery(
     app: AppHandle,
     state: State<'_, AppState>,
     gallery_id: String,
 ) -> Result<Value, ErrorPayload> {
-    patch_linked_folder(&app, &state, &gallery_id, false)
+    patch_linked_folder(&app, &state, &gallery_id, false).await
 }
 
 #[tauri::command]
-pub fn change_folder(
+pub async fn change_folder(
     app: AppHandle,
     state: State<'_, AppState>,
     gallery_id: String,
 ) -> Result<Value, ErrorPayload> {
-    patch_linked_folder(&app, &state, &gallery_id, true)
+    patch_linked_folder(&app, &state, &gallery_id, true).await
 }
 
 #[tauri::command]
