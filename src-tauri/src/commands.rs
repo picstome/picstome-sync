@@ -3,7 +3,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use tauri::{AppHandle, Emitter, Manager, State};
 use tauri_plugin_dialog::DialogExt;
@@ -1199,19 +1199,162 @@ pub async fn dev_handle_deep_link(app: AppHandle, url: String) -> Result<Value, 
     Ok(json!({"ok": true}))
 }
 
+const UPDATE_CHECK_INTERVAL_SECONDS: i64 = 15 * 24 * 60 * 60;
+const LATEST_RELEASE_URL: &str =
+    "https://api.github.com/repos/picstome/picstome-sync/releases/latest";
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UpdateCheck {
+    pub available: bool,
+    pub current_version: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub latest_version: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub url: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct GithubRelease {
+    tag_name: String,
+    html_url: String,
+}
+
+fn version_parts(version: &str) -> Vec<u64> {
+    version
+        .trim()
+        .trim_start_matches(['v', 'V'])
+        .split(['.', '-', '+'])
+        .take(3)
+        .map(|part| part.parse::<u64>().unwrap_or(0))
+        .collect()
+}
+
+fn is_newer_version(latest: &str, current: &str) -> bool {
+    let latest = version_parts(latest);
+    let current = version_parts(current);
+    for index in 0..latest.len().max(current.len()) {
+        let latest_part = latest.get(index).copied().unwrap_or(0);
+        let current_part = current.get(index).copied().unwrap_or(0);
+        if latest_part != current_part {
+            return latest_part > current_part;
+        }
+    }
+    false
+}
+
+fn no_update(current_version: String, error: Option<String>) -> UpdateCheck {
+    UpdateCheck {
+        available: false,
+        current_version,
+        latest_version: None,
+        url: None,
+        error,
+    }
+}
+
 #[tauri::command]
 pub fn install_update() -> Value {
     json!({"ok": false, "reason": "updater_not_configured"})
 }
 
 #[tauri::command]
-pub async fn check_updates() -> Value {
-    json!({"ok": false, "reason": "updater_not_configured"})
+pub async fn check_updates(state: State<'_, AppState>) -> Result<UpdateCheck, ErrorPayload> {
+    let current_version = state.app_version.clone();
+    let now = now_millis() / 1000;
+    let config = state.store.load_config();
+    let due = config
+        .last_update_check_at
+        .map(|last| last > now || now.saturating_sub(last) >= UPDATE_CHECK_INTERVAL_SECONDS)
+        .unwrap_or(true);
+    let disabled = state.is_mock()
+        || std::env::var("PICSTOME_DISABLE_UPDATE_CHECK")
+            .map(|value| value == "1")
+            .unwrap_or(false);
+    if disabled || !due {
+        return Ok(no_update(current_version, None));
+    }
+
+    let result = async {
+        let client = reqwest::Client::builder()
+            .user_agent("Picstome-Sync")
+            .timeout(Duration::from_secs(15))
+            .build()
+            .map_err(|error| error.to_string())?;
+        let response = client
+            .get(LATEST_RELEASE_URL)
+            .header("Accept", "application/vnd.github+json")
+            .send()
+            .await
+            .map_err(|error| error.to_string())?;
+        if response.status().as_u16() == 404 {
+            return Ok(None);
+        }
+        if !response.status().is_success() {
+            return Err(format!(
+                "GitHub returned HTTP {}",
+                response.status().as_u16()
+            ));
+        }
+        response
+            .json::<GithubRelease>()
+            .await
+            .map(Some)
+            .map_err(|error| error.to_string())
+    }
+    .await;
+
+    if result.is_ok() {
+        let _ = state.store.update_config(|config| {
+            config.last_update_check_at = Some(now);
+        });
+    }
+
+    match result {
+        Ok(Some(release)) => {
+            let latest_version = release.tag_name.trim_start_matches(['v', 'V']);
+            if is_newer_version(latest_version, &current_version) {
+                Ok(UpdateCheck {
+                    available: true,
+                    current_version,
+                    latest_version: Some(latest_version.to_string()),
+                    url: Some(release.html_url),
+                    error: None,
+                })
+            } else {
+                Ok(no_update(current_version, None))
+            }
+        }
+        Ok(None) => Ok(no_update(current_version, None)),
+        Err(error) => Ok(no_update(current_version, Some(error))),
+    }
+}
+
+#[tauri::command]
+pub fn open_update_page(app: AppHandle, url: String) -> Result<Value, ErrorPayload> {
+    if !url.starts_with("https://github.com/picstome/picstome-sync/releases/") {
+        return Err(command_error("Invalid update URL", "invalid_url"));
+    }
+    app.opener()
+        .open_url(url, None::<&str>)
+        .map_err(|err| command_error(err.to_string(), "open_url_failed"))?;
+    Ok(json!({"ok": true}))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn compares_update_versions() {
+        assert!(is_newer_version("v0.2.0", "0.1.33"));
+        assert!(is_newer_version("0.1.34", "0.1.33"));
+        assert!(!is_newer_version("v0.1.33", "0.1.33"));
+        assert!(!is_newer_version("0.1.32", "0.1.33"));
+        assert!(!is_newer_version("not-a-version", "0.1.33"));
+    }
 
     #[test]
     fn gallery_web_url_uses_only_http_links_and_falls_back_to_galleries() {

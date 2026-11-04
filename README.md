@@ -19,6 +19,7 @@ and star-rating workflow.
 - Detects local deletions and proposes deleting the remote copy.
 - Detects remote deletions and asks whether to trash the local copy, keep it,
   or upload it again.
+- Shows up to five recent unlinked galleries from Picstome on startup.
 - Searches synced and remote Picstome galleries with pagination; choosing a
   remote result asks for the local folder and links it.
 - The `+` button opens the gallery-creation page on the current API target.
@@ -27,6 +28,8 @@ and star-rating workflow.
 - Shows photo count, disk usage, sync progress, and a per-gallery activity log.
 - Opens the linked gallery in Picstome from the title link (falls back to the
   galleries page when the API does not expose `web_url`).
+- Checks GitHub for a newer release on startup, at most once every 15 days,
+  and offers a download link when available.
 - Never overwrites conflicts automatically.
 
 ## How it works
@@ -99,6 +102,7 @@ Useful developer variables:
 | `PICSTOME_USER_DATA_DIR` | Override the app data directory (useful in tests). |
 | `PICSTOME_TOKEN` | Pre-supply a token in debug/demo builds only. |
 | `PICSTOME_MOCK=1` | Use mock mode. |
+| `PICSTOME_DISABLE_UPDATE_CHECK=1` | Skip the GitHub update check (tests/E2E). |
 
 ### Standalone mock API
 

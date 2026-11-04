@@ -191,6 +191,7 @@ def main():
     env.setdefault("WEBKIT_DISABLE_COMPOSITING_MODE", "1")
     env.setdefault("LIBGL_ALWAYS_SOFTWARE", "1")
     env.setdefault("PICSTOME_DISABLE_BROWSER_OPEN", "1")
+    env.setdefault("PICSTOME_DISABLE_UPDATE_CHECK", "1")
     env.setdefault("RUST_BACKTRACE", "1")
 
     global DRIVER_LOG_PATH, DRIVER_PROCESS

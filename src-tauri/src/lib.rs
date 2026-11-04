@@ -171,6 +171,7 @@ pub fn run() {
             commands::dev_handle_deep_link,
             commands::install_update,
             commands::check_updates,
+            commands::open_update_page,
         ])
         .run(tauri::generate_context!())
         .expect("error while running Picstome Sync");

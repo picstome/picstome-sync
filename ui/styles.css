@@ -255,6 +255,12 @@ body {
     color: var(--coral);
 }
 
+.recent-gallery-section {
+    margin-top: 0;
+    padding-top: 0;
+    border-top: 0;
+}
+
 .remote-gallery-section {
     display: flex;
     flex-direction: column;

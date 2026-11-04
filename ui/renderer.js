@@ -25,6 +25,12 @@ const state = {
         error: null,
         requestId: 0,
     },
+    recentGalleries: {
+        loadedFor: null,
+        loading: false,
+        items: [],
+        error: null,
+    },
     currentGalleryId: null,
     syncBusy: false,
     progress: null,
@@ -484,6 +490,127 @@ function filteredGalleries() {
     );
 }
 
+function recentGalleryItems() {
+    const linked = new Set(state.galleries.map((gallery) => gallery.galleryId));
+    const seen = new Set();
+    return state.recentGalleries.items
+        .filter((gallery) => {
+            if (linked.has(gallery.id) || seen.has(gallery.id)) return false;
+            seen.add(gallery.id);
+            return true;
+        })
+        .slice(0, 5);
+}
+
+function resetRecentGalleries() {
+    state.recentGalleries.loadedFor = null;
+    state.recentGalleries.items = [];
+    state.recentGalleries.loading = false;
+    state.recentGalleries.error = null;
+}
+
+async function loadRecentGalleries() {
+    const key = state.config.apiBase;
+    if (!state.auth.connected || state.recentGalleries.loading) return;
+    if (state.recentGalleries.loadedFor === key) return;
+    const recent = state.recentGalleries;
+    recent.loading = true;
+    recent.error = null;
+    renderGalleryList();
+    try {
+        const result = await invoke("search_remote_galleries", {
+            search: "",
+            page: 1,
+            perPage: 10,
+        });
+        if (!state.auth.connected || key !== state.config.apiBase) return;
+        recent.items = Array.isArray(result.data) ? result.data : [];
+        recent.loadedFor = key;
+    } catch (err) {
+        recent.error = err?.message || String(err);
+        recent.loadedFor = key;
+    } finally {
+        recent.loading = false;
+        renderGalleryList();
+    }
+}
+
+function maybeLoadRecentGalleries() {
+    if (!state.auth.connected) {
+        resetRecentGalleries();
+        return;
+    }
+    loadRecentGalleries();
+}
+
+function remoteGalleryRow(gallery, s) {
+    const row = document.createElement("button");
+    row.type = "button";
+    row.className = "gallery-row remote-gallery-row";
+    row.dataset.remote = "1";
+    row.dataset.galleryId = gallery.id;
+    row.dataset.galleryName = gallery.name || "Gallery";
+    row.title = s.remoteGalleryHint;
+
+    const avatar = document.createElement("span");
+    avatar.className = "gallery-avatar remote-gallery-avatar";
+    avatar.textContent = "+";
+    row.appendChild(avatar);
+
+    const info = document.createElement("span");
+    info.className = "gallery-info";
+    const name = document.createElement("span");
+    name.className = "gallery-name";
+    name.textContent = gallery.name || "Gallery";
+    const hint = document.createElement("span");
+    hint.className = "gallery-meta";
+    hint.textContent = s.remoteGalleryHint;
+    info.appendChild(name);
+    info.appendChild(hint);
+    row.appendChild(info);
+    return row;
+}
+
+function renderRecentGallerySection(s) {
+    if (remoteSearchQuery()) return;
+    const recent = state.recentGalleries;
+    const items = recentGalleryItems();
+    if (
+        !state.auth.connected ||
+        (items.length === 0 && !recent.loading && !recent.error)
+    ) {
+        return;
+    }
+
+    const section = document.createElement("div");
+    section.className = "remote-gallery-section recent-gallery-section";
+
+    const head = document.createElement("div");
+    head.className = "remote-gallery-head";
+    const title = document.createElement("span");
+    title.textContent = s.recentGalleries;
+    head.appendChild(title);
+    section.appendChild(head);
+
+    for (const gallery of items) {
+        section.appendChild(remoteGalleryRow(gallery, s));
+    }
+
+    if (recent.loading) {
+        const status = document.createElement("div");
+        status.className = "remote-gallery-status";
+        status.textContent = s.remoteSearching;
+        section.appendChild(status);
+    } else if (recent.error) {
+        const status = document.createElement("div");
+        status.className = "remote-gallery-status error";
+        status.textContent = `${s.remoteSearchError}: ${recent.error}`;
+        section.appendChild(status);
+    }
+
+    els.galleryList.appendChild(section);
+}
+
 function remoteSearchQuery() {
     const query = state.galleryQuery.trim();
     return state.auth.connected && query.length >= 2 ? query : "";
@@ -594,31 +721,7 @@ function renderRemoteGallerySection(s) {
     section.appendChild(head);
 
     for (const gallery of items) {
-        const row = document.createElement("button");
-        row.type = "button";
-        row.className = "gallery-row remote-gallery-row";
-        row.dataset.remote = "1";
-        row.dataset.galleryId = gallery.id;
-        row.dataset.galleryName = gallery.name || "Gallery";
-        row.title = s.remoteGalleryHint;
-
-        const avatar = document.createElement("span");
-        avatar.className = "gallery-avatar remote-gallery-avatar";
-        avatar.textContent = "+";
-        row.appendChild(avatar);
-
-        const info = document.createElement("span");
-        info.className = "gallery-info";
-        const name = document.createElement("span");
-        name.className = "gallery-name";
-        name.textContent = gallery.name || "Gallery";
-        const hint = document.createElement("span");
-        hint.className = "gallery-meta";
-        hint.textContent = s.remoteGalleryHint;
-        info.appendChild(name);
-        info.appendChild(hint);
-        row.appendChild(info);
-        section.appendChild(row);
+        section.appendChild(remoteGalleryRow(gallery, s));
     }
 
     if (remote.loading) {
@@ -648,9 +751,15 @@ function renderGalleryList() {
     if (!s) return;
     els.galleryList.replaceChildren();
     const searchingRemote = Boolean(remoteSearchQuery());
+    const recentVisible =
+        !searchingRemote &&
+        state.auth.connected &&
+        (state.recentGalleries.loading ||
+            Boolean(state.recentGalleries.error) ||
+            recentGalleryItems().length > 0);
     els.syncEmpty.classList.toggle(
         "hidden",
-        state.galleries.length > 0 || searchingRemote,
+        state.galleries.length > 0 || searchingRemote || recentVisible,
     );
     const galleries = filteredGalleries();
     const remote = state.remoteGalleries;
@@ -665,6 +774,8 @@ function renderGalleryList() {
             galleries.length > 0 ||
             remoteHasResults,
     );
+
+    renderRecentGallerySection(s);
 
     for (const gallery of galleries) {
         const row = document.createElement("button");
@@ -1373,6 +1484,7 @@ function setState(next) {
     state.mock = Boolean(next.mock);
     state.auth = next.auth || state.auth;
     state.galleries = Array.isArray(next.galleries) ? next.galleries : [];
+    maybeLoadRecentGalleries();
     if (
         state.currentGalleryId &&
         !state.galleries.some(
@@ -1766,6 +1878,28 @@ async function openPicstome() {
 
 /* Events */
 
+async function checkForUpdates() {
+    try {
+        const update = await invoke("check_updates");
+        if (!update?.available || !update.url) return;
+        const s = state.strings;
+        const download = await askConfirm({
+            title: s.updateAvailableTitle,
+            message: fmt(s.updateAvailableMessage, {
+                current: update.currentVersion || state.config.appVersion || "?",
+                latest: update.latestVersion || "?",
+            }),
+            confirmLabel: s.updateDownload,
+            danger: false,
+        });
+        if (download) {
+            await invoke("open_update_page", { url: update.url });
+        }
+    } catch {
+        // Update checks are best-effort and must never block startup.
+    }
+}
+
 async function init() {
     try {
         setState(await invoke("get_state"));
@@ -1821,6 +1955,7 @@ async function init() {
     });
 
     await invoke("frontend_ready");
+    checkForUpdates();
 }
 
 /* UI bindings */
