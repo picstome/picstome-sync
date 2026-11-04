@@ -75,26 +75,19 @@ jobs:
           releaseDraft: true
           prerelease: false
           includeUpdaterJson: false
-          releaseBody: |
-            Picstome Sync ${{ inputs.tag || github.ref_name }}
-
-            Builds are ad-hoc signed (no Apple Developer ID). If macOS says the
-            app is damaged or from an unidentified developer:
-
-            1. Right-click the app in Finder and choose **Open**.
-            2. If needed, run `xattr -cr "/Applications/Picstome Sync.app"`.
-            3. Approve it in **System Settings → Privacy & Security**.
-
-            The app shows its version, build profile and exact API URL under the
-            **Info** button in the sidebar. Use **Test API target** there to switch
-            between production (`app.picstome.com`) and development
-            (`devel.picstome.com`); switching signs you out.
-
-            The Sync button checks remote changes and shows live progress. When the
-            API reports favorite photos, Sync asks for a 1–5 star rating before
-            writing it locally. If a photo was deleted in Picstome, Sync asks
-            whether to delete it locally, keep it locally or upload it again. The
-            old Rate tab is now a rating dialog inside the same desktop interface.
-            Rate links use the selected gallery folder automatically, and the
-            gallery sidebar has search (Ctrl/Cmd+F).
           args: ${{ matrix.args }}
+
+  notes:
+    needs: publish
+    name: Write bilingual release notes
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Update release notes
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          TAG="${{ inputs.tag }}"
+          bash scripts/release-notes.sh "$TAG" > release-notes.md
+          gh release edit "$TAG" --notes-file release-notes.md

@@ -43,18 +43,21 @@ jobs:
             TAG="v$(python3 -c 'import json; print(json.load(open("src-tauri/tauri.conf.json"))["version"])')"
           fi
           echo "tag=$TAG" >> "$GITHUB_OUTPUT"
-      - name: Create draft release
+      - name: Create/update draft release notes
         if: inputs.create_release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
           TAG="${{ steps.tag.outputs.tag }}"
+          bash scripts/release-notes.sh "$TAG" > release-notes.md
           if ! gh release view "$TAG" >/dev/null 2>&1; then
             gh release create "$TAG" \
               --draft \
               --title "Picstome Sync $TAG" \
-              --notes "Test builds: Linux, macOS universal (ad-hoc signed) and Windows installers."
+              --notes-file release-notes.md
+          else
+            gh release edit "$TAG" --notes-file release-notes.md
           fi
 
   macos:
