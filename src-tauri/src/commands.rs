@@ -120,15 +120,9 @@ impl AppState {
     }
 }
 
-pub fn api_base_from_env_or_config(store: &Store) -> String {
-    if let Ok(value) = std::env::var("PICSTOME_API_BASE") {
-        if !value.trim().is_empty() {
-            return value;
-        }
-    }
-    store
-        .load_config()
-        .api_base
+pub fn api_base_from_env() -> String {
+    std::env::var("PICSTOME_API_BASE")
+        .ok()
         .filter(|value| !value.trim().is_empty())
         .unwrap_or_else(|| DEFAULT_API_BASE.to_string())
 }
@@ -1091,37 +1085,6 @@ pub async fn open_account_profile(
         .open_url(url, None::<&str>)
         .map_err(|err| command_error(err.to_string(), "open_url_failed"))?;
     Ok(json!({"ok": true}))
-}
-
-#[tauri::command]
-pub async fn set_api_base(
-    app: AppHandle,
-    state: State<'_, AppState>,
-    base_url: String,
-) -> Result<AppStateView, ErrorPayload> {
-    let base = picstome_sync_core::model::normalize_api_base(&base_url)?;
-    let old_api = state.api().await;
-    if old_api.has_token().await {
-        let _ = old_api.revoke().await;
-    }
-    let _ = state.token_store.save(None);
-
-    let new_api = ApiClient::new(Some(&base), None)?;
-    state.replace_api(new_api).await;
-    state.set_mock(false);
-    let _ = state.store.update_config(|config| {
-        config.api_base = Some(base.clone());
-        config.account_email = None;
-        config.account_name = None;
-    });
-
-    let view = build_state(&state).await;
-    let _ = app.emit("app-state", view.clone());
-    let _ = app.emit(
-        "auth-status",
-        json!({"connected": false, "reason": "api_changed"}),
-    );
-    Ok(view)
 }
 
 #[tauri::command]

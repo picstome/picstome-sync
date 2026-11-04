@@ -19,6 +19,16 @@ pub fn run() {
             .map(|value| value == "1")
             .unwrap_or(false);
 
+    let devel_requested = std::env::args().any(|arg| arg == "--devel" || arg == "--dev");
+    if devel_requested
+        && !demo_requested
+        && std::env::var("PICSTOME_API_BASE")
+            .map(|value| value.trim().is_empty())
+            .unwrap_or(true)
+    {
+        std::env::set_var("PICSTOME_API_BASE", "https://devel.picstome.com");
+    }
+
     let mut mock_server = None;
     if demo_requested
         && std::env::var("PICSTOME_API_BASE")
@@ -67,7 +77,7 @@ pub fn run() {
             let store = Store::new(data_dir)?;
             commands::migrate_legacy_log(&store);
             let token_store = auth::TokenStore::new(store.root().join("auth.json"));
-            let base_url = commands::api_base_from_env_or_config(&store);
+            let base_url = commands::api_base_from_env();
             let token = std::env::var("PICSTOME_TOKEN")
                 .ok()
                 .filter(|value| !value.trim().is_empty())
@@ -164,7 +174,6 @@ pub fn run() {
             commands::open_account_profile,
             commands::open_galleries_page,
             commands::open_gallery_in_picstome,
-            commands::set_api_base,
             commands::get_sync_log,
             commands::clear_sync_log,
             commands::frontend_ready,

@@ -148,19 +148,11 @@ const els = {
     infoTitle: document.getElementById("infoTitle"),
     infoVersionLabel: document.getElementById("infoVersionLabel"),
     infoProfileLabel: document.getElementById("infoProfileLabel"),
-    infoModeLabel: document.getElementById("infoModeLabel"),
-    infoTargetLabel: document.getElementById("infoTargetLabel"),
     infoAccountLabel: document.getElementById("infoAccountLabel"),
     infoVersion: document.getElementById("infoVersion"),
     infoProfile: document.getElementById("infoProfile"),
-    infoMode: document.getElementById("infoMode"),
-    infoTarget: document.getElementById("infoTarget"),
     infoAccount: document.getElementById("infoAccount"),
     btnInfoClose: document.getElementById("btnInfoClose"),
-    apiSwitchTitle: document.getElementById("apiSwitchTitle"),
-    apiSwitchHint: document.getElementById("apiSwitchHint"),
-    btnApiProduction: document.getElementById("btnApiProduction"),
-    btnApiDevelopment: document.getElementById("btnApiDevelopment"),
 
     ratingModal: document.getElementById("ratingModal"),
     ratingTitle: document.getElementById("ratingTitle"),
@@ -333,15 +325,6 @@ function formatDate(value) {
     }
 }
 
-function modeLabel(kind) {
-    const s = state.strings || {};
-    if (kind === "production") return s.modeProduction || "Production";
-    if (kind === "development") return s.modeDevelopment || "Development";
-    if (kind === "local") return s.modeLocal || "Local";
-    if (kind === "demo") return s.modeDemo || "Demo";
-    return s.modeCustom || "Custom";
-}
-
 function currentGallery() {
     return state.galleries.find(
         (gallery) => gallery.galleryId === state.currentGalleryId,
@@ -383,14 +366,8 @@ function applyStrings() {
     els.infoTitle.textContent = s.infoTitle;
     els.infoVersionLabel.textContent = s.infoVersion;
     els.infoProfileLabel.textContent = s.infoProfile;
-    els.infoModeLabel.textContent = s.infoMode;
-    els.infoTargetLabel.textContent = s.infoTarget;
     els.infoAccountLabel.textContent = s.infoAccount;
     els.btnInfoClose.textContent = s.infoClose;
-    els.apiSwitchTitle.textContent = s.apiSwitchTitle;
-    els.apiSwitchHint.textContent = s.apiSwitchHint;
-    els.btnApiProduction.textContent = s.useProduction;
-    els.btnApiDevelopment.textContent = s.useDevelopment;
 
     els.ratingTitle.textContent =
         state.rating.source === "favorites" ? s.ratingTitle : s.ratePhotosTitle;
@@ -448,33 +425,24 @@ function renderRuntimeInfo() {
     if (!s) return;
     const config = state.config || {};
     const kind = config.apiKind || "custom";
-    const label = modeLabel(kind);
     const badge =
-        kind === "production"
-            ? "PROD"
-            : kind === "development"
-              ? "DEV"
-              : kind === "local"
-                ? "LOCAL"
-                : kind === "demo"
-                  ? "DEMO"
-                  : "CUSTOM";
+        kind === "development"
+            ? "DEV"
+            : kind === "local"
+              ? "LOCAL"
+              : kind === "demo"
+                ? "DEMO"
+                : kind === "custom"
+                  ? "CUSTOM"
+                  : "";
+    const showBadge = kind !== "production" && Boolean(badge);
 
     els.envBadge.textContent = badge;
-    els.envBadge.classList.remove("hidden");
-    els.envBadge.title = `${s.infoTarget}: ${config.apiBase || ""}`;
-
-    const base = (config.apiBase || "").replace(/\/$/, "").toLowerCase();
-    const isProduction =
-        base === "https://app.picstome.com" || base === "https://picstome.com";
-    const isDevelopment = base === "https://devel.picstome.com";
-    els.btnApiProduction.classList.toggle("active-target", isProduction);
-    els.btnApiDevelopment.classList.toggle("active-target", isDevelopment);
+    els.envBadge.classList.toggle("hidden", !showBadge);
+    els.envBadge.title = showBadge ? `${badge} API` : "";
 
     els.infoVersion.textContent = `${config.appVersion || "?"} (${config.buildProfile || "?"})`;
     els.infoProfile.textContent = config.buildProfile || "?";
-    els.infoMode.textContent = label;
-    els.infoTarget.textContent = config.apiBase || "?";
     els.infoAccount.textContent = state.auth.connected
         ? [state.auth.name, state.auth.email].filter(Boolean).join(" · ")
         : "—";
@@ -1853,16 +1821,6 @@ async function resolveRemoteDeleted(action) {
     }
 }
 
-async function switchApiTarget(baseUrl) {
-    try {
-        await invoke("set_api_base", { baseUrl });
-        hide(els.infoModal);
-        await refreshState();
-    } catch (err) {
-        els.apiSwitchHint.textContent = err?.message || String(err);
-    }
-}
-
 async function connect() {
     const result = await invoke("connect");
     if (result?.ok) await refreshState();
@@ -2044,12 +2002,6 @@ els.btnInfoClose.addEventListener("click", () => hide(els.infoModal));
 els.infoModal.addEventListener("click", (event) => {
     if (event.target === els.infoModal) hide(els.infoModal);
 });
-els.btnApiProduction.addEventListener("click", () =>
-    switchApiTarget("https://app.picstome.com"),
-);
-els.btnApiDevelopment.addEventListener("click", () =>
-    switchApiTarget("https://devel.picstome.com"),
-);
 
 els.btnChangeFolder.addEventListener("click", async () => {
     if (!state.currentGalleryId || els.btnChangeFolder.disabled) return;

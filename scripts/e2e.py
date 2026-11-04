@@ -288,7 +288,6 @@ def main():
         assert "sync" in dom["syncLabel"].lower(), dom["syncLabel"]
         assert dom["title"] == "Picstome Sync", dom["title"]
         assert dom["infoVisible"], "info modal did not open"
-        assert state["config"]["apiBase"] in dom["infoText"], "info modal must show the API URL"
 
         remote_search = js_invoke(
             session,
@@ -332,15 +331,17 @@ def main():
         assert "Picstome" in layout["webLink"], layout
         assert state["config"]["appVersion"] in dom["infoText"], "info modal must show the version"
         kind = state["config"]["apiKind"]
-        expected_badge = {
-            "production": "PROD",
-            "development": "DEV",
-            "local": "LOCAL",
-            "demo": "DEMO",
-            "custom": "CUSTOM",
-        }[kind]
-        assert dom["badge"] == expected_badge, (kind, dom["badge"])
-        assert not dom["badgeHidden"], "environment badge should always be visible"
+        if kind == "production":
+            assert dom["badgeHidden"], "production should not show a badge"
+        else:
+            expected_badge = {
+                "development": "DEV",
+                "local": "LOCAL",
+                "demo": "DEMO",
+                "custom": "CUSTOM",
+            }[kind]
+            assert dom["badge"] == expected_badge, (kind, dom["badge"])
+            assert not dom["badgeHidden"], "non-production builds should show a badge"
 
         if MOCK:
             search_state = json.loads(
@@ -1075,33 +1076,6 @@ def main():
         state = js_invoke(session, "get_state", {})
         assert not state["auth"]["connected"], "logout did not disconnect"
 
-        # Switch the test target from the Info modal (no network call needed).
-        run_async(
-            session,
-            """
-            const done = arguments[arguments.length - 1];
-            document.getElementById('btnInfo').click();
-            document.getElementById('btnApiProduction').click();
-            done('clicked');
-            """,
-        )
-        deadline = time.time() + 20
-        while time.time() < deadline:
-            state = js_invoke(session, "get_state", {})
-            if state["config"]["apiBase"] == "https://app.picstome.com":
-                break
-            time.sleep(0.2)
-        log(
-            "switched target:",
-            {
-                "apiBase": state["config"]["apiBase"],
-                "apiKind": state["config"]["apiKind"],
-                "connected": state["auth"]["connected"],
-            },
-        )
-        assert state["config"]["apiBase"] == "https://app.picstome.com", state["config"]
-        assert state["config"]["apiKind"] == "production", state["config"]
-        assert not state["auth"]["connected"], "switching targets must sign out"
         log("E2E PASSED")
     finally:
         if session:
