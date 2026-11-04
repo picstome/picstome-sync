@@ -865,6 +865,75 @@ button.danger:hover {
     accent-color: var(--pine);
 }
 
+/* Remote deletion resolution */
+
+.remote-deleted-modal {
+    width: min(620px, 100%);
+    padding: 26px;
+}
+
+.remote-deleted-modal .modal-head {
+    margin-bottom: 12px;
+}
+
+.remote-deleted-modal .hint {
+    max-width: 56ch;
+    margin-top: 0;
+    line-height: 1.55;
+}
+
+.remote-deleted-modal .delete-list {
+    margin-top: 14px;
+    padding: 10px;
+    border: 1px solid var(--line);
+    border-radius: var(--radius-md);
+    background: rgba(255, 255, 255, 0.62);
+    max-height: 220px;
+}
+
+.remote-deleted-modal .delete-item {
+    padding: 8px 9px;
+    border-radius: 8px;
+    font-size: 13px;
+    line-height: 1.4;
+}
+
+.remote-deleted-modal .delete-item:hover {
+    background: var(--surface-muted);
+}
+
+.remote-deleted-modal .btn-row {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 10px;
+    margin-top: 18px;
+}
+
+.remote-deleted-modal .btn-row button {
+    width: 100%;
+    min-width: 0;
+    padding: 0 10px;
+    white-space: nowrap;
+}
+
+.remote-deleted-modal .rating-result {
+    margin-top: 14px;
+}
+
+@media (max-width: 620px) {
+    .remote-deleted-modal {
+        padding: 20px;
+    }
+
+    .remote-deleted-modal .btn-row {
+        grid-template-columns: 1fr;
+    }
+
+    .remote-deleted-modal .btn-row button {
+        white-space: normal;
+    }
+}
+
 /* Modals */
 
 .modal-backdrop {
