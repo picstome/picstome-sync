@@ -151,6 +151,25 @@ pub struct GallerySummary {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GalleryPageMeta {
+    #[serde(alias = "current_page")]
+    pub current_page: u32,
+    #[serde(alias = "per_page")]
+    pub per_page: u32,
+    #[serde(alias = "last_page")]
+    pub last_page: u32,
+    pub total: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GalleryPage {
+    pub data: Vec<GallerySummary>,
+    pub meta: GalleryPageMeta,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TokenResponse {
     pub token: String,
     #[serde(default)]

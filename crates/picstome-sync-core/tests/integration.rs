@@ -110,6 +110,26 @@ async fn api_upload_versions_and_delete() {
 }
 
 #[tokio::test]
+async fn api_gallery_search_and_pagination() {
+    let mock = mock().await;
+    let api = login(&mock.url).await;
+
+    let search = api.galleries_page(Some("boda"), 1, 25).await.unwrap();
+    assert_eq!(search.data.len(), 1);
+    assert_eq!(search.data[0].id, "G123");
+    assert_eq!(search.meta.total, 1);
+    assert_eq!(search.meta.last_page, 1);
+
+    let first = api.galleries_page(None, 1, 1).await.unwrap();
+    assert_eq!(first.data.len(), 1);
+    assert_eq!(first.meta.last_page, 2);
+    let second = api.galleries_page(None, 2, 1).await.unwrap();
+    assert_eq!(second.data.len(), 1);
+    assert_ne!(first.data[0].id, second.data[0].id);
+    mock.close().await;
+}
+
+#[tokio::test]
 async fn api_authorization_code_exchange() {
     let mock = mock().await;
     let page = reqwest::get(format!(

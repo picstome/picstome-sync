@@ -401,13 +401,60 @@ async fn me(State(state): State<Arc<MockState>>, headers: HeaderMap) -> Response
     )
 }
 
-async fn galleries(State(state): State<Arc<MockState>>, headers: HeaderMap) -> Response {
+async fn galleries(
+    State(state): State<Arc<MockState>>,
+    headers: HeaderMap,
+    Query(params): Query<HashMap<String, String>>,
+) -> Response {
     if !is_authorized(&headers, &state) {
         return unauthorized();
     }
+    let search = params
+        .get("search")
+        .map(|value| value.trim().to_lowercase())
+        .unwrap_or_default();
+    let page = params
+        .get("page")
+        .and_then(|value| value.parse::<usize>().ok())
+        .unwrap_or(1)
+        .max(1);
+    let per_page = params
+        .get("per_page")
+        .and_then(|value| value.parse::<usize>().ok())
+        .unwrap_or(25)
+        .clamp(1, 100);
     let galleries = state.galleries.read().await;
-    let items: Vec<Value> = galleries.values().map(gallery_summary).collect();
-    json_response(StatusCode::OK, items)
+    let mut items: Vec<Value> = galleries
+        .values()
+        .filter(|gallery| search.is_empty() || gallery.name.to_lowercase().contains(&search))
+        .map(gallery_summary)
+        .collect();
+    items.sort_by(|a, b| {
+        b.get("updated_at")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .cmp(
+                a.get("updated_at")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default(),
+            )
+    });
+    let total = items.len();
+    let last_page = total.div_ceil(per_page).max(1);
+    let start = (page - 1) * per_page;
+    let data: Vec<Value> = items.into_iter().skip(start).take(per_page).collect();
+    json_response(
+        StatusCode::OK,
+        json!({
+            "data": data,
+            "meta": {
+                "current_page": page,
+                "per_page": per_page,
+                "last_page": last_page,
+                "total": total,
+            }
+        }),
+    )
 }
 
 async fn manifest(

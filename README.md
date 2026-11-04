@@ -19,6 +19,9 @@ and star-rating workflow.
 - Detects local deletions and proposes deleting the remote copy.
 - Detects remote deletions and asks whether to trash the local copy, keep it,
   or upload it again.
+- Searches synced and remote Picstome galleries with pagination; choosing a
+  remote result asks for the local folder and links it.
+- The `+` button opens the gallery-creation page on the current API target.
 - Writes 1–5 star ratings to local files with exiftool and exports favorite
   lists for Lightroom, Capture One, Finder/Explorer, or plain text.
 - Shows photo count, disk usage, sync progress, and a per-gallery activity log.

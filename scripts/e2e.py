@@ -289,6 +289,15 @@ def main():
         assert dom["infoVisible"], "info modal did not open"
         assert state["config"]["apiBase"] in dom["infoText"], "info modal must show the API URL"
 
+        remote_search = js_invoke(
+            session,
+            "search_remote_galleries",
+            {"search": "retrato", "page": 1, "perPage": 25},
+        )
+        log("remote search:", remote_search)
+        assert remote_search["data"][0]["id"] == "G456", remote_search
+        assert remote_search["meta"]["total"] == 1, remote_search
+
         layout = json.loads(
             run_async(
                 session,
@@ -346,18 +355,35 @@ def main():
                     setQuery('Other');
                     const otherRows = document.querySelectorAll('.gallery-row').length;
                     setQuery('zzz');
-                    const emptyVisible = !document.getElementById('searchEmpty').classList.contains('hidden');
-                    setQuery('');
+                    done(JSON.stringify({ otherRows }));
+                    """,
+                )
+            )
+            assert search_state["otherRows"] == 1, search_state
+            time.sleep(1.2)
+            empty_visible = json.loads(
+                run_async(
+                    session,
+                    "const done = arguments[arguments.length - 1]; done(JSON.stringify(!document.getElementById('searchEmpty').classList.contains('hidden')));",
+                )
+            )
+            assert empty_visible, "search empty state should appear after remote search"
+            search_state = json.loads(
+                run_async(
+                    session,
+                    """
+                    const done = arguments[arguments.length - 1];
+                    const input = document.getElementById('gallerySearch');
+                    input.value = '';
+                    input.dispatchEvent(new Event('input', { bubbles: true }));
                     const allRows = document.querySelectorAll('.gallery-row').length;
                     document.dispatchEvent(new KeyboardEvent('keydown', { key: 'f', ctrlKey: true, bubbles: true }));
                     const focused = document.activeElement && document.activeElement.id;
-                    done(JSON.stringify({ otherRows, emptyVisible, allRows, focused }));
+                    done(JSON.stringify({ allRows, focused }));
                     """,
                 )
             )
             log("search:", search_state)
-            assert search_state["otherRows"] == 1, search_state
-            assert search_state["emptyVisible"], search_state
             assert search_state["allRows"] == 2, search_state
             assert search_state["focused"] == "gallerySearch", search_state
             run_async(

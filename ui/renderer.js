@@ -16,6 +16,15 @@ const state = {
     auth: { connected: false, name: null, email: null },
     galleries: [],
     galleryQuery: "",
+    remoteGalleries: {
+        page: 0,
+        perPage: 25,
+        items: [],
+        meta: null,
+        loading: false,
+        error: null,
+        requestId: 0,
+    },
     currentGalleryId: null,
     syncBusy: false,
     progress: null,
@@ -339,6 +348,8 @@ function applyStrings() {
 
     els.galleriesLabel.textContent = s.galleries;
     els.gallerySearch.placeholder = s.searchGalleries;
+    els.btnAddGallery.title = s.createGallery;
+    els.btnAddGallery.setAttribute("aria-label", s.createGallery);
     els.searchEmpty.textContent = s.noSearchResults;
     els.emptyTitle.textContent = s.noGalleries;
     els.emptyHint.textContent = s.noGalleriesHint;
@@ -473,15 +484,186 @@ function filteredGalleries() {
     );
 }
 
+function remoteSearchQuery() {
+    const query = state.galleryQuery.trim();
+    return state.auth.connected && query.length >= 2 ? query : "";
+}
+
+function remoteGalleries() {
+    const linked = new Set(state.galleries.map((gallery) => gallery.galleryId));
+    const seen = new Set();
+    return state.remoteGalleries.items.filter((gallery) => {
+        if (linked.has(gallery.id) || seen.has(gallery.id)) return false;
+        seen.add(gallery.id);
+        return true;
+    });
+}
+
+let remoteSearchTimer = null;
+
+function clearRemoteSearch() {
+    if (remoteSearchTimer) {
+        clearTimeout(remoteSearchTimer);
+        remoteSearchTimer = null;
+    }
+    state.remoteGalleries.requestId += 1;
+    state.remoteGalleries.page = 0;
+    state.remoteGalleries.items = [];
+    state.remoteGalleries.meta = null;
+    state.remoteGalleries.loading = false;
+    state.remoteGalleries.error = null;
+}
+
+function scheduleRemoteSearch() {
+    if (remoteSearchTimer) clearTimeout(remoteSearchTimer);
+    if (!remoteSearchQuery()) {
+        clearRemoteSearch();
+        renderGalleryList();
+        return;
+    }
+    state.remoteGalleries.loading = true;
+    state.remoteGalleries.error = null;
+    renderGalleryList();
+    remoteSearchTimer = setTimeout(() => {
+        remoteSearchTimer = null;
+        searchRemoteGalleries(1, true);
+    }, 320);
+}
+
+async function searchRemoteGalleries(page, replace) {
+    const query = remoteSearchQuery();
+    if (!query) return;
+    const remote = state.remoteGalleries;
+    const requestId = ++remote.requestId;
+    if (replace) {
+        remote.items = [];
+        remote.meta = null;
+        remote.page = 0;
+    }
+    remote.loading = true;
+    remote.error = null;
+    renderGalleryList();
+
+    try {
+        const result = await invoke("search_remote_galleries", {
+            search: query,
+            page,
+            perPage: remote.perPage,
+        });
+        if (requestId !== remote.requestId || query !== remoteSearchQuery()) {
+            return;
+        }
+        const existing = new Set(remote.items.map((gallery) => gallery.id));
+        const incoming = Array.isArray(result.data) ? result.data : [];
+        remote.items = replace
+            ? incoming
+            : [
+                  ...remote.items,
+                  ...incoming.filter((gallery) => !existing.has(gallery.id)),
+              ];
+        remote.meta = result.meta || null;
+        remote.page = result.meta?.currentPage || page;
+    } catch (err) {
+        if (requestId !== remote.requestId) return;
+        remote.error = err?.message || String(err);
+    } finally {
+        if (requestId === remote.requestId) {
+            remote.loading = false;
+            renderGalleryList();
+        }
+    }
+}
+
+function renderRemoteGallerySection(s) {
+    if (!remoteSearchQuery()) return;
+    const remote = state.remoteGalleries;
+    const items = remoteGalleries();
+    if (items.length === 0 && !remote.loading && !remote.error) return;
+
+    const section = document.createElement("div");
+    section.className = "remote-gallery-section";
+
+    const head = document.createElement("div");
+    head.className = "remote-gallery-head";
+    const title = document.createElement("span");
+    title.textContent = s.remoteResults;
+    const count = document.createElement("span");
+    count.textContent = remote.meta?.total != null ? String(remote.meta.total) : "";
+    head.appendChild(title);
+    head.appendChild(count);
+    section.appendChild(head);
+
+    for (const gallery of items) {
+        const row = document.createElement("button");
+        row.type = "button";
+        row.className = "gallery-row remote-gallery-row";
+        row.dataset.remote = "1";
+        row.dataset.galleryId = gallery.id;
+        row.dataset.galleryName = gallery.name || "Gallery";
+        row.title = s.remoteGalleryHint;
+
+        const avatar = document.createElement("span");
+        avatar.className = "gallery-avatar remote-gallery-avatar";
+        avatar.textContent = "+";
+        row.appendChild(avatar);
+
+        const info = document.createElement("span");
+        info.className = "gallery-info";
+        const name = document.createElement("span");
+        name.className = "gallery-name";
+        name.textContent = gallery.name || "Gallery";
+        const hint = document.createElement("span");
+        hint.className = "gallery-meta";
+        hint.textContent = s.remoteGalleryHint;
+        info.appendChild(name);
+        info.appendChild(hint);
+        row.appendChild(info);
+        section.appendChild(row);
+    }
+
+    if (remote.loading) {
+        const status = document.createElement("div");
+        status.className = "remote-gallery-status";
+        status.textContent = s.remoteSearching;
+        section.appendChild(status);
+    } else if (remote.error) {
+        const status = document.createElement("div");
+        status.className = "remote-gallery-status error";
+        status.textContent = `${s.remoteSearchError}: ${remote.error}`;
+        section.appendChild(status);
+    } else if (remote.meta && remote.meta.currentPage < remote.meta.lastPage) {
+        const more = document.createElement("button");
+        more.type = "button";
+        more.className = "remote-more";
+        more.textContent = s.remoteLoadMore;
+        more.dataset.page = String(remote.meta.currentPage + 1);
+        section.appendChild(more);
+    }
+
+    els.galleryList.appendChild(section);
+}
+
 function renderGalleryList() {
     const s = state.strings;
     if (!s) return;
     els.galleryList.replaceChildren();
-    els.syncEmpty.classList.toggle("hidden", state.galleries.length > 0);
+    const searchingRemote = Boolean(remoteSearchQuery());
+    els.syncEmpty.classList.toggle(
+        "hidden",
+        state.galleries.length > 0 || searchingRemote,
+    );
     const galleries = filteredGalleries();
+    const remote = state.remoteGalleries;
+    const remoteHasResults =
+        searchingRemote &&
+        (remote.loading ||
+            Boolean(remote.error) ||
+            remoteGalleries().length > 0);
     els.searchEmpty.classList.toggle(
         "hidden",
-        state.galleries.length === 0 || galleries.length > 0,
+        state.galleries.length === 0 ||
+            galleries.length > 0 ||
+            remoteHasResults,
     );
 
     for (const gallery of galleries) {
@@ -521,6 +703,8 @@ function renderGalleryList() {
         row.appendChild(info);
         els.galleryList.appendChild(row);
     }
+
+    renderRemoteGallerySection(s);
 }
 
 function renderMain() {
@@ -1642,8 +1826,19 @@ async function init() {
 /* UI bindings */
 
 els.galleryList.addEventListener("click", (event) => {
+    const more = event.target.closest(".remote-more");
+    if (more) {
+        if (!state.remoteGalleries.loading) {
+            searchRemoteGalleries(Number(more.dataset.page) || 1, false);
+        }
+        return;
+    }
     const row = event.target.closest(".gallery-row");
     if (!row) return;
+    if (row.dataset.remote === "1") {
+        startSync(row.dataset.galleryId, row.dataset.galleryName);
+        return;
+    }
     state.currentGalleryId = row.dataset.galleryId;
     state.report = null;
     renderAll();
@@ -1652,7 +1847,7 @@ els.galleryList.addEventListener("click", (event) => {
 
 els.galleryList.addEventListener("dblclick", (event) => {
     const row = event.target.closest(".gallery-row");
-    if (!row) return;
+    if (!row || row.dataset.remote === "1") return;
     state.currentGalleryId = row.dataset.galleryId;
     renderAll();
     syncCurrent();
@@ -1881,6 +2076,7 @@ els.confirmModal.addEventListener("click", (event) => {
 els.gallerySearch.addEventListener("input", () => {
     state.galleryQuery = els.gallerySearch.value;
     renderGalleryList();
+    scheduleRemoteSearch();
 });
 
 els.gallerySearch.addEventListener("keydown", (event) => {
@@ -1890,11 +2086,15 @@ els.gallerySearch.addEventListener("keydown", (event) => {
             state.currentGalleryId = first.galleryId;
             state.report = null;
             renderAll();
+        } else {
+            const remote = remoteGalleries()[0];
+            if (remote) startSync(remote.id, remote.name);
         }
     } else if (event.key === "Escape") {
         event.stopPropagation();
         els.gallerySearch.value = "";
         state.galleryQuery = "";
+        clearRemoteSearch();
         renderGalleryList();
         els.gallerySearch.blur();
     }

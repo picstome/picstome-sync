@@ -14,8 +14,8 @@ use url::Url;
 
 use crate::error::{CoreError, CoreResult};
 use crate::model::{
-    DeleteResponse, GallerySummary, Manifest, TokenResponse, UploadResponse, CLIENT_NAME,
-    DEFAULT_API_BASE,
+    DeleteResponse, GalleryPage, GallerySummary, Manifest, TokenResponse, UploadResponse,
+    CLIENT_NAME, DEFAULT_API_BASE,
 };
 use crate::sanitize::urlencode;
 
@@ -214,7 +214,21 @@ impl ApiClient {
     }
 
     pub async fn galleries(&self) -> CoreResult<Vec<GallerySummary>> {
-        let response = self.send(Method::GET, "/api/v1/galleries", None).await?;
+        Ok(self.galleries_page(None, 1, 100).await?.data)
+    }
+
+    pub async fn galleries_page(
+        &self,
+        search: Option<&str>,
+        page: u32,
+        per_page: u32,
+    ) -> CoreResult<GalleryPage> {
+        let mut path = format!("/api/v1/galleries?per_page={per_page}&page={page}");
+        if let Some(search) = search.map(str::trim).filter(|value| !value.is_empty()) {
+            path.push_str("&search=");
+            path.push_str(&urlencode(search));
+        }
+        let response = self.send(Method::GET, &path, None).await?;
         Self::decode(response).await
     }
 

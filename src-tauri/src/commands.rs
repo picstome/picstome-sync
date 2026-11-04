@@ -15,7 +15,7 @@ use picstome_sync_core::error::ErrorPayload;
 use picstome_sync_core::mock::MockServer;
 use picstome_sync_core::model::{
     AppState as AppStateView, AuthState, ConfigView, DeleteResponse, FavoritePhoto, GalleryEntry,
-    GallerySummary, GalleryView, Progress, SyncReport, DEFAULT_API_BASE,
+    GalleryPage, GallerySummary, GalleryView, Progress, SyncReport, DEFAULT_API_BASE,
 };
 use picstome_sync_core::sanitize::{sanitize_file_names, sanitize_gallery_id};
 use picstome_sync_core::sync::{
@@ -661,6 +661,22 @@ pub async fn list_remote_galleries(
 }
 
 #[tauri::command]
+pub async fn search_remote_galleries(
+    state: State<'_, AppState>,
+    search: String,
+    page: Option<u32>,
+    per_page: Option<u32>,
+) -> Result<GalleryPage, ErrorPayload> {
+    let page = page.unwrap_or(1).max(1);
+    let per_page = per_page.unwrap_or(25).clamp(1, 100);
+    Ok(state
+        .api()
+        .await
+        .galleries_page(Some(&search), page, per_page)
+        .await?)
+}
+
+#[tauri::command]
 pub async fn get_gallery_favorites(
     state: State<'_, AppState>,
     gallery_id: String,
@@ -1057,7 +1073,7 @@ pub async fn open_galleries_page(
     state: State<'_, AppState>,
 ) -> Result<Value, ErrorPayload> {
     let base = state.api().await.base_url().to_string();
-    let url = format!("{base}/galleries");
+    let url = format!("{base}/galleries?create=1");
     app.opener()
         .open_url(url, None::<&str>)
         .map_err(|err| command_error(err.to_string(), "open_url_failed"))?;
