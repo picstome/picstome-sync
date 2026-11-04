@@ -1826,6 +1826,7 @@ async function applyRating() {
     } finally {
         appliedState.busy = false;
         renderRating();
+        await refreshLog();
     }
 }
 

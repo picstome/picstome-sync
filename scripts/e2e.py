@@ -846,6 +846,19 @@ def main():
                 break
             time.sleep(0.2)
         assert json.loads(modal_state)["hidden"], "favorites modal should close automatically"
+        favorites_log_text = json.loads(
+            run_async(
+                session,
+                """
+                const done = arguments[arguments.length - 1];
+                done(JSON.stringify(
+                  document.getElementById('syncLogEntries').textContent
+                ));
+                """,
+            )
+        )
+        log("favorites log:", favorites_log_text)
+        assert "Rating 4★" in favorites_log_text, favorites_log_text
 
         with open(os.path.join(user_data, f"{gallery}.json"), encoding="utf-8") as handle:
             snapshot = json.load(handle)

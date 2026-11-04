@@ -2847,7 +2847,7 @@ dependencies = [
 
 [[package]]
 name = "picstome-sync"
-version = "0.1.37"
+version = "0.1.38"
 dependencies = [
  "hex",
  "picstome-sync-core",
@@ -2870,7 +2870,7 @@ dependencies = [
 
 [[package]]
 name = "picstome-sync-core"
-version = "0.1.37"
+version = "0.1.38"
 dependencies = [
  "axum",
  "bytes",
