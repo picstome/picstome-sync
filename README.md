@@ -111,6 +111,8 @@ PICSTOME_API_BASE=http://127.0.0.1:8787 PICSTOME_MOCK=1 \
 
 ## Tests and builds
 
+Run tests locally:
+
 ```bash
 cargo fmt --all -- --check
 cargo clippy --workspace --all-targets -- -D warnings
@@ -125,19 +127,20 @@ cargo build -p picstome-sync-core --bin picstome-sync-mock
 xvfb-run -a python3 scripts/e2e.py
 ```
 
-Build local installers and upload them to the current draft release:
+CI runs the same tests on pull requests and manual dispatches only. Pushing to
+`main` does not build installers or create releases automatically.
 
-```bash
-scripts/release-local.sh
-```
+To build test installers, open **GitHub → Actions → build → Run workflow**.
+This builds Linux, macOS, and Windows on GitHub and can optionally update the
+draft release:
 
 - Linux: `.deb` + `.AppImage`.
 - macOS: universal `.dmg` (ad-hoc signed, so Gatekeeper may require
   right-click → Open).
-- Windows: unsigned NSIS `.exe` and MSI installers; SmartScreen may warn.
+- Windows: unsigned NSIS `.exe` and MSI; SmartScreen may warn.
 
-Pushing to `main` runs Linux CI and builds macOS and Windows test installers
-with GitHub Actions. Final tagged releases build Linux, macOS, and Windows.
+`scripts/release-local.sh` remains available as a local fallback. Final releases
+are created manually through **Actions → release**.
 
 ## Supported files
 

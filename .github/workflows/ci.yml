@@ -2,11 +2,6 @@ name: ci
 
 # Public repository: standard GitHub-hosted runners are free.
 on:
-  push:
-    branches: [main]
-    paths-ignore:
-      - ".github/**"
-      - "**/*.md"
   pull_request:
   workflow_dispatch:
 
