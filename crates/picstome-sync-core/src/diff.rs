@@ -1,6 +1,6 @@
 use std::collections::{HashMap, HashSet};
 
-use crate::identity::preferred_file;
+use crate::localfiles::preferred_local_files;
 use crate::model::{
     Conflict, ConflictPhoto, Diff, DiffCounts, LocalFile, Photo, RemoteDeletedItem, SnapshotFile,
 };
@@ -45,19 +45,7 @@ pub fn compute_diff(
         }
     }
 
-    let mut local_groups: HashMap<String, Vec<&LocalFile>> = HashMap::new();
-    for file in local_files {
-        if let Some(key) = file.identity() {
-            local_groups.entry(key).or_default().push(file);
-        }
-    }
-
-    let mut local: HashMap<String, &LocalFile> = HashMap::new();
-    for (key, group) in &local_groups {
-        if let Some(chosen) = preferred_file(group, |file| file.filename.as_str()) {
-            local.insert(key.clone(), chosen);
-        }
-    }
+    let local = preferred_local_files(local_files);
 
     let keys: HashSet<String> = previous
         .keys()

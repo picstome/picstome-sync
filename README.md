@@ -129,9 +129,10 @@ scripts/release-local.sh
 - Linux: `.deb` + `.AppImage`.
 - macOS: universal `.dmg` (ad-hoc signed, so Gatekeeper may require
   right-click → Open).
+- Windows: unsigned NSIS `.exe` and MSI installers; SmartScreen may warn.
 
-Pushing to `main` runs Linux CI and builds a macOS test DMG with GitHub Actions.
-Final tagged releases build Linux, macOS, and Windows.
+Pushing to `main` runs Linux CI and builds macOS and Windows test installers
+with GitHub Actions. Final tagged releases build Linux, macOS, and Windows.
 
 ## Supported files
 

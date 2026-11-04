@@ -1,10 +1,9 @@
 use std::fs;
-use std::io::Write;
 use std::path::{Path, PathBuf};
 
 use serde::de::DeserializeOwned;
-use serde::Serialize;
 
+use crate::atomic::write_json_atomic;
 use crate::error::{CoreError, CoreResult};
 use crate::model::{Config, GalleryEntry, Snapshot, SNAPSHOT_SCHEMA};
 use crate::sanitize::sanitize_gallery_id;
@@ -17,35 +16,6 @@ pub struct Store {
 fn read_json<T: DeserializeOwned>(path: &Path) -> Option<T> {
     let contents = fs::read_to_string(path).ok()?;
     serde_json::from_str(&contents).ok()
-}
-
-fn write_json_atomic<T: Serialize>(path: &Path, value: &T) -> CoreResult<()> {
-    if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent)?;
-    }
-    let tmp = path.with_extension(format!(
-        "{}.{}.tmp",
-        path.extension()
-            .and_then(|ext| ext.to_str())
-            .unwrap_or("json"),
-        std::process::id()
-    ));
-    let data = serde_json::to_vec_pretty(value)?;
-    {
-        let mut options = fs::OpenOptions::new();
-        options.write(true).create(true).truncate(true);
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::OpenOptionsExt;
-            options.mode(0o600);
-        }
-        let mut file = options.open(&tmp)?;
-        file.write_all(&data)?;
-        file.write_all(b"\n")?;
-        file.sync_all()?;
-    }
-    fs::rename(&tmp, path)?;
-    Ok(())
 }
 
 fn normalize_entry(entry: GalleryEntry) -> Option<GalleryEntry> {

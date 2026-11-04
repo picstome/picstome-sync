@@ -1,7 +1,7 @@
 use std::fs;
-use std::io::Write;
 use std::path::{Path, PathBuf};
 
+use picstome_sync_core::atomic::write_bytes;
 use rand::RngCore;
 use serde::{Deserialize, Serialize};
 
@@ -40,20 +40,7 @@ impl TokenStore {
                 let data = serde_json::to_vec(&StoredAuth {
                     token: token.trim().to_string(),
                 })?;
-                let tmp = self.path.with_extension("json.tmp");
-                {
-                    let mut options = fs::OpenOptions::new();
-                    options.write(true).create(true).truncate(true);
-                    #[cfg(unix)]
-                    {
-                        use std::os::unix::fs::OpenOptionsExt;
-                        options.mode(0o600);
-                    }
-                    let mut file = options.open(&tmp)?;
-                    file.write_all(&data)?;
-                    file.sync_all()?;
-                }
-                fs::rename(&tmp, &self.path)
+                write_bytes(&self.path, &data)
             }
             _ => match fs::remove_file(&self.path) {
                 Ok(()) => Ok(()),

@@ -11,7 +11,8 @@ use crate::diff::compute_diff;
 use crate::error::{CoreError, CoreResult};
 use crate::identity::{identity_key, preference_rank, preferred_file};
 use crate::localfiles::{
-    folder_exists as path_is_dir, scan_and_hash, scan_local_photos, MAX_PHOTO_BYTES,
+    folder_exists as path_is_dir, group_local_files, preferred_local_files, scan_and_hash,
+    scan_local_photos, MAX_PHOTO_BYTES,
 };
 use crate::model::{
     DeleteProposal, DeleteProposals, DeleteResponse, Diff, DownloadedItem, FavoritePhoto,
@@ -60,22 +61,6 @@ async fn file_mtime_ms(path: &Path) -> Option<i64> {
         .duration_since(std::time::UNIX_EPOCH)
         .ok()
         .map(|duration| duration.as_millis() as i64)
-}
-
-fn local_map(local_files: &[crate::model::LocalFile]) -> HashMap<String, &crate::model::LocalFile> {
-    let mut groups: HashMap<String, Vec<&crate::model::LocalFile>> = HashMap::new();
-    for file in local_files {
-        if let Some(key) = file.identity() {
-            groups.entry(key).or_default().push(file);
-        }
-    }
-    let mut local_by_key: HashMap<String, &crate::model::LocalFile> = HashMap::new();
-    for (key, group) in &groups {
-        if let Some(chosen) = preferred_file(group, |file| file.filename.as_str()) {
-            local_by_key.insert(key.clone(), chosen);
-        }
-    }
-    local_by_key
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -127,7 +112,7 @@ fn build_snapshot(
     uploaded: &[UploadedItem],
     now: i64,
 ) -> Snapshot {
-    let local_by_key = local_map(local_files);
+    let local_by_key = preferred_local_files(local_files);
     let previous_by_key: HashMap<String, &SnapshotFile> = previous
         .iter()
         .filter_map(|file| file.identity().map(|key| (key, file)))
@@ -684,12 +669,7 @@ pub async fn resolve_remote_deletions(
 }
 
 fn duplicate_local_warnings(local_files: &[crate::model::LocalFile]) -> Vec<SyncWarningItem> {
-    let mut groups: HashMap<String, Vec<&crate::model::LocalFile>> = HashMap::new();
-    for file in local_files {
-        if let Some(key) = file.identity() {
-            groups.entry(key).or_default().push(file);
-        }
-    }
+    let groups = group_local_files(local_files);
 
     let mut warnings = Vec::new();
     for group in groups.values().filter(|group| group.len() > 1) {

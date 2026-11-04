@@ -5,6 +5,7 @@
 //! lives in `src-tauri`.
 
 pub mod api;
+pub mod atomic;
 pub mod config;
 pub mod diff;
 pub mod error;

@@ -8,7 +8,7 @@ use tokio::io::AsyncReadExt;
 use walkdir::WalkDir;
 
 use crate::error::{CoreError, CoreResult};
-use crate::identity::{identity_key, is_photo_file};
+use crate::identity::{identity_key, is_photo_file, preferred_file};
 use crate::model::{LocalFile, SnapshotFile};
 
 pub const MAX_PHOTO_BYTES: u64 = 500 * 1024 * 1024;
@@ -124,6 +124,26 @@ pub fn scan_local_photos(
 
     files.sort_by(|a, b| a.relative_path.cmp(&b.relative_path));
     (files, errors)
+}
+
+pub fn group_local_files(local_files: &[LocalFile]) -> HashMap<String, Vec<&LocalFile>> {
+    let mut groups: HashMap<String, Vec<&LocalFile>> = HashMap::new();
+    for file in local_files {
+        if let Some(key) = file.identity() {
+            groups.entry(key).or_default().push(file);
+        }
+    }
+    groups
+}
+
+pub fn preferred_local_files(local_files: &[LocalFile]) -> HashMap<String, &LocalFile> {
+    let mut preferred = HashMap::new();
+    for (key, group) in group_local_files(local_files) {
+        if let Some(chosen) = preferred_file(&group, |file| file.filename.as_str()) {
+            preferred.insert(key, *chosen);
+        }
+    }
+    preferred
 }
 
 pub async fn hash_file(path: &Path) -> CoreResult<String> {
@@ -378,6 +398,24 @@ mod extra_tests {
         assert!(scan_and_hash(&dir.path().join("nope"), &[], 1)
             .await
             .is_err());
+    }
+
+    #[tokio::test]
+    async fn groups_local_identity_and_prefers_jpeg() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("shot.dng"), b"raw").unwrap();
+        std::fs::write(dir.path().join("shot.jpg"), b"jpeg").unwrap();
+        let (files, errors) = scan_and_hash(dir.path(), &[], 2).await.unwrap();
+        assert!(errors.is_empty());
+
+        let groups = group_local_files(&files);
+        assert_eq!(groups.len(), 1);
+        assert_eq!(groups.values().next().unwrap().len(), 2);
+        let preferred = preferred_local_files(&files);
+        assert_eq!(
+            preferred.values().next().unwrap().filename.as_str(),
+            "shot.jpg"
+        );
     }
 
     #[tokio::test]

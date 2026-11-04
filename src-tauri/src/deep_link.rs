@@ -7,7 +7,7 @@ use picstome_sync_core::links::{parse_deep_link, DeepLink};
 use crate::commands::{build_state, AppState};
 
 pub fn setup(app: &AppHandle) {
-    #[cfg(any(target_os = "linux", all(debug_assertions, windows)))]
+    #[cfg(any(target_os = "linux", target_os = "windows"))]
     {
         if let Err(err) = app.deep_link().register_all() {
             eprintln!("Could not register deep links: {err}");

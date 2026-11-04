@@ -1,8 +1,7 @@
 name: build
 
-# macOS test builds. Windows test builds are intentionally disabled until the
-# app is stable; Windows installers are only produced by release.yml for final
-# tags. Linux test builds are produced locally with scripts/release-local.sh.
+# macOS and Windows test builds. Linux test builds are produced locally with
+# scripts/release-local.sh. Final tagged releases are built by release.yml.
 on:
   push:
     branches: [main]
@@ -20,14 +19,45 @@ permissions:
   contents: write
 
 concurrency:
-  group: build-macos-${{ github.ref }}
+  group: build-test-${{ github.ref }}
   cancel-in-progress: true
 
 env:
   CARGO_TERM_COLOR: always
 
 jobs:
+  prepare:
+    name: Prepare draft release
+    runs-on: ubuntu-latest
+    outputs:
+      tag: ${{ steps.tag.outputs.tag }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Resolve tag
+        id: tag
+        run: |
+          set -euo pipefail
+          if [ -n "${{ inputs.tag }}" ]; then
+            TAG="${{ inputs.tag }}"
+          else
+            TAG="v$(python3 -c 'import json; print(json.load(open("src-tauri/tauri.conf.json"))["version"])')"
+          fi
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+      - name: Create draft release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          TAG="${{ steps.tag.outputs.tag }}"
+          if ! gh release view "$TAG" >/dev/null 2>&1; then
+            gh release create "$TAG" \
+              --draft \
+              --title "Picstome Sync $TAG" \
+              --notes "Test builds: macOS universal (ad-hoc signed) and Windows installers. Linux is built locally."
+          fi
+
   macos:
+    needs: prepare
     name: macOS universal test build
     runs-on: macos-15-intel
     steps:
@@ -39,37 +69,57 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - name: Install macOS targets
         run: rustup target add aarch64-apple-darwin x86_64-apple-darwin
-      - name: Resolve draft tag
-        id: tag
-        run: |
-          set -euo pipefail
-          if [ -n "${{ inputs.tag }}" ]; then
-            TAG="${{ inputs.tag }}"
-          else
-            TAG="v$(python3 -c 'import json; print(json.load(open("src-tauri/tauri.conf.json"))["version"])')"
-          fi
-          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
       - name: Build unsigned universal app
         env:
           CSC_IDENTITY_AUTO_DISCOVERY: "false"
         run: npx --yes @tauri-apps/cli@2 build --target universal-apple-darwin
-      - name: Create/update draft release and upload DMG
+      - name: Upload DMG to draft release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
-          TAG="${{ steps.tag.outputs.tag }}"
-          if ! gh release view "$TAG" >/dev/null 2>&1; then
-            gh release create "$TAG" \
-              --draft \
-              --title "Picstome Sync $TAG" \
-              --notes "macOS test build (universal, ad-hoc signed). Linux is built locally; Windows is reserved for the final release."
-          fi
-          gh release upload "$TAG" target/universal-apple-darwin/release/bundle/dmg/*.dmg --clobber
+          gh release upload "${{ needs.prepare.outputs.tag }}" \
+            target/universal-apple-darwin/release/bundle/dmg/*.dmg --clobber
       - name: Upload macOS artifact
         uses: actions/upload-artifact@v4
         with:
           name: picstome-sync-macos-universal-${{ github.sha }}
           path: target/universal-apple-darwin/release/bundle/dmg/*.dmg
+          if-no-files-found: error
+          retention-days: 30
+
+  windows:
+    name: Windows test build
+    needs: prepare
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Build Windows installers
+        run: npx --yes @tauri-apps/cli@2 build --bundles nsis,msi
+      - name: Upload installers to draft release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          FILES=(target/release/bundle/nsis/*.exe target/release/bundle/msi/*.msi)
+          if [ ${#FILES[@]} -eq 0 ]; then
+            echo "No Windows installer produced" >&2
+            exit 1
+          fi
+          gh release upload "${{ needs.prepare.outputs.tag }}" "${FILES[@]}" --clobber
+      - name: Upload Windows artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: picstome-sync-windows-${{ github.sha }}
+          path: |
+            target/release/bundle/nsis/*.exe
+            target/release/bundle/msi/*.msi
           if-no-files-found: error
           retention-days: 30

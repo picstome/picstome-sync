@@ -257,6 +257,18 @@ function warningText(warning) {
     return warning.message || "";
 }
 
+function syncErrorReport(err) {
+    return {
+        counts: {},
+        downloaded: [],
+        uploaded: [],
+        conflicts: [],
+        errors: [{ filename: "—", message: err?.message || String(err) }],
+        proposals: { deleteRemote: [] },
+        favorites: [],
+    };
+}
+
 function syncButtonLabel(s, busy) {
     return busy ? `⏳ ${s.syncing}` : `🔄 ${s.sync}`;
 }
@@ -1408,15 +1420,7 @@ async function syncCurrent() {
             missing = true;
             await handleUnknownGallery(gallery);
         } else {
-            state.report = {
-                counts: {},
-                downloaded: [],
-                uploaded: [],
-                conflicts: [],
-                errors: [{ filename: "—", message: err?.message || String(err) }],
-                proposals: { deleteRemote: [] },
-                favorites: [],
-            };
+            state.report = syncErrorReport(err);
         }
     } finally {
         state.syncBusy = false;
@@ -1450,15 +1454,7 @@ async function startSync(galleryId, name) {
                 name: name || galleryId,
             });
         } else {
-            state.report = {
-                counts: {},
-                downloaded: [],
-                uploaded: [],
-                conflicts: [],
-                errors: [{ filename: "—", message: err?.message || String(err) }],
-                proposals: { deleteRemote: [] },
-                favorites: [],
-            };
+            state.report = syncErrorReport(err);
         }
     } finally {
         state.syncBusy = false;
@@ -1733,15 +1729,7 @@ els.btnChangeFolder.addEventListener("click", async () => {
             await refreshState();
         }
     } catch (err) {
-        state.report = {
-            counts: {},
-            downloaded: [],
-            uploaded: [],
-            conflicts: [],
-            errors: [{ filename: "—", message: err?.message || String(err) }],
-            proposals: { deleteRemote: [] },
-            favorites: [],
-        };
+        state.report = syncErrorReport(err);
         renderAll();
     } finally {
         els.btnChangeFolder.disabled = false;

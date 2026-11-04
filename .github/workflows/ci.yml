@@ -112,3 +112,17 @@ jobs:
         with:
           name: core-coverage-lcov
           path: lcov.info
+
+  windows:
+    name: Windows compile + core tests
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+      - name: Core tests
+        run: cargo test -p picstome-sync-core
+      - name: App check
+        run: cargo check -p picstome-sync

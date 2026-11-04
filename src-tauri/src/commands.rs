@@ -9,6 +9,7 @@ use tauri::{AppHandle, Emitter, Manager, State};
 use tauri_plugin_dialog::DialogExt;
 use tauri_plugin_opener::OpenerExt;
 
+use picstome_sync_core::atomic::write_bytes;
 use picstome_sync_core::config::Store;
 use picstome_sync_core::error::ErrorPayload;
 use picstome_sync_core::mock::MockServer;
@@ -187,11 +188,14 @@ pub async fn build_state(state: &AppState) -> AppStateView {
                         let local: Vec<_> = snapshot
                             .files
                             .iter()
-                            .filter(|file| file.mtime.is_some())
+                            .filter(|file| file.local_present)
                             .collect();
                         (
                             local.len() as u64,
-                            local.iter().filter_map(|file| file.size).sum(),
+                            local
+                                .iter()
+                                .filter_map(|file| file.local_size.or(file.size))
+                                .sum(),
                         )
                     } else {
                         (snapshot.local_photo_count, snapshot.local_bytes)
@@ -242,6 +246,13 @@ async fn emit_state(app: &AppHandle, state: &AppState) {
     let _ = app.emit("app-state", view);
 }
 
+fn now_millis() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|duration| duration.as_millis() as i64)
+        .unwrap_or(0)
+}
+
 fn command_error(message: impl Into<String>, code: &str) -> ErrorPayload {
     ErrorPayload {
         message: message.into(),
@@ -278,25 +289,12 @@ fn legacy_log_path(store: &Store) -> std::path::PathBuf {
 }
 
 fn write_log_file(path: &std::path::Path, lines: &[String]) -> std::io::Result<()> {
-    use std::io::Write;
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent)?;
-    }
-    let tmp = path.with_extension("log.tmp");
-    let mut options = std::fs::OpenOptions::new();
-    options.write(true).create(true).truncate(true);
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::OpenOptionsExt;
-        options.mode(0o600);
-    }
-    let mut file = options.open(&tmp)?;
+    let mut data = String::new();
     for line in lines {
-        writeln!(file, "{line}")?;
+        data.push_str(line);
+        data.push('\n');
     }
-    file.sync_all()?;
-    drop(file);
-    std::fs::rename(tmp, path)
+    write_bytes(path, data.as_bytes())
 }
 
 fn rotate_log_if_needed(path: &std::path::Path) {
@@ -319,21 +317,7 @@ fn rotate_log_if_needed(path: &std::path::Path) {
 }
 
 fn append_log_line(path: std::path::PathBuf, entry: serde_json::Value) {
-    use std::io::Write;
-    rotate_log_if_needed(&path);
-    if let Some(parent) = path.parent() {
-        let _ = std::fs::create_dir_all(parent);
-    }
-    let mut options = std::fs::OpenOptions::new();
-    options.create(true).append(true);
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::OpenOptionsExt;
-        options.mode(0o600);
-    }
-    if let Ok(mut file) = options.open(path) {
-        let _ = writeln!(file, "{entry}");
-    }
+    append_raw_log_lines(&path, &[entry.to_string()]);
 }
 
 fn append_rating_log(
@@ -345,10 +329,7 @@ fn append_rating_log(
 ) {
     let entry = json!({
         "kind": "rating",
-        "at": std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|duration| duration.as_millis() as i64)
-            .unwrap_or(0),
+        "at": now_millis(),
         "galleryId": gallery_id,
         "rating": rating,
         "source": source,
@@ -372,10 +353,7 @@ fn append_rating_log(
 fn append_sync_log(store: &Store, report: &SyncReport) {
     let entry = json!({
         "kind": "sync",
-        "at": std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|duration| duration.as_millis() as i64)
-            .unwrap_or(0),
+        "at": now_millis(),
         "galleryId": report.gallery_id,
         "counts": report.counts,
         "uploaded": report.uploaded.iter().map(|item| json!({
@@ -413,10 +391,7 @@ fn append_sync_log(store: &Store, report: &SyncReport) {
 fn append_sync_error_log(store: &Store, gallery_id: &str, message: &str) {
     let entry = json!({
         "kind": "sync_error",
-        "at": std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|duration| duration.as_millis() as i64)
-            .unwrap_or(0),
+        "at": now_millis(),
         "galleryId": gallery_id,
         "message": message,
     });
@@ -435,10 +410,7 @@ fn append_deletion_log(
 ) {
     let entry = json!({
         "kind": "deletion",
-        "at": std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|duration| duration.as_millis() as i64)
-            .unwrap_or(0),
+        "at": now_millis(),
         "galleryId": gallery_id,
         "action": action,
         "resolved": resolved,
@@ -832,10 +804,7 @@ pub async fn resolve_remote_deletions(
     };
     let api = state.api().await;
     let snapshot = state.store.load_snapshot(&id);
-    let now = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|duration| duration.as_millis() as i64)
-        .unwrap_or(0);
+    let now = now_millis();
     let files: Vec<Value> = photo_ids
         .iter()
         .map(|photo_id| {

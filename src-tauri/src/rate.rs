@@ -286,23 +286,24 @@ pub async fn rate_files(
 }
 
 #[cfg(test)]
+fn bundled_test_exiftool() -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("..")
+        .join("resources")
+        .join(if cfg!(windows) {
+            "exiftool.exe"
+        } else {
+            "exiftool"
+        })
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
 
-    fn bundled_exiftool() -> PathBuf {
-        PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .join("..")
-            .join("resources")
-            .join(if cfg!(windows) {
-                "exiftool.exe"
-            } else {
-                "exiftool"
-            })
-    }
-
     #[tokio::test]
     async fn writes_rating_for_files_in_subfolders() {
-        let exiftool = bundled_exiftool();
+        let exiftool = bundled_test_exiftool();
         if !exiftool.is_file() {
             eprintln!("skipping: bundled exiftool not present");
             return;
@@ -330,8 +331,8 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn writes_rating_with_bundled_exiftool() {
-        let exiftool = bundled_exiftool();
+    async fn writes_rating_with_bundled_test_exiftool() {
+        let exiftool = bundled_test_exiftool();
         if !exiftool.is_file() {
             eprintln!("skipping: bundled exiftool not present");
             return;
@@ -366,17 +367,6 @@ mod tests {
 #[cfg(test)]
 mod extra_tests {
     use super::*;
-
-    fn bundled_exiftool() -> PathBuf {
-        PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .join("..")
-            .join("resources")
-            .join(if cfg!(windows) {
-                "exiftool.exe"
-            } else {
-                "exiftool"
-            })
-    }
 
     #[test]
     fn maps_ratings_and_percentages() {
@@ -416,7 +406,7 @@ mod extra_tests {
 
     #[tokio::test]
     async fn reports_missing_files_and_accessible_folder_errors() {
-        let exiftool = bundled_exiftool();
+        let exiftool = bundled_test_exiftool();
         if !exiftool.is_file() {
             return;
         }

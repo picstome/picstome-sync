@@ -48,9 +48,6 @@ jobs:
           - name: macos-universal
             os: macos-15-intel
             args: "--target universal-apple-darwin"
-          # Windows is intentionally part of FINAL releases only. Test Windows
-          # builds are disabled until the app is stable; add a windows job to
-          # build.yml at that point.
           - name: windows
             os: windows-latest
             args: ""
