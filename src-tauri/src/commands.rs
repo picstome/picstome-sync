@@ -246,6 +246,13 @@ async fn emit_state(app: &AppHandle, state: &AppState) {
     let _ = app.emit("app-state", view);
 }
 
+fn gallery_web_url(base: &str, web_url: Option<&str>) -> String {
+    match web_url.map(str::trim) {
+        Some(url) if url.starts_with("https://") || url.starts_with("http://") => url.to_string(),
+        _ => format!("{}/galleries", base.trim_end_matches('/')),
+    }
+}
+
 fn now_millis() -> i64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -1026,6 +1033,25 @@ pub async fn rate_files(
     Ok(result)
 }
 #[tauri::command]
+pub async fn open_gallery_in_picstome(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    gallery_id: String,
+) -> Result<Value, ErrorPayload> {
+    let Some(id) = sanitize_gallery_id(&gallery_id) else {
+        return Err(invalid_gallery());
+    };
+    let api = state.api().await;
+    let base = api.base_url().to_string();
+    let manifest = api.manifest(&id).await?;
+    let url = gallery_web_url(&base, manifest.web_url.as_deref());
+    app.opener()
+        .open_url(url, None::<&str>)
+        .map_err(|err| command_error(err.to_string(), "open_url_failed"))?;
+    Ok(json!({"ok": true}))
+}
+
+#[tauri::command]
 pub async fn open_galleries_page(
     app: AppHandle,
     state: State<'_, AppState>,
@@ -1170,6 +1196,25 @@ pub async fn check_updates() -> Value {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn gallery_web_url_uses_only_http_links_and_falls_back_to_galleries() {
+        assert_eq!(
+            gallery_web_url(
+                "https://app.picstome.com/",
+                Some("https://app.picstome.com/galleries/1")
+            ),
+            "https://app.picstome.com/galleries/1"
+        );
+        assert_eq!(
+            gallery_web_url("https://app.picstome.com/", Some("javascript:alert(1)")),
+            "https://app.picstome.com/galleries"
+        );
+        assert_eq!(
+            gallery_web_url("https://app.picstome.com/", None),
+            "https://app.picstome.com/galleries"
+        );
+    }
 
     #[test]
     fn defers_links_until_frontend_ready_and_dedupes() {

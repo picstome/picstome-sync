@@ -1225,6 +1225,7 @@ mod tests {
         Manifest {
             gallery_id: "G1".into(),
             name: "Gallery".into(),
+            web_url: None,
             rev: None,
             photos: vec![photo],
         }

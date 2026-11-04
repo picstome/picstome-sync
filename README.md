@@ -22,6 +22,8 @@ and star-rating workflow.
 - Writes 1–5 star ratings to local files with exiftool and exports favorite
   lists for Lightroom, Capture One, Finder/Explorer, or plain text.
 - Shows photo count, disk usage, sync progress, and a per-gallery activity log.
+- Opens the linked gallery in Picstome from the title link (falls back to the
+  galleries page when the API does not expose `web_url`).
 - Never overwrites conflicts automatically.
 
 ## How it works

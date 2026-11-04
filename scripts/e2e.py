@@ -302,7 +302,9 @@ def main():
                   unlinkParent: document.getElementById('btnUnlink').closest('.main-footer')?.id || '',
                   changeTitle: document.getElementById('btnChangeFolder').title,
                   changeText: document.getElementById('btnChangeFolder').textContent,
-                  footerVisible: !document.getElementById('mainFooter').classList.contains('hidden')
+                  footerVisible: !document.getElementById('mainFooter').classList.contains('hidden'),
+                  webLink: document.getElementById('btnOpenWebGallery').title,
+                  webLinkVisible: !document.getElementById('btnOpenWebGallery').classList.contains('hidden')
                 }));
                 """,
             )
@@ -316,6 +318,8 @@ def main():
         assert layout["footerVisible"], layout
         assert "Change folder" in layout["changeTitle"] or "Cambiar carpeta" in layout["changeTitle"], layout
         assert "Change folder" in layout["changeText"] or "Cambiar carpeta" in layout["changeText"], layout
+        assert layout["webLinkVisible"], layout
+        assert "Picstome" in layout["webLink"], layout
         assert state["config"]["appVersion"] in dom["infoText"], "info modal must show the version"
         kind = state["config"]["apiKind"]
         expected_badge = {

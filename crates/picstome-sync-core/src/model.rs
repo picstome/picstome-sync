@@ -129,6 +129,8 @@ pub struct Manifest {
     #[serde(default)]
     pub name: String,
     #[serde(default)]
+    pub web_url: Option<String>,
+    #[serde(default)]
     pub rev: Option<Value>,
     #[serde(default)]
     pub photos: Vec<Photo>,
@@ -535,6 +537,7 @@ mod tests {
         let manifest = Manifest {
             gallery_id: "G1".into(),
             name: "Gallery".into(),
+            web_url: None,
             rev: None,
             photos: vec![
                 Photo {

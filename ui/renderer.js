@@ -81,6 +81,7 @@ const els = {
     btnInfo: document.getElementById("btnInfo"),
 
     detailName: document.getElementById("detailName"),
+    btnOpenWebGallery: document.getElementById("btnOpenWebGallery"),
     detailPath: document.getElementById("detailPath"),
     detailPathText: document.getElementById("detailPathText"),
     pathRow: document.getElementById("pathRow"),
@@ -356,6 +357,8 @@ function applyStrings() {
     els.btnChangeFolder.setAttribute("aria-label", s.changeFolder);
     els.btnUnlink.textContent = s.unlink;
     els.detailPath.title = s.openFolder;
+    els.btnOpenWebGallery.title = s.openGalleryInPicstome;
+    els.btnOpenWebGallery.setAttribute("aria-label", s.openGalleryInPicstome);
     els.btnDeleteRemote.textContent = s.confirmDelete;
     els.btnCancelDelete.textContent = s.cancel;
     els.deleteHint.textContent = s.deleteRemoteHint;
@@ -532,6 +535,7 @@ function renderMain() {
         hide(els.idleState);
         show(els.welcome);
         els.detailName.textContent = s.appTitle;
+        els.btnOpenWebGallery.classList.add("hidden");
         els.detailPathText.textContent = s.syncHint;
         els.detailPath.disabled = true;
         els.detailPath.classList.add("hidden");
@@ -557,6 +561,9 @@ function renderMain() {
         !state.progress;
     els.idleState.classList.toggle("hidden", !showIdle);
     els.detailName.textContent = gallery.name;
+    els.btnOpenWebGallery.classList.remove("hidden");
+    els.btnOpenWebGallery.title = s.openGalleryInPicstome;
+    els.btnOpenWebGallery.setAttribute("aria-label", s.openGalleryInPicstome);
     els.pathRow.classList.remove("hidden");
     els.mainFooter.classList.remove("hidden");
     els.detailPath.classList.remove("hidden");
@@ -1734,6 +1741,18 @@ els.btnChangeFolder.addEventListener("click", async () => {
     } finally {
         els.btnChangeFolder.disabled = false;
         els.btnChangeFolder.textContent = state.strings?.changeFolder || original;
+    }
+});
+
+els.btnOpenWebGallery.addEventListener("click", async () => {
+    if (!state.currentGalleryId) return;
+    try {
+        await invoke("open_gallery_in_picstome", {
+            galleryId: state.currentGalleryId,
+        });
+    } catch (err) {
+        state.report = syncErrorReport(err);
+        renderAll();
     }
 });
 

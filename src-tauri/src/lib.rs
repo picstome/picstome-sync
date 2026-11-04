@@ -162,6 +162,7 @@ pub fn run() {
             commands::rate_files,
             commands::open_account_profile,
             commands::open_galleries_page,
+            commands::open_gallery_in_picstome,
             commands::set_api_base,
             commands::get_sync_log,
             commands::clear_sync_log,

@@ -457,6 +457,36 @@ h2 {
     line-height: 1.1;
 }
 
+.title-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    min-width: 0;
+}
+
+.title-row h1 {
+    min-width: 0;
+}
+
+.title-link {
+    flex: 0 0 auto;
+    min-height: 28px;
+    padding: 0 7px;
+    border: 0;
+    border-radius: 7px;
+    background: transparent;
+    color: var(--pine);
+    box-shadow: none;
+    font-size: 17px;
+    line-height: 1;
+}
+
+.title-link:hover {
+    background: var(--surface-muted);
+    color: var(--pine-dark);
+    transform: none;
+}
+
 h1 {
     font-size: 26px;
     overflow: hidden;

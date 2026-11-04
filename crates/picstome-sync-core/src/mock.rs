@@ -437,6 +437,7 @@ async fn manifest(
         json!({
             "gallery_id": gallery.id,
             "name": gallery.name,
+            "web_url": format!("{base}/galleries/{}", gallery.id),
             "rev": gallery.rev,
             "photos": photos,
         }),
