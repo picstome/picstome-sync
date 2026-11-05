@@ -877,6 +877,7 @@ def main():
         after_rating = js_invoke(session, "sync_gallery", {"galleryId": gallery})
         log("after favorites:", after_rating["counts"], "favorites:", len(after_rating["favorites"]))
         assert not after_rating["favorites"], after_rating["favorites"]
+        assert not after_rating["uploaded"], after_rating["uploaded"]
 
         run_async(
             session,

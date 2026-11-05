@@ -26,6 +26,15 @@ async fn login(url: &str) -> ApiClient {
     api
 }
 
+/// Minimal JPEG-looking bytes for upload tests. The upload preflight checks
+/// the file header, so synthetic fixtures must start with a JPEG SOI marker.
+fn jpeg_bytes(size: usize, fill: u8) -> Vec<u8> {
+    assert!(size >= 3);
+    let mut bytes = vec![0xFF, 0xD8, 0xFF];
+    bytes.resize(size, fill);
+    bytes
+}
+
 #[tokio::test]
 async fn api_manifest_and_range_download() {
     let mock = mock().await;
@@ -69,7 +78,7 @@ async fn api_upload_versions_and_delete() {
     let api = login(&mock.url).await;
     let dir = tempfile::tempdir().unwrap();
     let file = dir.path().join("NEW_0001.jpg");
-    tokio::fs::write(&file, vec![1u8; 900]).await.unwrap();
+    tokio::fs::write(&file, jpeg_bytes(900, 1)).await.unwrap();
 
     let first = api
         .upload_photo("G123", "NEW_0001.jpg", &file, 900)
@@ -84,7 +93,7 @@ async fn api_upload_versions_and_delete() {
     assert_eq!(second.version_count, Some(1));
     assert!(second.unchanged);
 
-    tokio::fs::write(&file, vec![2u8; 901]).await.unwrap();
+    tokio::fs::write(&file, jpeg_bytes(901, 2)).await.unwrap();
     let third = api
         .upload_photo("G123", "NEW_0001.jpg", &file, 901)
         .await
@@ -373,10 +382,10 @@ async fn sync_handles_remote_and_local_changes() {
         .map(|entry| entry.path())
         .collect();
     files.sort();
-    std::fs::write(&files[0], vec![9u8; 1234]).unwrap();
+    std::fs::write(&files[0], jpeg_bytes(1234, 9)).unwrap();
     std::fs::write(
         format!("{}/LOCAL_NEW.jpg", gallery.local_path),
-        vec![7u8; 777],
+        jpeg_bytes(777, 7),
     )
     .unwrap();
 

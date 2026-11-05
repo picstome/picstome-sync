@@ -1,3 +1,4 @@
+use std::io::SeekFrom;
 use std::path::Path;
 use std::sync::Arc;
 use std::time::Duration;
@@ -8,6 +9,7 @@ use reqwest::{Client, Method, Response};
 use serde::de::DeserializeOwned;
 use serde::Deserialize;
 use serde_json::Value;
+use tokio::io::{AsyncReadExt, AsyncSeekExt};
 use tokio::sync::RwLock;
 use tokio_util::io::ReaderStream;
 use url::Url;
@@ -18,6 +20,48 @@ use crate::model::{
     CLIENT_NAME, DEFAULT_API_BASE,
 };
 use crate::sanitize::urlencode;
+
+fn valid_image_header(filename: &str, header: &[u8]) -> bool {
+    match crate::identity::extension_of(filename).as_str() {
+        "jpg" | "jpeg" => header.starts_with(&[0xFF, 0xD8, 0xFF]),
+        "png" => header.starts_with(&[0x89, b'P', b'N', b'G', 0x0D, 0x0A, 0x1A, 0x0A]),
+        "tiff" | "tif" | "dng" => header.starts_with(b"II*\0") || header.starts_with(b"MM\0*"),
+        _ => true,
+    }
+}
+
+/// Reject empty, truncated or mismatched files before they create a broken
+/// version on the server. The size check also catches files being rewritten by
+/// another application while a sync is running.
+async fn open_upload_file(
+    filename: &str,
+    file_path: &Path,
+    expected_size: u64,
+) -> CoreResult<tokio::fs::File> {
+    if expected_size == 0 {
+        return Err(CoreError::InvalidData(format!(
+            "{filename} is empty; upload skipped"
+        )));
+    }
+
+    let mut file = tokio::fs::File::open(file_path).await?;
+    let actual = file.metadata().await?.len();
+    if actual != expected_size {
+        return Err(CoreError::InvalidData(format!(
+            "{filename} changed while syncing ({actual} bytes on disk, expected {expected_size}); sync again"
+        )));
+    }
+
+    let mut header = [0u8; 12];
+    let read = file.read(&mut header).await?;
+    if !valid_image_header(filename, &header[..read]) {
+        return Err(CoreError::InvalidData(format!(
+            "{filename} is not a valid image; upload skipped"
+        )));
+    }
+    file.seek(SeekFrom::Start(0)).await?;
+    Ok(file)
+}
 
 #[derive(Debug, Deserialize)]
 struct ErrorBody {
@@ -250,7 +294,7 @@ impl ApiClient {
         file_path: &Path,
         size: u64,
     ) -> CoreResult<UploadResponse> {
-        let file = tokio::fs::File::open(file_path).await?;
+        let file = open_upload_file(filename, file_path, size).await?;
         let stream = ReaderStream::new(file);
         let part = Part::stream_with_length(reqwest::Body::wrap_stream(stream), size)
             .file_name(crate::sanitize::escape_header_value(filename))
@@ -353,5 +397,68 @@ mod tests {
         assert!(!api.has_token().await);
         api.set_token(None).await;
         assert_eq!(api.token().await, None);
+    }
+
+    #[tokio::test]
+    async fn upload_preflight_rejects_empty_or_changed_files() {
+        let dir = tempfile::tempdir().unwrap();
+        let empty = dir.path().join("empty.jpg");
+        std::fs::write(&empty, b"").unwrap();
+        let error = open_upload_file("empty.jpg", &empty, 0)
+            .await
+            .err()
+            .unwrap();
+        assert!(error.to_string().contains("empty"));
+
+        let photo = dir.path().join("photo.jpg");
+        std::fs::write(&photo, b"\xFF\xD8\xFF\xE0photo").unwrap();
+        let error = open_upload_file("photo.jpg", &photo, 5)
+            .await
+            .err()
+            .unwrap();
+        assert!(error.to_string().contains("changed while syncing"));
+    }
+
+    #[tokio::test]
+    async fn upload_preflight_rejects_invalid_images() {
+        let dir = tempfile::tempdir().unwrap();
+        let fake = dir.path().join("fake.jpg");
+        std::fs::write(&fake, b"not an image").unwrap();
+        let error = open_upload_file("fake.jpg", &fake, 12).await.err().unwrap();
+        assert!(error.to_string().contains("not a valid image"));
+
+        let heic = dir.path().join("photo.jpg");
+        std::fs::write(&heic, b"\x00\x00\x00\x18ftypheic").unwrap();
+        let error = open_upload_file("photo.jpg", &heic, 12)
+            .await
+            .err()
+            .unwrap();
+        assert!(error.to_string().contains("not a valid image"));
+    }
+
+    #[tokio::test]
+    async fn upload_preflight_accepts_valid_headers_and_resets_position() {
+        let dir = tempfile::tempdir().unwrap();
+
+        let jpeg = dir.path().join("photo.jpg");
+        std::fs::write(&jpeg, b"\xFF\xD8\xFF\xE0payload").unwrap();
+        let mut file = open_upload_file("photo.jpg", &jpeg, 11).await.unwrap();
+        let mut read = [0u8; 3];
+        tokio::io::AsyncReadExt::read_exact(&mut file, &mut read)
+            .await
+            .unwrap();
+        assert_eq!(read, [0xFF, 0xD8, 0xFF]);
+
+        let png = dir.path().join("photo.png");
+        std::fs::write(&png, b"\x89PNG\r\n\x1A\npayload").unwrap();
+        assert!(open_upload_file("photo.png", &png, 15).await.is_ok());
+
+        let tiff = dir.path().join("photo.tif");
+        std::fs::write(&tiff, b"II*\0payload").unwrap();
+        assert!(open_upload_file("photo.tif", &tiff, 11).await.is_ok());
+
+        let raw = dir.path().join("photo.cr3");
+        std::fs::write(&raw, b"raw-bytes").unwrap();
+        assert!(open_upload_file("photo.cr3", &raw, 9).await.is_ok());
     }
 }

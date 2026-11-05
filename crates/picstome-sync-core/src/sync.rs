@@ -526,6 +526,70 @@ pub fn mark_favorites_rated(
     Ok(updated)
 }
 
+/// Adopt local files that the app itself rewrote (for example after writing
+/// EXIF ratings) as the new baseline. Without this, the next sync mistakes the
+/// metadata update for a user edit and uploads a spurious new version.
+pub async fn adopt_local_changes(
+    store: &Store,
+    gallery_id: &str,
+    filenames: &[String],
+) -> CoreResult<usize> {
+    if filenames.is_empty() {
+        return Ok(0);
+    }
+    let Some(gallery) = store.get_gallery(gallery_id) else {
+        return Ok(0);
+    };
+    let Some(mut snapshot) = store.load_snapshot(gallery_id) else {
+        return Ok(0);
+    };
+    let wanted: HashSet<String> = filenames
+        .iter()
+        .filter_map(|filename| identity_key(filename))
+        .collect();
+    if wanted.is_empty() {
+        return Ok(0);
+    }
+
+    let mut updated = 0;
+    for file in &mut snapshot.files {
+        let Some(key) = file.identity() else {
+            continue;
+        };
+        if !wanted.contains(&key) {
+            continue;
+        }
+        let Some(path) = local_path_for(&gallery, file) else {
+            continue;
+        };
+        let Ok(metadata) = tokio::fs::metadata(&path).await else {
+            continue;
+        };
+        let Ok(hash) = crate::localfiles::hash_file(&path).await else {
+            continue;
+        };
+
+        if !file.local_present {
+            snapshot.local_photo_count = snapshot.local_photo_count.saturating_add(1);
+        }
+        if let Some(previous) = file.local_size {
+            snapshot.local_bytes = snapshot.local_bytes.saturating_sub(previous);
+        }
+        snapshot.local_bytes = snapshot.local_bytes.saturating_add(metadata.len());
+
+        file.local_present = true;
+        file.local_hash = Some(hash);
+        file.local_size = Some(metadata.len());
+        file.mtime = file_mtime_ms(&path).await;
+        updated += 1;
+    }
+
+    if updated > 0 {
+        store.save_snapshot(&snapshot)?;
+    }
+    Ok(updated)
+}
+
 pub async fn resolve_remote_deletions(
     api: &ApiClient,
     store: &Store,
@@ -1365,5 +1429,78 @@ mod tests {
         );
         assert_eq!(snapshot.files[0].hash.as_deref(), Some("h1"));
         assert_eq!(snapshot.files[0].version_count, Some(1));
+    }
+
+    #[tokio::test]
+    async fn adopts_app_rewrites_as_the_local_baseline() {
+        let dir = tempfile::tempdir().unwrap();
+        let gallery_dir = dir.path().join("gallery");
+        std::fs::create_dir_all(&gallery_dir).unwrap();
+        let photo_path = gallery_dir.join("a.jpg");
+        std::fs::write(&photo_path, b"original").unwrap();
+
+        let store = Store::new(dir.path().join("state")).unwrap();
+        store
+            .upsert_gallery(GalleryEntry {
+                gallery_id: "G1".into(),
+                name: "Gallery".into(),
+                local_path: gallery_dir.to_string_lossy().to_string(),
+                last_sync_at: None,
+                remote_rev: None,
+                parent_gallery_id: None,
+            })
+            .unwrap();
+
+        let mut base = previous(Some(123));
+        base.local_hash = Some(crate::localfiles::hash_bytes(b"original"));
+        base.local_size = Some(8);
+        let snapshot = Snapshot {
+            schema: SNAPSHOT_SCHEMA,
+            gallery_id: "G1".into(),
+            name: "Gallery".into(),
+            local_path: gallery_dir.to_string_lossy().to_string(),
+            last_sync_at: 1,
+            remote_rev: None,
+            local_photo_count: 1,
+            local_bytes: 8,
+            files: vec![base],
+        };
+        store.save_snapshot(&snapshot).unwrap();
+
+        // Simulate exiftool rewriting the rating metadata.
+        std::fs::write(&photo_path, b"rated-metadata").unwrap();
+        let rewritten = crate::localfiles::hash_bytes(b"rated-metadata");
+        let local_file = LocalFile {
+            filename: "a.jpg".into(),
+            relative_path: "a.jpg".into(),
+            path: photo_path.clone(),
+            size: 14,
+            mtime_ms: 456,
+            hash: Some(rewritten.clone()),
+            identity_key: "image:a".into(),
+        };
+        let before = compute_diff(
+            &snapshot.files,
+            &[remote()],
+            std::slice::from_ref(&local_file),
+        );
+        assert_eq!(before.counts.local_modified, 1);
+
+        let updated = adopt_local_changes(&store, "G1", &["a.jpg".to_string()])
+            .await
+            .unwrap();
+        assert_eq!(updated, 1);
+
+        let saved = store.load_snapshot("G1").unwrap();
+        assert_eq!(
+            saved.files[0].local_hash.as_deref(),
+            Some(rewritten.as_str())
+        );
+        assert_eq!(saved.files[0].local_size, Some(14));
+        assert_eq!(saved.local_bytes, 14);
+
+        let after = compute_diff(&saved.files, &[remote()], &[local_file]);
+        assert_eq!(after.counts.local_modified, 0);
+        assert_eq!(after.counts.in_sync, 1);
     }
 }

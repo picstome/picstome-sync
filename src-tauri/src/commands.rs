@@ -19,7 +19,7 @@ use picstome_sync_core::model::{
 };
 use picstome_sync_core::sanitize::{sanitize_file_names, sanitize_gallery_id};
 use picstome_sync_core::sync::{
-    apply_remote_deletions, folder_exists, mark_favorites_rated,
+    adopt_local_changes, apply_remote_deletions, folder_exists, mark_favorites_rated,
     resolve_remote_deletions as resolve_remote_deletions_core, run_gallery_sync,
     RemoteDeleteAction, SyncOptions,
 };
@@ -999,6 +999,36 @@ pub async fn rate_files(
     });
 
     let result = rate::rate_files(state.exiftool.as_deref(), &files, &rating, &trusted_path).await;
+
+    // Rating rewrites the files' EXIF metadata. Adopt those new bytes as the
+    // sync baseline so the next sync does not upload every rated photo as a
+    // modified version. When a link does not name a gallery, update every
+    // linked gallery that points at the rated folder.
+    let baseline_galleries: Vec<String> = match gallery_for_marks.clone() {
+        Some(gallery_id) => vec![gallery_id],
+        None => state
+            .store
+            .load_index()
+            .into_iter()
+            .filter(|gallery| {
+                std::fs::canonicalize(&gallery.local_path)
+                    .map(|path| path == trusted_path)
+                    .unwrap_or(false)
+            })
+            .map(|gallery| gallery.gallery_id)
+            .collect(),
+    };
+    if !baseline_galleries.is_empty() {
+        let rated_files: Vec<String> = result
+            .details
+            .iter()
+            .filter(|detail| detail.status == "ok")
+            .filter_map(|detail| detail.file.clone())
+            .collect();
+        for gallery_id in &baseline_galleries {
+            let _ = adopt_local_changes(&state.store, gallery_id, &rated_files).await;
+        }
+    }
 
     let has_favorites = favorites.is_some();
     if let (Some(gallery_id), Some(favorites)) = (gallery_for_marks.clone(), favorites) {
