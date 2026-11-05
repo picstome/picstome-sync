@@ -1,0 +1,6 @@
+# The development container is limited to 3 GiB of RAM. Cargo sees four CPUs,
+# but even two concurrent rustc/link processes can hit the cgroup limit (the
+# peak already reached 3 GiB and triggered the OOM killer). One job is slower
+# but reliable here; override with CARGO_BUILD_JOBS=4 on a larger machine.
+[build]
+jobs = 1

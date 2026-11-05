@@ -144,6 +144,12 @@ xvfb-run -a python3 scripts/e2e.py
 CI runs the same tests on pull requests and manual dispatches only. Pushing to
 `main` does not build installers or create releases automatically.
 
+> **Constrained machines:** the development container is limited to 3 GiB of
+> RAM. `.cargo/config.toml` caps Cargo at one local job, and dev/test builds
+> keep line tables instead of full debug info. For quick checks use
+> `cargo test -p picstome-sync-core`; the full workspace and E2E also build
+> Tauri. Override with `CARGO_BUILD_JOBS=4` on a larger machine.
+
 To build test installers, open **GitHub → Actions → build → Run workflow**.
 This builds Linux, macOS, and Windows on GitHub and can optionally update the
 draft release:

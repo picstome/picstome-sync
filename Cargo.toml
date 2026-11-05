@@ -2,8 +2,19 @@
 resolver = "2"
 members = ["crates/picstome-sync-core", "src-tauri"]
 
+[profile.dev]
+# Full debug info made the Tauri static library ~900 MB and target/debug
+# outgrow the container. Line tables keep useful backtraces at a fraction of
+# the size and link-memory cost.
+debug = 1
+incremental = false
+
+[profile.test]
+debug = 1
+incremental = false
+
 [workspace.package]
-version = "0.1.38"
+version = "0.1.39"
 edition = "2021"
 license = "MIT"
 authors = ["Picstome"]
