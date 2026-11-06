@@ -518,6 +518,53 @@ fn trash_local_file(
     }
 }
 
+/// Move a group of files to the system trash in one operation when possible.
+/// The `trash` crate exposes a batch API; using it avoids one Finder sound per
+/// file on macOS. If the batch fails, fall back to per-file handling so a single
+/// problematic path does not block the rest.
+fn trash_targets(
+    gallery: &GalleryEntry,
+    targets: &[(String, String, PathBuf)],
+) -> (Vec<TrashedFile>, Vec<(usize, String)>) {
+    if targets.is_empty() {
+        return (Vec::new(), Vec::new());
+    }
+    let paths: Vec<&Path> = targets.iter().map(|(_, _, path)| path.as_path()).collect();
+    if trash::delete_all(&paths).is_ok() {
+        let items = targets
+            .iter()
+            .map(|(id, filename, path)| TrashedFile {
+                id: id.clone(),
+                filename: filename.clone(),
+                original_path: path.display().to_string(),
+                location: "system".into(),
+                trash_path: None,
+            })
+            .collect();
+        return (items, Vec::new());
+    }
+
+    let mut trashed = Vec::new();
+    let mut errors = Vec::new();
+    for (index, (id, filename, path)) in targets.iter().enumerate() {
+        if !path.exists() {
+            trashed.push(TrashedFile {
+                id: id.clone(),
+                filename: filename.clone(),
+                original_path: path.display().to_string(),
+                location: "system".into(),
+                trash_path: None,
+            });
+            continue;
+        }
+        match trash_local_file(gallery, id, filename, path) {
+            Ok(item) => trashed.push(item),
+            Err(error) => errors.push((index, error)),
+        }
+    }
+    (trashed, errors)
+}
+
 pub fn mark_favorites_rated(
     store: &Store,
     gallery_id: &str,
@@ -626,6 +673,90 @@ pub async fn resolve_remote_deletions(
     let mut trashed = Vec::new();
     let mut errors = Vec::new();
 
+    if action == RemoteDeleteAction::DeleteLocal {
+        let mut targets = Vec::new();
+        let mut target_ids = Vec::new();
+        let mut target_names = Vec::new();
+        for id in ids {
+            let Some(index) = snapshot
+                .files
+                .iter()
+                .position(|file| &file.id == id && file.remote_deleted)
+            else {
+                errors.push(SyncErrorItem {
+                    phase: "remote_delete".into(),
+                    filename: None,
+                    path: None,
+                    message: "Photo is not pending remote deletion".into(),
+                });
+                continue;
+            };
+            if let Some(path) = local_path_for(gallery, &snapshot.files[index]) {
+                targets.push((id.clone(), snapshot.files[index].filename.clone(), path));
+                target_ids.push(id.clone());
+                target_names.push(snapshot.files[index].filename.clone());
+            } else {
+                resolved.push(id.clone());
+            }
+        }
+
+        let mut failed = HashSet::new();
+        if !targets.is_empty() {
+            let gallery_for_trash = gallery.clone();
+            match tokio::task::spawn_blocking(move || trash_targets(&gallery_for_trash, &targets))
+                .await
+            {
+                Ok((items, failures)) => {
+                    trashed.extend(items);
+                    for (index, message) in failures {
+                        failed.insert(index);
+                        errors.push(SyncErrorItem {
+                            phase: "remote_delete".into(),
+                            filename: Some(target_names[index].clone()),
+                            path: None,
+                            message,
+                        });
+                    }
+                }
+                Err(error) => {
+                    for name in &target_names {
+                        errors.push(SyncErrorItem {
+                            phase: "remote_delete".into(),
+                            filename: Some(name.clone()),
+                            path: None,
+                            message: error.to_string(),
+                        });
+                    }
+                    failed.extend(0..target_ids.len());
+                }
+            }
+        }
+        for (index, id) in target_ids.iter().enumerate() {
+            if !failed.contains(&index) {
+                resolved.push(id.clone());
+            }
+        }
+
+        let resolved_set: HashSet<&String> = resolved.iter().collect();
+        snapshot
+            .files
+            .retain(|file| !resolved_set.contains(&file.id));
+        let (local, _) =
+            scan_local_photos(Path::new(&gallery.local_path), 8, true, MAX_PHOTO_BYTES);
+        snapshot.local_photo_count = local.len() as u64;
+        snapshot.local_bytes = local.iter().map(|file| file.size).sum();
+        snapshot.last_sync_at = now;
+        store.save_snapshot(&snapshot)?;
+        store.patch_gallery(&gallery.gallery_id, |entry| {
+            entry.last_sync_at = Some(now);
+        })?;
+        return Ok(RemoteDeleteResolution {
+            resolved,
+            trashed,
+            errors,
+        });
+    }
+
     for id in ids {
         let Some(index) = snapshot
             .files
@@ -643,38 +774,7 @@ pub async fn resolve_remote_deletions(
 
         match action {
             RemoteDeleteAction::DeleteLocal => {
-                if let Some(path) = local_path_for(gallery, &snapshot.files[index]) {
-                    let gallery = gallery.clone();
-                    let id = id.clone();
-                    let filename = snapshot.files[index].filename.clone();
-                    let path_for_error = path.display().to_string();
-                    let result = tokio::task::spawn_blocking(move || {
-                        trash_local_file(&gallery, &id, &filename, &path)
-                    })
-                    .await;
-                    match result {
-                        Ok(Ok(item)) => trashed.push(item),
-                        Ok(Err(err)) => {
-                            errors.push(SyncErrorItem {
-                                phase: "remote_delete".into(),
-                                filename: Some(snapshot.files[index].filename.clone()),
-                                path: Some(path_for_error),
-                                message: err,
-                            });
-                            continue;
-                        }
-                        Err(err) => {
-                            errors.push(SyncErrorItem {
-                                phase: "remote_delete".into(),
-                                filename: Some(snapshot.files[index].filename.clone()),
-                                path: Some(path_for_error),
-                                message: err.to_string(),
-                            });
-                            continue;
-                        }
-                    }
-                }
-                resolved.push(id.clone());
+                unreachable!("DeleteLocal is handled before the per-photo loop")
             }
             RemoteDeleteAction::KeepLocal => {
                 snapshot.files[index].keep_local = true;
@@ -727,17 +827,6 @@ pub async fn resolve_remote_deletions(
                 }
             }
         }
-    }
-
-    if action == RemoteDeleteAction::DeleteLocal {
-        let resolved_set: std::collections::HashSet<&String> = resolved.iter().collect();
-        snapshot
-            .files
-            .retain(|file| !resolved_set.contains(&file.id));
-        let (local, _) =
-            scan_local_photos(Path::new(&gallery.local_path), 8, true, MAX_PHOTO_BYTES);
-        snapshot.local_photo_count = local.len() as u64;
-        snapshot.local_bytes = local.iter().map(|file| file.size).sum();
     }
 
     snapshot.last_sync_at = now;
@@ -913,45 +1002,53 @@ pub async fn run_gallery_sync(
     let mut trashed_local = Vec::new();
     let mut failed_trash = Vec::new();
     let mut trash_error_items = Vec::new();
+    let mut targets = Vec::new();
+    let mut target_items = Vec::new();
     for item in trash_items {
         let Some(path) = safe_join(Path::new(&gallery.local_path), &item.relative_path) else {
             trash_error_items.push(SyncErrorItem {
                 phase: "trash".into(),
-                filename: Some(item.filename),
-                path: Some(item.relative_path),
+                filename: Some(item.filename.clone()),
+                path: Some(item.relative_path.clone()),
                 message: "unsafe path in first-sync selection".into(),
             });
+            failed_trash.push(item);
             continue;
         };
         if !path.is_file() {
             continue;
         }
+        targets.push(("".to_string(), item.filename.clone(), path));
+        target_items.push(item);
+    }
+    if !targets.is_empty() {
         let gallery_for_trash = gallery.clone();
-        let filename = item.filename.clone();
-        let path_for_error = path.display().to_string();
-        let result = tokio::task::spawn_blocking(move || {
-            trash_local_file(&gallery_for_trash, "", &filename, &path)
-        })
-        .await;
+        let result =
+            tokio::task::spawn_blocking(move || trash_targets(&gallery_for_trash, &targets)).await;
         match result {
-            Ok(Ok(trashed)) => trashed_local.push(trashed),
-            Ok(Err(error)) => {
-                failed_trash.push(item.clone());
-                trash_error_items.push(SyncErrorItem {
-                    phase: "trash".into(),
-                    filename: Some(item.filename),
-                    path: Some(path_for_error),
-                    message: error,
-                });
+            Ok((items, failures)) => {
+                trashed_local.extend(items);
+                for (index, message) in failures {
+                    let item = &target_items[index];
+                    failed_trash.push(item.clone());
+                    trash_error_items.push(SyncErrorItem {
+                        phase: "trash".into(),
+                        filename: Some(item.filename.clone()),
+                        path: Some(item.relative_path.clone()),
+                        message,
+                    });
+                }
             }
             Err(error) => {
-                failed_trash.push(item.clone());
-                trash_error_items.push(SyncErrorItem {
-                    phase: "trash".into(),
-                    filename: Some(item.filename),
-                    path: Some(path_for_error),
-                    message: error.to_string(),
-                });
+                for item in &target_items {
+                    failed_trash.push(item.clone());
+                    trash_error_items.push(SyncErrorItem {
+                        phase: "trash".into(),
+                        filename: Some(item.filename.clone()),
+                        path: Some(item.relative_path.clone()),
+                        message: error.to_string(),
+                    });
+                }
             }
         }
     }
