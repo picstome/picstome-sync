@@ -833,12 +833,16 @@ pub async fn preview_first_sync(
         match (local_groups.get(key), remote_groups.get(key)) {
             (Some(_), Some(_)) => in_sync += 1,
             (Some(local), None) => {
-                if let Some(preferred) = preferred_file(local, |file| file.filename.as_str()) {
+                // A logical photo may have several local representations
+                // (for example JPG + RAW). Treat all of them together so
+                // trashing or ignoring one does not promote the other into
+                // the upload list.
+                for file in local {
                     local_only.push(FirstSyncItem {
-                        filename: preferred.filename.clone(),
-                        relative_path: preferred.relative_path.clone(),
-                        size: preferred.size,
-                        mtime_ms: preferred.mtime_ms,
+                        filename: file.filename.clone(),
+                        relative_path: file.relative_path.clone(),
+                        size: file.size,
+                        mtime_ms: file.mtime_ms,
                         id: None,
                         version_count: None,
                     });

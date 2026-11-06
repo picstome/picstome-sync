@@ -787,3 +787,44 @@ async fn first_sync_can_trash_local_only_files() {
     assert_eq!(api.manifest("G123").await.unwrap().photos.len(), 50);
     mock.close().await;
 }
+
+#[tokio::test]
+async fn first_sync_trashes_every_local_representation() {
+    let (mock, api, _dir, store, gallery) = setup_sync().await;
+    let root = std::path::Path::new(&gallery.local_path);
+    let jpg = root.join("PAIR.JPG");
+    let dng = root.join("PAIR.DNG");
+    std::fs::write(&jpg, jpeg_bytes(640, 5)).unwrap();
+    let mut dng_bytes = b"II*\0".to_vec();
+    dng_bytes.resize(640, 0);
+    std::fs::write(&dng, &dng_bytes).unwrap();
+
+    let preview = preview_first_sync(&api, &store, &gallery).await.unwrap();
+    let names: Vec<&str> = preview
+        .local_only
+        .iter()
+        .map(|item| item.filename.as_str())
+        .collect();
+    assert!(names.contains(&"PAIR.JPG"), "{names:?}");
+    assert!(names.contains(&"PAIR.DNG"), "{names:?}");
+
+    let report = run_gallery_sync(
+        &api,
+        &store,
+        &gallery,
+        SyncOptions {
+            trash_local: preview.local_only,
+            ..Default::default()
+        },
+        silence(),
+    )
+    .await
+    .unwrap();
+
+    assert!(!jpg.exists(), "JPG should be trashed");
+    assert!(!dng.exists(), "RAW should be trashed too");
+    assert!(report.uploaded.is_empty(), "{:?}", report.uploaded);
+    assert_eq!(report.trashed_local.len(), 2);
+    assert_eq!(api.manifest("G123").await.unwrap().photos.len(), 50);
+    mock.close().await;
+}
