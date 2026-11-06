@@ -356,6 +356,17 @@ pub struct FavoritePhoto {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub struct TrashedFile {
+    pub id: String,
+    pub filename: String,
+    pub original_path: String,
+    pub location: String,
+    #[serde(default)]
+    pub trash_path: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct SyncReport {
     pub gallery_id: String,
     pub name: String,
@@ -372,6 +383,12 @@ pub struct SyncReport {
     pub errors: Vec<SyncErrorItem>,
     #[serde(default)]
     pub warnings: Vec<SyncWarningItem>,
+    #[serde(default)]
+    pub ignored_local: Vec<String>,
+    #[serde(default)]
+    pub ignored_remote: Vec<String>,
+    #[serde(default)]
+    pub trashed_local: Vec<TrashedFile>,
     pub skipped: bool,
 }
 

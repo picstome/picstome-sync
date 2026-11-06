@@ -74,6 +74,13 @@ const state = {
         danger: true,
         resolve: null,
     },
+    firstSync: {
+        open: false,
+        preview: null,
+        localAction: "upload",
+        download: true,
+        resolve: null,
+    },
 };
 
 const els = {
@@ -140,6 +147,9 @@ const els = {
     reportErrors: document.getElementById("reportErrors"),
     reportWarnings: document.getElementById("reportWarnings"),
     reportFiles: document.getElementById("reportFiles"),
+    reportIgnored: document.getElementById("reportIgnored"),
+    reportIgnoredText: document.getElementById("reportIgnoredText"),
+    btnIncludeIgnored: document.getElementById("btnIncludeIgnored"),
     syncLog: document.getElementById("syncLog"),
     syncLogTitle: document.getElementById("syncLogTitle"),
     syncLogCount: document.getElementById("syncLogCount"),
@@ -189,6 +199,28 @@ const els = {
     favoritesTabButtons: Array.from(
         document.querySelectorAll("#favoritesTabs .favorites-tab"),
     ),
+
+    firstSyncModal: document.getElementById("firstSyncModal"),
+    firstSyncTitle: document.getElementById("firstSyncTitle"),
+    firstSyncHint: document.getElementById("firstSyncHint"),
+    firstSyncUploadSection: document.getElementById("firstSyncUploadSection"),
+    firstSyncUploadLabel: document.getElementById("firstSyncUploadLabel"),
+    firstSyncUploadHint: document.getElementById("firstSyncUploadHint"),
+    firstSyncUploadList: document.getElementById("firstSyncUploadList"),
+    firstSyncLocalUpload: document.getElementById("firstSyncLocalUpload"),
+    firstSyncLocalKeep: document.getElementById("firstSyncLocalKeep"),
+    firstSyncLocalTrash: document.getElementById("firstSyncLocalTrash"),
+    firstSyncLocalUploadLabel: document.getElementById("firstSyncLocalUploadLabel"),
+    firstSyncLocalKeepLabel: document.getElementById("firstSyncLocalKeepLabel"),
+    firstSyncLocalTrashLabel: document.getElementById("firstSyncLocalTrashLabel"),
+    firstSyncDownloadSection: document.getElementById("firstSyncDownloadSection"),
+    firstSyncDownload: document.getElementById("firstSyncDownload"),
+    firstSyncDownloadLabel: document.getElementById("firstSyncDownloadLabel"),
+    firstSyncDownloadHint: document.getElementById("firstSyncDownloadHint"),
+    firstSyncDownloadList: document.getElementById("firstSyncDownloadList"),
+    btnFirstSyncClose: document.getElementById("btnFirstSyncClose"),
+    btnFirstSyncConfirm: document.getElementById("btnFirstSyncConfirm"),
+    btnFirstSyncCancel: document.getElementById("btnFirstSyncCancel"),
 
     remoteDeletedModal: document.getElementById("remoteDeletedModal"),
     remoteDeletedTitle: document.getElementById("remoteDeletedTitle"),
@@ -1027,6 +1059,9 @@ function renderReport() {
 
     els.reportFiles.replaceChildren();
     const fileLines = [];
+    for (const item of report.trashedLocal || []) {
+        fileLines.push(`${s.deletionLocalDelete}: ${item.filename}`);
+    }
     for (const item of report.uploaded || []) {
         const version = item.version_number ? ` (v${item.version_number})` : "";
         const reason =
@@ -1048,6 +1083,23 @@ function renderReport() {
             line.textContent = text;
             els.reportFiles.appendChild(line);
         }
+    }
+
+    const ignoredLocal = report.ignoredLocal || [];
+    const ignoredRemote = report.ignoredRemote || [];
+    if (ignoredLocal.length === 0 && ignoredRemote.length === 0) {
+        hide(els.reportIgnored);
+    } else {
+        show(els.reportIgnored);
+        const parts = [];
+        if (ignoredLocal.length > 0) {
+            parts.push(fmt(s.ignoredLocal, { n: ignoredLocal.length }));
+        }
+        if (ignoredRemote.length > 0) {
+            parts.push(fmt(s.ignoredRemote, { n: ignoredRemote.length }));
+        }
+        els.reportIgnoredText.textContent = parts.join(" · ");
+        els.btnIncludeIgnored.textContent = s.includeIgnored;
     }
 
     const proposals = report.proposals?.deleteRemote || [];
@@ -1291,6 +1343,21 @@ function renderLog() {
             line.textContent = `${s.downloadedFiles}: ${filename}`;
             body.appendChild(line);
         }
+        for (const filename of entry.ignoredLocal || []) {
+            const line = document.createElement("div");
+            line.textContent = `${s.ignoredLocalFiles}: ${filename}`;
+            body.appendChild(line);
+        }
+        for (const filename of entry.ignoredRemote || []) {
+            const line = document.createElement("div");
+            line.textContent = `${s.ignoredRemoteFiles}: ${filename}`;
+            body.appendChild(line);
+        }
+        for (const item of entry.trashedLocal || []) {
+            const line = document.createElement("div");
+            line.textContent = `${s.deletionLocalDelete}: ${item.filename}`;
+            body.appendChild(line);
+        }
         for (const item of entry.localDeletedProposed || []) {
             const line = document.createElement("div");
             line.textContent = `${s.localDeletionProposed}: ${item.filename}`;
@@ -1430,6 +1497,106 @@ function handlePostSync(report) {
     openFavoritesPrompt(report);
 }
 
+function fillFirstSyncList(container, items, s) {
+    container.replaceChildren();
+    const visible = items.slice(0, 8);
+    for (const item of visible) {
+        const line = document.createElement("div");
+        line.textContent = item.filename;
+        container.appendChild(line);
+    }
+    if (items.length > visible.length) {
+        const line = document.createElement("div");
+        line.textContent = fmt(s.firstSyncMore, {
+            n: items.length - visible.length,
+        });
+        container.appendChild(line);
+    }
+}
+
+function renderFirstSync() {
+    const s = state.strings;
+    if (!s) return;
+    const modal = state.firstSync;
+    if (!modal.open || !modal.preview) {
+        hide(els.firstSyncModal);
+        return;
+    }
+    const preview = modal.preview;
+    show(els.firstSyncModal);
+    els.firstSyncTitle.textContent = s.firstSyncTitle;
+    els.firstSyncHint.textContent = s.firstSyncHint;
+    const hasUpload = (preview.localOnly || []).length > 0;
+    const hasDownload = (preview.remoteOnly || []).length > 0;
+    els.firstSyncUploadSection.classList.toggle("hidden", !hasUpload);
+    els.firstSyncDownloadSection.classList.toggle("hidden", !hasDownload);
+    els.firstSyncLocalUpload.checked = modal.localAction === "upload";
+    els.firstSyncLocalKeep.checked = modal.localAction === "keep";
+    els.firstSyncLocalTrash.checked = modal.localAction === "trash";
+    els.firstSyncDownload.checked = modal.download;
+    els.firstSyncUploadLabel.textContent = fmt(s.firstSyncUpload, {
+        n: (preview.localOnly || []).length,
+    });
+    els.firstSyncUploadHint.textContent = s.firstSyncUploadHint;
+    els.firstSyncLocalUploadLabel.textContent = s.firstSyncLocalUpload;
+    els.firstSyncLocalKeepLabel.textContent = s.firstSyncLocalKeep;
+    els.firstSyncLocalTrashLabel.textContent = s.firstSyncLocalTrash;
+    els.firstSyncDownloadLabel.textContent = fmt(s.firstSyncDownload, {
+        n: (preview.remoteOnly || []).length,
+    });
+    els.firstSyncDownloadHint.textContent = s.firstSyncDownloadHint;
+    fillFirstSyncList(els.firstSyncUploadList, preview.localOnly || [], s);
+    fillFirstSyncList(els.firstSyncDownloadList, preview.remoteOnly || [], s);
+    const trashAction = hasUpload && modal.localAction === "trash";
+    els.btnFirstSyncConfirm.textContent = trashAction
+        ? s.firstSyncConfirmTrash
+        : s.firstSyncConfirm;
+    els.btnFirstSyncConfirm.className = trashAction ? "danger" : "primary";
+    els.btnFirstSyncCancel.textContent = s.cancel;
+    els.btnFirstSyncClose.textContent = s.close;
+}
+
+function settleFirstSync(confirmed) {
+    const modal = state.firstSync;
+    const resolve = modal.resolve;
+    const preview = modal.preview;
+    const localAction = modal.localAction;
+    const download = modal.download;
+    state.firstSync = {
+        open: false,
+        preview: null,
+        localAction: "upload",
+        download: true,
+        resolve: null,
+    };
+    renderFirstSync();
+    if (!resolve) return;
+    if (!confirmed || !preview) {
+        resolve(null);
+        return;
+    }
+    const localOnly = preview.localOnly || [];
+    resolve({
+        ignoreLocal: localAction === "keep" ? localOnly : [],
+        trashLocal: localAction === "trash" ? localOnly : [],
+        ignoreRemote: download ? [] : (preview.remoteOnly || []),
+    });
+}
+
+function askFirstSync(preview) {
+    if (state.firstSync.resolve) settleFirstSync(false);
+    return new Promise((resolve) => {
+        state.firstSync = {
+            open: true,
+            preview,
+            localAction: "upload",
+            download: true,
+            resolve,
+        };
+        renderFirstSync();
+    });
+}
+
 function renderConfirm() {
     const modal = state.confirm;
     if (!modal.open) {
@@ -1483,6 +1650,7 @@ function renderAll() {
     renderReport();
     renderRating();
     renderFavorites();
+    renderFirstSync();
     renderRemoteDeleted();
     renderConfirm();
     renderLog();
@@ -1719,12 +1887,11 @@ async function handleUnknownGallery(gallery) {
     renderAll();
 }
 
-async function syncCurrent() {
-    const gallery = currentGallery();
-    if (!gallery || state.syncBusy) return;
+async function runSync(galleryId, name, choice = null) {
+    if (state.syncBusy) return;
     state.syncTarget = {
-        galleryId: gallery.galleryId,
-        name: gallery.name,
+        galleryId,
+        name: name || "Gallery",
     };
     state.syncBusy = true;
     state.progress = { phase: "manifest", done: 0, total: 1 };
@@ -1732,12 +1899,18 @@ async function syncCurrent() {
     renderAll();
     let missing = false;
     try {
-        const report = await invoke("sync_gallery", { galleryId: gallery.galleryId });
+        const args = { galleryId };
+        if (choice) {
+            args.ignoreLocal = choice.ignoreLocal || [];
+            args.ignoreRemote = choice.ignoreRemote || [];
+            args.trashLocal = choice.trashLocal || [];
+        }
+        const report = await invoke("sync_gallery", args);
         state.report = report;
     } catch (err) {
         if (isUnknownGalleryError(err)) {
             missing = true;
-            await handleUnknownGallery(gallery);
+            await handleUnknownGallery({ galleryId, name: name || galleryId });
         } else {
             state.report = syncErrorReport(err);
         }
@@ -1753,30 +1926,75 @@ async function syncCurrent() {
     }
 }
 
-async function startSync(galleryId, name) {
-    if (state.syncBusy) return;
+async function syncCurrent() {
+    const gallery = currentGallery();
+    if (!gallery || state.syncBusy) return;
+
     state.syncTarget = {
-        galleryId,
-        name: name || "Gallery",
+        galleryId: gallery.galleryId,
+        name: gallery.name,
     };
     state.syncBusy = true;
     state.progress = { phase: "manifest", done: 0, total: 1 };
     state.report = null;
     renderAll();
+
+    let preview = null;
+    try {
+        preview = await invoke("preview_first_sync", {
+            galleryId: gallery.galleryId,
+        });
+    } catch (err) {
+        state.syncBusy = false;
+        state.syncTarget = null;
+        state.progress = null;
+        if (isUnknownGalleryError(err)) {
+            await handleUnknownGallery(gallery);
+        } else {
+            state.report = syncErrorReport(err);
+            renderAll();
+        }
+        return;
+    }
+
+    state.syncBusy = false;
+    state.syncTarget = null;
+    state.progress = null;
+    renderAll();
+
+    let choice = null;
+    if (preview?.needed) {
+        choice = await askFirstSync(preview);
+        if (!choice) return;
+    }
+    await runSync(gallery.galleryId, gallery.name, choice);
+}
+
+async function startSync(galleryId, name) {
+    if (state.syncBusy) return;
+    const label = name || "Gallery";
+    state.syncTarget = { galleryId, name: label };
+    state.syncBusy = true;
+    state.progress = { phase: "manifest", done: 0, total: 1 };
+    state.report = null;
+    renderAll();
+
+    let preview = null;
+    let report = null;
+    let canceled = false;
     let missing = false;
     try {
         const result = await invoke("start_sync", { galleryId, name });
-        if (result?.report) {
-            state.currentGalleryId = result.report.galleryId;
-            state.report = result.report;
+        canceled = Boolean(result?.canceled);
+        preview = result?.preview || null;
+        report = result?.report || null;
+        if (!canceled) {
+            state.currentGalleryId = report?.galleryId || galleryId;
         }
     } catch (err) {
         if (isUnknownGalleryError(err)) {
             missing = true;
-            await handleUnknownGallery({
-                galleryId,
-                name: name || galleryId,
-            });
+            await handleUnknownGallery({ galleryId, name: label });
         } else {
             state.report = syncErrorReport(err);
         }
@@ -1784,11 +2002,19 @@ async function startSync(galleryId, name) {
         state.syncBusy = false;
         state.syncTarget = null;
         state.progress = null;
-        if (!missing) {
+        if (report) state.report = report;
+        if (!missing && !canceled) {
             await refreshState();
         }
         renderAll();
-        if (!missing) handlePostSync(state.report);
+    }
+
+    if (missing || canceled) return;
+    if (preview?.needed) {
+        const choice = await askFirstSync(preview);
+        if (choice) await runSync(galleryId, label, choice);
+    } else if (report) {
+        handlePostSync(report);
     }
 }
 
@@ -2216,6 +2442,55 @@ els.btnRemoteKeepLocal.addEventListener("click", () =>
 els.btnRemoteUploadAgain.addEventListener("click", () =>
     resolveRemoteDeleted("upload"),
 );
+for (const radio of [
+    els.firstSyncLocalUpload,
+    els.firstSyncLocalKeep,
+    els.firstSyncLocalTrash,
+]) {
+    radio.addEventListener("change", () => {
+        if (radio.checked) {
+            state.firstSync.localAction = radio.value;
+            renderFirstSync();
+        }
+    });
+}
+
+els.firstSyncDownload.addEventListener("change", () => {
+    state.firstSync.download = els.firstSyncDownload.checked;
+});
+
+els.btnFirstSyncConfirm.addEventListener("click", () => settleFirstSync(true));
+els.btnFirstSyncCancel.addEventListener("click", () => settleFirstSync(false));
+els.btnFirstSyncClose.addEventListener("click", () => settleFirstSync(false));
+els.firstSyncModal.addEventListener("click", (event) => {
+    if (event.target === els.firstSyncModal) settleFirstSync(false);
+});
+
+els.btnIncludeIgnored.addEventListener("click", async () => {
+    if (!state.currentGalleryId) return;
+    const s = state.strings;
+    const local = state.report?.ignoredLocal?.length || 0;
+    const remote = state.report?.ignoredRemote?.length || 0;
+    if (local === 0 && remote === 0) return;
+    const confirmed = await askConfirm({
+        title: s.includeIgnoredTitle,
+        message: fmt(s.includeIgnoredMessage, { local, remote }),
+        confirmLabel: s.includeIgnoredAction,
+        danger: false,
+    });
+    if (!confirmed) return;
+    try {
+        await invoke("clear_sync_ignores", {
+            galleryId: state.currentGalleryId,
+        });
+    } catch (err) {
+        state.report = syncErrorReport(err);
+        renderAll();
+        return;
+    }
+    await syncCurrent();
+});
+
 els.btnRemoteClose.addEventListener("click", () => {
     state.remoteDeleted.open = false;
     state.remoteDeleted.pendingFavorites = null;

@@ -197,6 +197,16 @@
                         <div class="report-errors" id="reportErrors"></div>
                         <div class="report-warnings" id="reportWarnings"></div>
                         <div class="report-files" id="reportFiles"></div>
+                        <div class="report-ignored hidden" id="reportIgnored">
+                            <span id="reportIgnoredText"></span>
+                            <button
+                                type="button"
+                                class="secondary small"
+                                id="btnIncludeIgnored"
+                            >
+                                Include ignored again
+                            </button>
+                        </div>
 
                         <div class="delete-box hidden" id="deleteBox">
                             <div class="delete-title" id="deleteTitle"></div>
@@ -380,6 +390,82 @@
                     class="rating-result hidden"
                     id="remoteDeletedResult"
                 ></div>
+            </div>
+        </div>
+
+        <div class="modal-backdrop hidden" id="firstSyncModal">
+            <div class="modal first-sync-modal" role="dialog" aria-modal="true">
+                <div class="modal-head">
+                    <h2 id="firstSyncTitle">First sync</h2>
+                    <button
+                        type="button"
+                        class="ghost small"
+                        id="btnFirstSyncClose"
+                    >
+                        Close
+                    </button>
+                </div>
+                <p class="hint" id="firstSyncHint"></p>
+
+                <div class="first-sync-section" id="firstSyncUploadSection">
+                    <div class="first-sync-choice-title" id="firstSyncUploadLabel"></div>
+                    <label class="first-sync-option">
+                        <input
+                            type="radio"
+                            name="firstSyncLocal"
+                            id="firstSyncLocalUpload"
+                            value="upload"
+                            checked
+                        />
+                        <span id="firstSyncLocalUploadLabel"></span>
+                    </label>
+                    <label class="first-sync-option">
+                        <input
+                            type="radio"
+                            name="firstSyncLocal"
+                            id="firstSyncLocalKeep"
+                            value="keep"
+                        />
+                        <span id="firstSyncLocalKeepLabel"></span>
+                    </label>
+                    <label class="first-sync-option">
+                        <input
+                            type="radio"
+                            name="firstSyncLocal"
+                            id="firstSyncLocalTrash"
+                            value="trash"
+                        />
+                        <span id="firstSyncLocalTrashLabel"></span>
+                    </label>
+                    <p class="hint" id="firstSyncUploadHint"></p>
+                    <div class="first-sync-list" id="firstSyncUploadList"></div>
+                </div>
+
+                <div class="first-sync-section" id="firstSyncDownloadSection">
+                    <label class="first-sync-choice">
+                        <input type="checkbox" id="firstSyncDownload" checked />
+                        <span id="firstSyncDownloadLabel"></span>
+                    </label>
+                    <p class="hint" id="firstSyncDownloadHint"></p>
+                    <div class="first-sync-list" id="firstSyncDownloadList"></div>
+                </div>
+
+                <div class="btn-row">
+                    <button
+                        type="button"
+                        class="primary"
+                        id="btnFirstSyncConfirm"
+                    >
+                        Sync selected
+                    </button>
+                    <button
+                        type="button"
+                        class="ghost"
+                        id="btnFirstSyncCancel"
+                    >
+                        Cancel
+                    </button>
+                </div>
             </div>
         </div>
 

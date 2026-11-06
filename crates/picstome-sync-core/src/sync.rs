@@ -4,20 +4,22 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 
 use futures::StreamExt;
+use serde::{Deserialize, Serialize};
 
 use crate::api::ApiClient;
 use crate::config::Store;
 use crate::diff::compute_diff;
 use crate::error::{CoreError, CoreResult};
 use crate::identity::{identity_key, preference_rank, preferred_file};
+use crate::ignored::{GalleryIgnores, IgnoredLocal};
 use crate::localfiles::{
     folder_exists as path_is_dir, group_local_files, preferred_local_files, scan_and_hash,
-    scan_local_photos, MAX_PHOTO_BYTES,
+    scan_local_photos, RawLocalFile, MAX_PHOTO_BYTES,
 };
 use crate::model::{
     DeleteProposal, DeleteProposals, DeleteResponse, Diff, DownloadedItem, FavoritePhoto,
     GalleryEntry, Manifest, Photo, Progress, Snapshot, SnapshotFile, SyncErrorItem, SyncReport,
-    SyncWarningItem, UploadedItem, SNAPSHOT_SCHEMA,
+    SyncWarningItem, TrashedFile, UploadedItem, SNAPSHOT_SCHEMA,
 };
 use crate::sanitize::{is_inside, safe_join, sanitize_file_name};
 use crate::transfer::{download_file, DownloadOptions, ProgressFn};
@@ -31,6 +33,9 @@ pub struct SyncOptions {
     pub chunk_bytes: u64,
     pub parallel: usize,
     pub hash_concurrency: usize,
+    /// Local-only files the user chose to move to the trash during the first
+    /// sync preview. They are trashed before scanning so they are not uploaded.
+    pub trash_local: Vec<FirstSyncItem>,
 }
 
 impl Default for SyncOptions {
@@ -41,8 +46,35 @@ impl Default for SyncOptions {
             chunk_bytes: crate::transfer::DOWNLOAD_CHUNK_BYTES,
             parallel: crate::transfer::DOWNLOAD_PARALLEL,
             hash_concurrency: 4,
+            trash_local: Vec::new(),
         }
     }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FirstSyncItem {
+    pub filename: String,
+    pub relative_path: String,
+    pub size: u64,
+    pub mtime_ms: i64,
+    #[serde(default)]
+    pub id: Option<String>,
+    #[serde(default)]
+    pub version_count: Option<u64>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FirstSyncPreview {
+    pub needed: bool,
+    pub local_total: u64,
+    pub remote_total: u64,
+    pub in_sync: u64,
+    #[serde(default)]
+    pub local_only: Vec<FirstSyncItem>,
+    #[serde(default)]
+    pub remote_only: Vec<FirstSyncItem>,
 }
 
 fn now_millis() -> i64 {
@@ -418,17 +450,6 @@ fn local_path_for(gallery: &GalleryEntry, file: &SnapshotFile) -> Option<PathBuf
     safe_join(root, &file.filename).filter(|path| path.is_file())
 }
 
-#[derive(Debug, Clone, serde::Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct TrashedFile {
-    pub id: String,
-    pub filename: String,
-    pub original_path: String,
-    pub location: String,
-    #[serde(default)]
-    pub trash_path: Option<String>,
-}
-
 fn gallery_trash_destination(root: &Path, filename: &str) -> PathBuf {
     let dir = root.join(".picstome-trash");
     let stamp = now_millis();
@@ -770,11 +791,97 @@ fn duplicate_local_warnings(local_files: &[crate::model::LocalFile]) -> Vec<Sync
     warnings
 }
 
+pub async fn preview_first_sync(
+    api: &ApiClient,
+    store: &Store,
+    gallery: &GalleryEntry,
+) -> CoreResult<FirstSyncPreview> {
+    if store.load_snapshot(&gallery.gallery_id).is_some() {
+        return Ok(FirstSyncPreview::default());
+    }
+
+    let (records, _) = scan_local_photos(Path::new(&gallery.local_path), 8, true, MAX_PHOTO_BYTES);
+    if records.is_empty() {
+        return Ok(FirstSyncPreview {
+            local_total: 0,
+            remote_total: 0,
+            ..Default::default()
+        });
+    }
+
+    let manifest = api.manifest(&gallery.gallery_id).await?;
+
+    let mut local_groups: HashMap<String, Vec<&RawLocalFile>> = HashMap::new();
+    for record in &records {
+        if let Some(key) = identity_key(&record.filename) {
+            local_groups.entry(key).or_default().push(record);
+        }
+    }
+    let mut remote_groups: HashMap<String, Vec<&Photo>> = HashMap::new();
+    for photo in &manifest.photos {
+        if let Some(key) = photo.identity() {
+            remote_groups.entry(key).or_default().push(photo);
+        }
+    }
+
+    let mut local_only = Vec::new();
+    let mut remote_only = Vec::new();
+    let mut in_sync = 0u64;
+    let keys: HashSet<&String> = local_groups.keys().chain(remote_groups.keys()).collect();
+
+    for key in keys {
+        match (local_groups.get(key), remote_groups.get(key)) {
+            (Some(_), Some(_)) => in_sync += 1,
+            (Some(local), None) => {
+                if let Some(preferred) = preferred_file(local, |file| file.filename.as_str()) {
+                    local_only.push(FirstSyncItem {
+                        filename: preferred.filename.clone(),
+                        relative_path: preferred.relative_path.clone(),
+                        size: preferred.size,
+                        mtime_ms: preferred.mtime_ms,
+                        id: None,
+                        version_count: None,
+                    });
+                }
+            }
+            (None, Some(remote)) => {
+                if let Some(preferred) = preferred_file(remote, |photo| photo.filename.as_str()) {
+                    remote_only.push(FirstSyncItem {
+                        filename: preferred.filename.clone(),
+                        relative_path: preferred.filename.clone(),
+                        size: preferred.size.unwrap_or(0),
+                        mtime_ms: 0,
+                        id: Some(preferred.id.clone()),
+                        version_count: preferred.version_count,
+                    });
+                }
+            }
+            (None, None) => {}
+        }
+    }
+
+    local_only.sort_by(|a, b| a.relative_path.cmp(&b.relative_path));
+    remote_only.sort_by(|a, b| a.filename.cmp(&b.filename));
+
+    let needed = !manifest.photos.is_empty()
+        && !records.is_empty()
+        && (!local_only.is_empty() || !remote_only.is_empty());
+
+    Ok(FirstSyncPreview {
+        needed,
+        local_total: records.len() as u64,
+        remote_total: manifest.photos.len() as u64,
+        in_sync,
+        local_only,
+        remote_only,
+    })
+}
+
 pub async fn run_gallery_sync(
     api: &ApiClient,
     store: &Store,
     gallery: &GalleryEntry,
-    options: SyncOptions,
+    mut options: SyncOptions,
     progress: SyncProgressFn,
 ) -> CoreResult<SyncReport> {
     let now = now_millis();
@@ -798,6 +905,53 @@ pub async fn run_gallery_sync(
     let previous = store.load_snapshot(&gallery.gallery_id);
     let previous_files = previous.map(|snapshot| snapshot.files).unwrap_or_default();
 
+    let trash_items = std::mem::take(&mut options.trash_local);
+    let mut trashed_local = Vec::new();
+    let mut failed_trash = Vec::new();
+    let mut trash_error_items = Vec::new();
+    for item in trash_items {
+        let Some(path) = safe_join(Path::new(&gallery.local_path), &item.relative_path) else {
+            trash_error_items.push(SyncErrorItem {
+                phase: "trash".into(),
+                filename: Some(item.filename),
+                path: Some(item.relative_path),
+                message: "unsafe path in first-sync selection".into(),
+            });
+            continue;
+        };
+        if !path.is_file() {
+            continue;
+        }
+        let gallery_for_trash = gallery.clone();
+        let filename = item.filename.clone();
+        let path_for_error = path.display().to_string();
+        let result = tokio::task::spawn_blocking(move || {
+            trash_local_file(&gallery_for_trash, "", &filename, &path)
+        })
+        .await;
+        match result {
+            Ok(Ok(trashed)) => trashed_local.push(trashed),
+            Ok(Err(error)) => {
+                failed_trash.push(item.clone());
+                trash_error_items.push(SyncErrorItem {
+                    phase: "trash".into(),
+                    filename: Some(item.filename),
+                    path: Some(path_for_error),
+                    message: error,
+                });
+            }
+            Err(error) => {
+                failed_trash.push(item.clone());
+                trash_error_items.push(SyncErrorItem {
+                    phase: "trash".into(),
+                    filename: Some(item.filename),
+                    path: Some(path_for_error),
+                    message: error.to_string(),
+                });
+            }
+        }
+    }
+
     progress(Progress {
         gallery_id: gallery.gallery_id.clone(),
         phase: "scan".into(),
@@ -805,12 +959,49 @@ pub async fn run_gallery_sync(
         total: 1,
         ..Default::default()
     });
-    let (local_files, scan_errors) = scan_and_hash(
+    let (all_local_files, scan_errors) = scan_and_hash(
         Path::new(&gallery.local_path),
         &previous_files,
         options.hash_concurrency,
     )
     .await?;
+    let mut ignores = GalleryIgnores::load(Path::new(&gallery.local_path));
+    let released = ignores.release_cross_side(&all_local_files, &manifest.photos);
+    let mut retained = ignores.retain_current(&all_local_files, &manifest.photos);
+    for item in &failed_trash {
+        let entry = IgnoredLocal {
+            relative_path: item.relative_path.clone(),
+            size: item.size,
+            mtime_ms: item.mtime_ms,
+        };
+        if !ignores.local.contains(&entry) {
+            ignores.local.push(entry);
+            retained = true;
+        }
+    }
+    if released || retained {
+        let _ = ignores.save(Path::new(&gallery.local_path));
+    }
+    let ignored_local_files: Vec<&crate::model::LocalFile> = all_local_files
+        .iter()
+        .filter(|file| ignores.ignores_local(file))
+        .collect();
+    let ignored_remote_photos: Vec<&Photo> = manifest
+        .photos
+        .iter()
+        .filter(|photo| ignores.ignores_remote(photo))
+        .collect();
+    let local_files: Vec<crate::model::LocalFile> = all_local_files
+        .iter()
+        .filter(|file| !ignores.ignores_local(file))
+        .cloned()
+        .collect();
+    let active_photos: Vec<Photo> = manifest
+        .photos
+        .iter()
+        .filter(|photo| !ignores.ignores_remote(photo))
+        .cloned()
+        .collect();
     progress(Progress {
         gallery_id: gallery.gallery_id.clone(),
         phase: "scan".into(),
@@ -819,7 +1010,7 @@ pub async fn run_gallery_sync(
         ..Default::default()
     });
 
-    let diff = compute_diff(&previous_files, &manifest.photos, &local_files);
+    let diff = compute_diff(&previous_files, &active_photos, &local_files);
 
     let scan_error_items: Vec<SyncErrorItem> = scan_errors
         .into_iter()
@@ -831,6 +1022,8 @@ pub async fn run_gallery_sync(
         })
         .collect();
     let scan_had_errors = !scan_error_items.is_empty();
+    let mut report_errors = scan_error_items;
+    report_errors.extend(trash_error_items);
     let mut report = SyncReport {
         gallery_id: gallery.gallery_id.clone(),
         name: manifest.name.clone(),
@@ -849,8 +1042,17 @@ pub async fn run_gallery_sync(
             }
         },
         favorites: Vec::new(),
-        errors: scan_error_items,
+        errors: report_errors,
         warnings: duplicate_local_warnings(&local_files),
+        ignored_local: ignored_local_files
+            .iter()
+            .map(|file| file.filename.clone())
+            .collect(),
+        ignored_remote: ignored_remote_photos
+            .iter()
+            .map(|photo| photo.filename.clone())
+            .collect(),
+        trashed_local,
         skipped: false,
     };
     if scan_had_errors && diff.counts.local_deleted > 0 {
@@ -1035,8 +1237,7 @@ pub async fn run_gallery_sync(
         .iter()
         .filter_map(|file| file.identity().map(|key| (key, file)))
         .collect();
-    report.favorites = manifest
-        .photos
+    report.favorites = active_photos
         .iter()
         .filter(|photo| photo.favorited_at.is_some())
         .filter(|photo| {
@@ -1058,7 +1259,7 @@ pub async fn run_gallery_sync(
         })
         .collect();
 
-    let snapshot = build_snapshot(
+    let mut snapshot = build_snapshot(
         gallery,
         &manifest,
         &local_files,
@@ -1067,6 +1268,15 @@ pub async fn run_gallery_sync(
         &report.downloaded,
         &report.uploaded,
         now,
+    );
+    snapshot.local_photo_count = snapshot
+        .local_photo_count
+        .saturating_add(ignored_local_files.len() as u64);
+    snapshot.local_bytes = snapshot.local_bytes.saturating_add(
+        ignored_local_files
+            .iter()
+            .map(|file| file.size)
+            .sum::<u64>(),
     );
     store.save_snapshot(&snapshot)?;
 

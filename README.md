@@ -15,6 +15,12 @@ and star-rating workflow.
 ## What it does
 
 - Syncs one local folder with one Picstome gallery.
+- On the first sync of a folder that already contains photos, previews what
+  exists only on disk and what exists only in Picstome. You choose whether to
+  upload, download, keep each direction local, or move local-only files to the
+  trash. Nothing is deleted without choosing it. Skipped items are tracked in
+  `.picstome-ignore.json` and become sync candidates again if the file or the
+  remote version changes.
 - Downloads remote photos, uploads local photos, and updates changed files.
 - Detects local deletions and proposes deleting the remote copy.
 - Detects remote deletions and asks whether to trash the local copy, keep it,
@@ -45,6 +51,13 @@ and star-rating workflow.
   Remote changes are detected by `version_count`; local changes by the file
   hash, size, and modification time. This avoids treating a resized web copy as
   a conflict with the original local file.
+- **First sync:** without a snapshot the app cannot tell a new local photo from
+  one deleted remotely, so it shows a preview before transferring. Local-only
+  files can be uploaded, kept only on disk, or moved to the OS trash (with the
+  `.picstome-trash` folder as fallback). Choices for files kept on only one side
+  are stored in `.picstome-ignore.json` inside the gallery folder; changing the
+  file or receiving a new remote version makes it eligible again. Use **Include
+  ignored again** in the report to clear them.
 - **Downloads:** signed URLs with parallel range requests and resume support.
   Verification uses the manifest `download_hash` when available.
 - **Safety:** writes stay inside the linked folder, filenames are sanitized,

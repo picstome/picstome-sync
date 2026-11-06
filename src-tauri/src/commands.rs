@@ -12,16 +12,18 @@ use tauri_plugin_opener::OpenerExt;
 use picstome_sync_core::atomic::write_bytes;
 use picstome_sync_core::config::Store;
 use picstome_sync_core::error::ErrorPayload;
+use picstome_sync_core::ignored::{GalleryIgnores, IgnoredLocal, IgnoredRemote};
 use picstome_sync_core::mock::MockServer;
 use picstome_sync_core::model::{
     AppState as AppStateView, AuthState, ConfigView, DeleteResponse, FavoritePhoto, GalleryEntry,
     GalleryPage, GallerySummary, GalleryView, Progress, SyncReport, DEFAULT_API_BASE,
 };
-use picstome_sync_core::sanitize::{sanitize_file_names, sanitize_gallery_id};
+use picstome_sync_core::sanitize::{safe_join, sanitize_file_names, sanitize_gallery_id};
 use picstome_sync_core::sync::{
     adopt_local_changes, apply_remote_deletions, folder_exists, mark_favorites_rated,
-    resolve_remote_deletions as resolve_remote_deletions_core, run_gallery_sync,
-    RemoteDeleteAction, SyncOptions,
+    preview_first_sync as preview_first_sync_core,
+    resolve_remote_deletions as resolve_remote_deletions_core, run_gallery_sync, FirstSyncItem,
+    FirstSyncPreview, RemoteDeleteAction, SyncOptions,
 };
 use picstome_sync_core::ApiClient;
 
@@ -385,6 +387,13 @@ fn append_sync_log(store: &Store, report: &SyncReport) {
             "path": item.path,
             "message": item.message,
         })).collect::<Vec<_>>(),
+        "ignoredLocal": report.ignored_local,
+        "ignoredRemote": report.ignored_remote,
+        "trashedLocal": report.trashed_local.iter().map(|item| json!({
+            "filename": item.filename,
+            "location": item.location,
+            "trashPath": item.trash_path,
+        })).collect::<Vec<_>>(),
     });
     append_log_line(gallery_log_path(store, &report.gallery_id), entry);
 }
@@ -490,6 +499,7 @@ async fn sync_linked(
     app: &AppHandle,
     state: &AppState,
     gallery_id: &str,
+    options: SyncOptions,
 ) -> Result<SyncReport, ErrorPayload> {
     let Some(id) = sanitize_gallery_id(gallery_id) else {
         return Err(invalid_gallery());
@@ -508,7 +518,7 @@ async fn sync_linked(
         &api,
         &state.store,
         &gallery,
-        SyncOptions::default(),
+        options,
         progress_emitter(app.clone()),
     )
     .await
@@ -536,11 +546,16 @@ async fn patch_linked_folder(
     let Some(folder) = pick_folder(app).await else {
         return Ok(json!({"ok": false, "canceled": true}));
     };
+    let old_path = state.store.get_gallery(&id).map(|entry| entry.local_path);
     state.store.patch_gallery(&id, |entry| {
         entry.local_path = folder.clone();
     })?;
     if reset_snapshot {
         let _ = state.store.delete_snapshot(&id);
+        if let Some(old_path) = old_path {
+            let _ = GalleryIgnores::clear(Path::new(&old_path));
+        }
+        let _ = GalleryIgnores::clear(Path::new(&folder));
     }
     Ok(json!({"ok": true, "localPath": folder}))
 }
@@ -687,6 +702,8 @@ pub async fn get_gallery_favorites(
 pub struct StartSyncResult {
     pub canceled: bool,
     pub report: Option<SyncReport>,
+    #[serde(default)]
+    pub preview: Option<FirstSyncPreview>,
 }
 
 fn progress_emitter(app: AppHandle) -> Arc<dyn Fn(Progress) + Send + Sync> {
@@ -711,6 +728,7 @@ pub async fn start_sync(
             return Ok(StartSyncResult {
                 canceled: true,
                 report: None,
+                preview: None,
             });
         };
         let Some(_) = state.store.upsert_gallery(GalleryEntry {
@@ -726,10 +744,39 @@ pub async fn start_sync(
         };
     }
 
+    let Some(gallery) = state.store.get_gallery(&id) else {
+        return Err(invalid_gallery());
+    };
+    let api = state.api().await;
+    let preview = preview_first_sync_core(&api, &state.store, &gallery).await?;
+    if preview.needed {
+        return Ok(StartSyncResult {
+            canceled: false,
+            report: None,
+            preview: Some(preview),
+        });
+    }
+
     Ok(StartSyncResult {
         canceled: false,
-        report: Some(sync_linked(&app, &state, &id).await?),
+        report: Some(sync_linked(&app, &state, &id, SyncOptions::default()).await?),
+        preview: None,
     })
+}
+
+#[tauri::command]
+pub async fn preview_first_sync(
+    state: State<'_, AppState>,
+    gallery_id: String,
+) -> Result<FirstSyncPreview, ErrorPayload> {
+    let Some(id) = sanitize_gallery_id(&gallery_id) else {
+        return Err(invalid_gallery());
+    };
+    let Some(gallery) = state.store.get_gallery(&id) else {
+        return Err(not_linked());
+    };
+    let api = state.api().await;
+    Ok(preview_first_sync_core(&api, &state.store, &gallery).await?)
 }
 
 #[tauri::command]
@@ -737,8 +784,70 @@ pub async fn sync_gallery(
     app: AppHandle,
     state: State<'_, AppState>,
     gallery_id: String,
+    ignore_local: Option<Vec<FirstSyncItem>>,
+    ignore_remote: Option<Vec<FirstSyncItem>>,
+    trash_local: Option<Vec<FirstSyncItem>>,
 ) -> Result<SyncReport, ErrorPayload> {
-    sync_linked(&app, &state, &gallery_id).await
+    let Some(id) = sanitize_gallery_id(&gallery_id) else {
+        return Err(invalid_gallery());
+    };
+    if ignore_local.is_some() || ignore_remote.is_some() {
+        let Some(gallery) = state.store.get_gallery(&id) else {
+            return Err(not_linked());
+        };
+        let root = Path::new(&gallery.local_path);
+        let mut ignores = GalleryIgnores::load(root);
+        if let Some(items) = ignore_local {
+            for item in items {
+                if safe_join(root, &item.relative_path).is_none() {
+                    continue;
+                }
+                let entry = IgnoredLocal {
+                    relative_path: item.relative_path,
+                    size: item.size,
+                    mtime_ms: item.mtime_ms,
+                };
+                if !ignores.local.contains(&entry) {
+                    ignores.local.push(entry);
+                }
+            }
+        }
+        if let Some(items) = ignore_remote {
+            for item in items {
+                let Some(remote_id) = item.id else {
+                    continue;
+                };
+                let entry = IgnoredRemote {
+                    id: remote_id,
+                    version_count: item.version_count,
+                };
+                if !ignores.remote.contains(&entry) {
+                    ignores.remote.push(entry);
+                }
+            }
+        }
+        ignores.save(root)?;
+    }
+    let options = SyncOptions {
+        trash_local: trash_local.unwrap_or_default(),
+        ..Default::default()
+    };
+    sync_linked(&app, &state, &id, options).await
+}
+
+#[tauri::command]
+pub fn clear_sync_ignores(
+    state: State<'_, AppState>,
+    gallery_id: String,
+) -> Result<Value, ErrorPayload> {
+    let Some(id) = sanitize_gallery_id(&gallery_id) else {
+        return Err(invalid_gallery());
+    };
+    let Some(gallery) = state.store.get_gallery(&id) else {
+        return Err(not_linked());
+    };
+    GalleryIgnores::clear(Path::new(&gallery.local_path))?;
+    Ok(json!({"ok": true}))
 }
 
 #[tauri::command]
@@ -767,8 +876,12 @@ pub fn unlink_gallery(
     let Some(id) = sanitize_gallery_id(&gallery_id) else {
         return Err(invalid_gallery());
     };
+    let local_path = state.store.get_gallery(&id).map(|entry| entry.local_path);
     state.store.remove_gallery(&id)?;
     let _ = state.store.delete_snapshot(&id);
+    if let Some(local_path) = local_path {
+        let _ = GalleryIgnores::clear(Path::new(&local_path));
+    }
     Ok(json!({"ok": true}))
 }
 

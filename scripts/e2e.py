@@ -879,6 +879,75 @@ def main():
         assert not after_rating["favorites"], after_rating["favorites"]
         assert not after_rating["uploaded"], after_rating["uploaded"]
 
+        # First-sync review: both directions must be visible and selectable.
+        run_async(
+            session,
+            """
+            const done = arguments[arguments.length - 1];
+            window.__firstSyncChoice = null;
+            askFirstSync({
+              needed: true,
+              localTotal: 2,
+              remoteTotal: 2,
+              inSync: 1,
+              localOnly: [{ filename: 'LOCAL_ONLY.jpg', relativePath: 'LOCAL_ONLY.jpg', size: 10, mtimeMs: 1 }],
+              remoteOnly: [{ filename: 'REMOTE_ONLY.jpg', relativePath: 'REMOTE_ONLY.jpg', size: 10, mtimeMs: 0, id: 'p1', versionCount: 1 }],
+            }).then((choice) => { window.__firstSyncChoice = choice; });
+            done('opened');
+            """,
+        )
+        first_sync_modal = json.loads(
+            run_async(
+                session,
+                """
+                const done = arguments[arguments.length - 1];
+                done(JSON.stringify({
+                  visible: !document.getElementById('firstSyncModal').classList.contains('hidden'),
+                  localUpload: document.getElementById('firstSyncLocalUpload').checked,
+                  localTrash: document.getElementById('firstSyncLocalTrash').checked,
+                  download: document.getElementById('firstSyncDownload').checked,
+                  uploadLabel: document.getElementById('firstSyncUploadLabel').textContent,
+                  downloadLabel: document.getElementById('firstSyncDownloadLabel').textContent,
+                }));
+                """,
+            )
+        )
+        log("first sync modal:", first_sync_modal)
+        assert first_sync_modal["visible"], first_sync_modal
+        assert first_sync_modal["localUpload"] and not first_sync_modal["localTrash"], first_sync_modal
+        assert first_sync_modal["download"], first_sync_modal
+        assert "1" in first_sync_modal["uploadLabel"], first_sync_modal
+        assert "1" in first_sync_modal["downloadLabel"], first_sync_modal
+
+        run_async(
+            session,
+            """
+            const done = arguments[arguments.length - 1];
+            document.getElementById('firstSyncLocalTrash').click();
+            document.getElementById('btnFirstSyncConfirm').click();
+            done('confirmed');
+            """,
+        )
+        deadline = time.time() + 5
+        first_sync_choice = None
+        while time.time() < deadline:
+            first_sync_choice = json.loads(
+                run_async(
+                    session,
+                    """
+                    const done = arguments[arguments.length - 1];
+                    done(JSON.stringify(window.__firstSyncChoice));
+                    """,
+                )
+            )
+            if first_sync_choice:
+                break
+            time.sleep(0.1)
+        log("first sync choice:", first_sync_choice)
+        assert first_sync_choice and len(first_sync_choice["trashLocal"]) == 1, first_sync_choice
+        assert not first_sync_choice["ignoreLocal"], first_sync_choice
+        assert not first_sync_choice["ignoreRemote"], first_sync_choice
+
         run_async(
             session,
             "const done = arguments[arguments.length - 1]; document.getElementById('btnFavoritesList').click(); done('clicked');",

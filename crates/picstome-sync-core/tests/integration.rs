@@ -2,12 +2,13 @@ use std::sync::Arc;
 
 use picstome_sync_core::api::ApiClient;
 use picstome_sync_core::config::Store;
+use picstome_sync_core::ignored::{GalleryIgnores, IgnoredLocal, IgnoredRemote};
 use picstome_sync_core::localfiles::hash_file;
 use picstome_sync_core::mock::{start_mock_server, MockServerOptions};
 use picstome_sync_core::model::{GalleryEntry, Snapshot, SnapshotFile, SNAPSHOT_SCHEMA};
 use picstome_sync_core::sync::{
-    apply_remote_deletions, mark_favorites_rated, resolve_remote_deletions, run_gallery_sync,
-    RemoteDeleteAction, SyncOptions,
+    apply_remote_deletions, mark_favorites_rated, preview_first_sync, resolve_remote_deletions,
+    run_gallery_sync, FirstSyncItem, RemoteDeleteAction, SyncOptions,
 };
 use picstome_sync_core::transfer::{download_file, DownloadOptions};
 
@@ -606,5 +607,183 @@ async fn favorite_ratings_are_not_asked_again() {
     assert!(after_all.favorites.is_empty());
     assert!(after_all.skipped);
 
+    mock.close().await;
+}
+
+#[tokio::test]
+async fn first_sync_preview_lists_both_sides() {
+    let (mock, api, _dir, store, gallery) = setup_sync().await;
+    let manifest = api.manifest("G123").await.unwrap();
+    for photo in manifest.photos.iter().take(2) {
+        let path = std::path::Path::new(&gallery.local_path).join(&photo.filename);
+        std::fs::write(path, jpeg_bytes(120, 3)).unwrap();
+    }
+    std::fs::write(
+        std::path::Path::new(&gallery.local_path).join("LOCAL_ONLY.jpg"),
+        jpeg_bytes(80, 4),
+    )
+    .unwrap();
+
+    let preview = preview_first_sync(&api, &store, &gallery).await.unwrap();
+    assert!(preview.needed);
+    assert_eq!(preview.local_total, 3);
+    assert_eq!(preview.remote_total, 50);
+    assert_eq!(preview.in_sync, 2);
+    assert_eq!(preview.local_only.len(), 1);
+    assert_eq!(preview.local_only[0].filename, "LOCAL_ONLY.jpg");
+    assert_eq!(preview.remote_only.len(), 48);
+    assert!(store.load_snapshot("G123").is_none());
+    mock.close().await;
+}
+
+#[tokio::test]
+async fn ignored_local_file_is_not_uploaded_until_it_changes() {
+    let (mock, api, _dir, store, gallery) = setup_sync().await;
+    run_gallery_sync(&api, &store, &gallery, SyncOptions::default(), silence())
+        .await
+        .unwrap();
+
+    let path = std::path::Path::new(&gallery.local_path).join("IGNORED.jpg");
+    let bytes = jpeg_bytes(700, 7);
+    std::fs::write(&path, &bytes).unwrap();
+    let metadata = std::fs::metadata(&path).unwrap();
+    let mtime_ms = metadata
+        .modified()
+        .unwrap()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_millis() as i64;
+    let mut ignores = GalleryIgnores::default();
+    ignores.local.push(IgnoredLocal {
+        relative_path: "IGNORED.jpg".into(),
+        size: bytes.len() as u64,
+        mtime_ms,
+    });
+    ignores
+        .save(std::path::Path::new(&gallery.local_path))
+        .unwrap();
+
+    let report = run_gallery_sync(&api, &store, &gallery, SyncOptions::default(), silence())
+        .await
+        .unwrap();
+    assert!(report.uploaded.is_empty(), "{:?}", report.uploaded);
+    assert_eq!(report.ignored_local, vec!["IGNORED.jpg".to_string()]);
+    assert_eq!(api.manifest("G123").await.unwrap().photos.len(), 50);
+
+    std::fs::write(&path, jpeg_bytes(900, 8)).unwrap();
+    let report = run_gallery_sync(&api, &store, &gallery, SyncOptions::default(), silence())
+        .await
+        .unwrap();
+    assert_eq!(report.uploaded.len(), 1);
+    assert!(report.ignored_local.is_empty());
+    assert_eq!(api.manifest("G123").await.unwrap().photos.len(), 51);
+    mock.close().await;
+}
+
+#[tokio::test]
+async fn ignored_remote_photo_is_not_downloaded_until_it_changes() {
+    let (mock, api, _dir, store, gallery) = setup_sync().await;
+    run_gallery_sync(&api, &store, &gallery, SyncOptions::default(), silence())
+        .await
+        .unwrap();
+
+    let client = reqwest::Client::new();
+    client
+        .post(format!("{}/api/v1/dev/add", mock.url))
+        .bearer_auth(&mock.token)
+        .json(&serde_json::json!({
+            "gallery_id": "G123",
+            "filename": "REMOTE_IGNORED.jpg",
+        }))
+        .send()
+        .await
+        .unwrap();
+
+    let manifest = api.manifest("G123").await.unwrap();
+    let target = manifest
+        .photos
+        .iter()
+        .find(|photo| photo.filename == "REMOTE_IGNORED.jpg")
+        .unwrap();
+    let mut ignores = GalleryIgnores::default();
+    ignores.remote.push(IgnoredRemote {
+        id: target.id.clone(),
+        version_count: target.version_count,
+    });
+    ignores
+        .save(std::path::Path::new(&gallery.local_path))
+        .unwrap();
+
+    let report = run_gallery_sync(&api, &store, &gallery, SyncOptions::default(), silence())
+        .await
+        .unwrap();
+    assert!(report.downloaded.is_empty(), "{:?}", report.downloaded);
+    assert_eq!(
+        report.ignored_remote,
+        vec!["REMOTE_IGNORED.jpg".to_string()]
+    );
+    assert!(!std::path::Path::new(&gallery.local_path)
+        .join("REMOTE_IGNORED.jpg")
+        .exists());
+
+    client
+        .post(format!("{}/api/v1/dev/bump", mock.url))
+        .bearer_auth(&mock.token)
+        .json(&serde_json::json!({
+            "gallery_id": "G123",
+            "photo_id": target.id,
+        }))
+        .send()
+        .await
+        .unwrap();
+
+    let report = run_gallery_sync(&api, &store, &gallery, SyncOptions::default(), silence())
+        .await
+        .unwrap();
+    assert_eq!(report.downloaded.len(), 1);
+    assert!(report.ignored_remote.is_empty());
+    mock.close().await;
+}
+
+#[tokio::test]
+async fn first_sync_can_trash_local_only_files() {
+    let (mock, api, _dir, store, gallery) = setup_sync().await;
+    let path = std::path::Path::new(&gallery.local_path).join("TRASH_ME.jpg");
+    let bytes = jpeg_bytes(640, 6);
+    std::fs::write(&path, &bytes).unwrap();
+    let metadata = std::fs::metadata(&path).unwrap();
+    let mtime_ms = metadata
+        .modified()
+        .unwrap()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_millis() as i64;
+
+    let report = run_gallery_sync(
+        &api,
+        &store,
+        &gallery,
+        SyncOptions {
+            trash_local: vec![FirstSyncItem {
+                filename: "TRASH_ME.jpg".into(),
+                relative_path: "TRASH_ME.jpg".into(),
+                size: bytes.len() as u64,
+                mtime_ms,
+                id: None,
+                version_count: None,
+            }],
+            ..Default::default()
+        },
+        silence(),
+    )
+    .await
+    .unwrap();
+
+    assert!(!path.exists(), "local-only file should be moved to trash");
+    assert_eq!(report.trashed_local.len(), 1);
+    assert_eq!(report.trashed_local[0].filename, "TRASH_ME.jpg");
+    assert!(report.uploaded.is_empty(), "{:?}", report.uploaded);
+    assert!(report.errors.is_empty(), "{:?}", report.errors);
+    assert_eq!(api.manifest("G123").await.unwrap().photos.len(), 50);
     mock.close().await;
 }

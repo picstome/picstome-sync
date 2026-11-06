@@ -10,6 +10,7 @@ pub mod config;
 pub mod diff;
 pub mod error;
 pub mod identity;
+pub mod ignored;
 pub mod links;
 pub mod localfiles;
 pub mod mock;
