@@ -293,15 +293,27 @@ impl ApiClient {
         filename: &str,
         file_path: &Path,
         size: u64,
+        hash: Option<&str>,
     ) -> CoreResult<UploadResponse> {
         let file = open_upload_file(filename, file_path, size).await?;
         let stream = ReaderStream::new(file);
         let part = Part::stream_with_length(reqwest::Body::wrap_stream(stream), size)
             .file_name(crate::sanitize::escape_header_value(filename))
             .mime_str(mime_for(filename))?;
+        // Send the size and hash of the bytes we are about to stream. The
+        // server verifies both before creating a photo/version, so a truncated
+        // or mutating upload is rejected instead of leaving a broken photo.
+        // The caller normally passes the hash from the sync scan; only compute
+        // it here when no cached value exists.
+        let expected_hash = match hash {
+            Some(value) if !value.is_empty() => value.to_string(),
+            _ => crate::localfiles::hash_file(file_path).await?,
+        };
         let form = Form::new()
             .text("gallery_id", gallery_id.to_string())
             .text("filename", filename.to_string())
+            .text("hash", expected_hash)
+            .text("size", size.to_string())
             .part("file", part);
 
         let mut request = self.client.post(self.url("/api/v1/photos")).multipart(form);

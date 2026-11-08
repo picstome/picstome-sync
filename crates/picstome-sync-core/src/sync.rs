@@ -801,10 +801,25 @@ pub async fn resolve_remote_deletions(
                         &snapshot.files[index].filename,
                         &path,
                         size,
+                        snapshot.files[index].local_hash.as_deref(),
                     )
                     .await
                 {
                     Ok(response) => {
+                        if let (Some(server_hash), Some(local_hash)) = (
+                            response.hash.as_deref(),
+                            snapshot.files[index].local_hash.as_deref(),
+                        ) {
+                            if local_hash != server_hash {
+                                errors.push(SyncErrorItem {
+                                    phase: "remote_upload".into(),
+                                    filename: Some(snapshot.files[index].filename.clone()),
+                                    path: Some(path.display().to_string()),
+                                    message: "the server stored different bytes; sync again".into(),
+                                });
+                                continue;
+                            }
+                        }
                         let entry = &mut snapshot.files[index];
                         if let Some(new_id) = response.id {
                             entry.id = new_id;
@@ -1290,10 +1305,28 @@ pub async fn run_gallery_sync(
             let uploaded_count = uploaded_count.clone();
             async move {
                 match api
-                    .upload_photo(&gallery_id, &entry.filename, &entry.path, entry.size)
+                    .upload_photo(
+                        &gallery_id,
+                        &entry.filename,
+                        &entry.path,
+                        entry.size,
+                        entry.hash.as_deref(),
+                    )
                     .await
                 {
                     Ok(response) => {
+                        if let (Some(server_hash), Some(local_hash)) =
+                            (response.hash.as_deref(), entry.hash.as_deref())
+                        {
+                            if local_hash != server_hash {
+                                return Err(SyncErrorItem {
+                                    phase: "upload".into(),
+                                    filename: Some(entry.filename),
+                                    path: None,
+                                    message: "the server stored different bytes; sync again".into(),
+                                });
+                            }
+                        }
                         let done = uploaded_count.fetch_add(1, Ordering::SeqCst) + 1;
                         progress(Progress {
                             gallery_id,

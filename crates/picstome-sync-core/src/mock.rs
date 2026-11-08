@@ -548,6 +548,8 @@ async fn upload_photo(
                     "id": photo.id,
                     "filename": photo.filename,
                     "rev": gallery.rev,
+                    "hash": photo.hash,
+                    "size": photo.data.len(),
                     "version_count": photo.version_count,
                     "version_number": photo.version_number,
                     "unchanged": true,
@@ -564,6 +566,8 @@ async fn upload_photo(
             "id": photo.id,
             "filename": photo.filename,
             "rev": gallery.rev + 1,
+            "hash": photo.hash,
+            "size": photo.data.len(),
             "version_count": photo.version_count,
             "version_number": photo.version_number,
         });
@@ -586,6 +590,8 @@ async fn upload_photo(
         "id": photo.id,
         "filename": photo.filename,
         "rev": gallery.rev + 1,
+        "hash": photo.hash,
+        "size": photo.data.len(),
         "version_count": 1,
         "version_number": 1,
     });

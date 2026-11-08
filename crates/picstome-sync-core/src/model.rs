@@ -189,6 +189,10 @@ pub struct UploadResponse {
     #[serde(default)]
     pub rev: Option<Value>,
     #[serde(default)]
+    pub hash: Option<String>,
+    #[serde(default)]
+    pub size: Option<u64>,
+    #[serde(default)]
     pub version_count: Option<u64>,
     #[serde(default)]
     pub version_number: Option<u64>,

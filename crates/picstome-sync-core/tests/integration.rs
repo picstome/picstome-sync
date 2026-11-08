@@ -82,13 +82,13 @@ async fn api_upload_versions_and_delete() {
     tokio::fs::write(&file, jpeg_bytes(900, 1)).await.unwrap();
 
     let first = api
-        .upload_photo("G123", "NEW_0001.jpg", &file, 900)
+        .upload_photo("G123", "NEW_0001.jpg", &file, 900, None)
         .await
         .unwrap();
     assert_eq!(first.version_count, Some(1));
 
     let second = api
-        .upload_photo("G123", "NEW_0001.jpg", &file, 900)
+        .upload_photo("G123", "NEW_0001.jpg", &file, 900, None)
         .await
         .unwrap();
     assert_eq!(second.version_count, Some(1));
@@ -96,7 +96,7 @@ async fn api_upload_versions_and_delete() {
 
     tokio::fs::write(&file, jpeg_bytes(901, 2)).await.unwrap();
     let third = api
-        .upload_photo("G123", "NEW_0001.jpg", &file, 901)
+        .upload_photo("G123", "NEW_0001.jpg", &file, 901, None)
         .await
         .unwrap();
     assert_eq!(third.version_count, Some(2));
