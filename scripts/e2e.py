@@ -401,6 +401,63 @@ def main():
         assert len(files) == EXPECTED, f"expected {EXPECTED} files, got {len(files)}"
         assert os.path.exists(os.path.join(user_data, f"{gallery}.json")), "snapshot missing"
 
+        # The sync dialog must never look frozen. Two checks that do not depend
+        # on timing: the renderer has to translate the new phases into visible
+        # text and a moving bar, and the real sync has to emit them (covered by
+        # the engine integration test).
+        dialog = json.loads(
+            run_async(
+                session,
+                """
+                const done = arguments[arguments.length - 1];
+                state.syncBusy = true;
+                state.syncTarget = { galleryId: 'G123', name: 'E2E Gallery' };
+                const samples = {};
+                const box = document.querySelector('#syncModal .sync-modal');
+
+                state.progress = { phase: 'scan', done: 120, fileDone: 5000 };
+                renderSyncModal();
+                samples.scan = {
+                  phase: document.getElementById('syncModalPhase').textContent,
+                  detail: document.getElementById('syncModalFile').textContent,
+                  percent: document.getElementById('syncModalPercent').textContent,
+                  indeterminate: box.classList.contains('indeterminate'),
+                  animated: document.querySelector('#syncModal .sync-modal-bar span')
+                    .getBoundingClientRect().width > 0
+                };
+
+                state.progress = { phase: 'hash', done: 5, total: 10 };
+                renderSyncModal();
+                samples.hash = {
+                  phase: document.getElementById('syncModalPhase').textContent,
+                  percent: document.getElementById('syncModalPercent').textContent,
+                  indeterminate: box.classList.contains('indeterminate')
+                };
+
+                state.progress = { phase: 'manifest', done: 0, total: 1 };
+                renderSyncModal();
+                samples.manifest = {
+                  phase: document.getElementById('syncModalPhase').textContent,
+                  indeterminate: box.classList.contains('indeterminate')
+                };
+
+                state.syncBusy = false;
+                state.progress = null;
+                renderSyncModal();
+                done(JSON.stringify(samples));
+                """,
+            )
+        )
+        log("sync dialog phases:", dialog)
+        assert "entries scanned" in dialog["scan"]["detail"], dialog["scan"]
+        assert dialog["scan"]["indeterminate"], dialog["scan"]
+        assert dialog["scan"]["animated"], dialog["scan"]
+        assert "10" in dialog["hash"]["phase"], dialog["hash"]
+        assert dialog["hash"]["percent"] == "50%", dialog["hash"]
+        assert not dialog["hash"]["indeterminate"], dialog["hash"]
+        # Fetching the manifest has no known total either: keep the bar moving.
+        assert dialog["manifest"]["indeterminate"], dialog["manifest"]
+
         second = js_invoke(session, "sync_gallery", {"galleryId": gallery})
         log("second:", second["counts"], "skipped:", second["skipped"])
         assert second["skipped"] and not second["downloaded"], second["counts"]

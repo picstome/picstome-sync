@@ -13,8 +13,8 @@ use crate::error::{CoreError, CoreResult};
 use crate::identity::{identity_key, preference_rank, preferred_file};
 use crate::ignored::{GalleryIgnores, IgnoredLocal};
 use crate::localfiles::{
-    folder_exists as path_is_dir, group_local_files, preferred_local_files, scan_and_hash,
-    scan_local_photos, RawLocalFile, MAX_PHOTO_BYTES,
+    folder_exists as path_is_dir, group_local_files, preferred_local_files, scan_and_hash_with,
+    scan_local_photos, scan_local_photos_with, RawLocalFile, MAX_PHOTO_BYTES,
 };
 use crate::model::{
     DeleteProposal, DeleteProposals, DeleteResponse, Diff, DownloadedItem, FavoritePhoto,
@@ -1100,11 +1100,32 @@ pub async fn preview_first_sync(
     store: &Store,
     gallery: &GalleryEntry,
 ) -> CoreResult<FirstSyncPreview> {
+    preview_first_sync_with(api, store, gallery, |_, _| {}).await
+}
+
+/// Same as [`preview_first_sync`] but reports how many entries the local walk
+/// has seen, so the sync dialog does not look frozen while it scans.
+pub async fn preview_first_sync_with<F>(
+    api: &ApiClient,
+    store: &Store,
+    gallery: &GalleryEntry,
+    on_scan: F,
+) -> CoreResult<FirstSyncPreview>
+where
+    F: Fn(u64, u64) + Send + Sync + 'static,
+{
     if store.load_snapshot(&gallery.gallery_id).is_some() {
         return Ok(FirstSyncPreview::default());
     }
 
-    let (records, _) = scan_local_photos(Path::new(&gallery.local_path), 8, true, MAX_PHOTO_BYTES);
+    let mut on_scan_cb = |seen: u64, matched: u64| on_scan(seen, matched);
+    let (records, _) = scan_local_photos_with(
+        Path::new(&gallery.local_path),
+        8,
+        true,
+        MAX_PHOTO_BYTES,
+        &mut on_scan_cb,
+    );
     if records.is_empty() {
         return Ok(FirstSyncPreview {
             local_total: 0,
@@ -1275,10 +1296,33 @@ pub async fn run_gallery_sync(
         total: 1,
         ..Default::default()
     });
-    let (all_local_files, scan_errors) = scan_and_hash(
+    let progress_scan = progress.clone();
+    let gallery_for_scan = gallery.gallery_id.clone();
+    let progress_hash = progress.clone();
+    let gallery_for_hash = gallery.gallery_id.clone();
+    let (all_local_files, scan_errors) = scan_and_hash_with(
         Path::new(&gallery.local_path),
         &previous_files,
         options.hash_concurrency,
+        move |seen, matched| {
+            progress_scan(Progress {
+                gallery_id: gallery_for_scan.clone(),
+                phase: "scan".into(),
+                done: matched,
+                total: 0,
+                file_done: Some(seen),
+                ..Default::default()
+            });
+        },
+        move |done, total| {
+            progress_hash(Progress {
+                gallery_id: gallery_for_hash.clone(),
+                phase: "hash".into(),
+                done,
+                total,
+                ..Default::default()
+            });
+        },
     )
     .await?;
     let mut ignores = GalleryIgnores::load(Path::new(&gallery.local_path));

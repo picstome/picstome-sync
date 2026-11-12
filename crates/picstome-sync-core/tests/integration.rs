@@ -198,6 +198,61 @@ fn silence() -> Arc<dyn Fn(picstome_sync_core::model::Progress) + Send + Sync> {
     Arc::new(|_| {})
 }
 
+type ProgressSink = Arc<dyn Fn(picstome_sync_core::model::Progress) + Send + Sync>;
+type ProgressLog = Arc<std::sync::Mutex<Vec<picstome_sync_core::model::Progress>>>;
+
+/// Collects the progress phases emitted during a sync.
+fn recorder() -> (ProgressLog, ProgressSink) {
+    let events: ProgressLog = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let sink = events.clone();
+    let progress: ProgressSink = Arc::new(move |event| sink.lock().unwrap().push(event));
+    (events, progress)
+}
+
+#[tokio::test]
+async fn sync_reports_scan_and_hash_progress() {
+    let (mock, api, _dir, store, gallery) = setup_sync().await;
+    // A local file makes the scan phase walk and fingerprint something.
+    let path = std::path::Path::new(&gallery.local_path).join("LOCAL.jpg");
+    std::fs::write(path, jpeg_bytes(120, 5)).unwrap();
+
+    let (events, progress) = recorder();
+    run_gallery_sync(&api, &store, &gallery, SyncOptions::default(), progress)
+        .await
+        .unwrap();
+
+    // Clone the events out before the final await: holding a std MutexGuard
+    // across an await point is denied by clippy and would deadlock.
+    let recorded = events.lock().unwrap().clone();
+    let scan: Vec<_> = recorded
+        .iter()
+        .filter(|event| event.phase == "scan")
+        .collect();
+    let hash: Vec<_> = recorded
+        .iter()
+        .filter(|event| event.phase == "hash")
+        .collect();
+    assert!(!scan.is_empty(), "no scan progress emitted");
+    assert!(!hash.is_empty(), "no hash progress emitted");
+    // The walk reports how many entries it visited, and the hash phase knows
+    // the total so the UI can draw a real bar.
+    assert!(
+        scan.iter().any(|event| event.file_done.unwrap_or(0) > 0),
+        "scan progress never reported entries: {scan:?}"
+    );
+    assert!(
+        hash.iter().any(|event| event.total > 0),
+        "hash progress never reported a total: {hash:?}"
+    );
+    assert!(
+        hash.iter()
+            .any(|event| event.done == event.total && event.total > 0),
+        "hash progress never reached its total: {hash:?}"
+    );
+
+    mock.close().await;
+}
+
 #[tokio::test]
 async fn sync_downloads_then_is_a_noop() {
     let (mock, api, _dir, store, gallery) = setup_sync().await;

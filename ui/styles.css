@@ -1174,6 +1174,13 @@ button.danger:hover {
     transition: width 160ms ease;
 }
 
+/* Without a known total (scanning a folder, fetching the manifest) the bar
+   sweeps so the dialog never looks frozen. */
+.sync-modal.indeterminate .sync-modal-bar span {
+    width: 34%;
+    animation: indeterminate 1.3s ease-in-out infinite;
+}
+
 .sync-modal-meta {
     display: flex;
     align-items: center;

@@ -901,6 +901,22 @@ function syncProgressView(progress, s) {
 
     if (progress.phase === "scan" || progress.phase === "scanning") {
         title = s.scanningLocal;
+        // The walk reports how many entries it has seen; the total is unknown
+        // until it finishes, so the bar stays indeterminate but the counter
+        // proves the app is working.
+        const seen = progress.fileDone || 0;
+        const matched = progress.done || 0;
+        detail = seen > 0
+            ? fmt(s.scanSeenEntries, { seen, matched })
+            : "";
+    } else if (progress.phase === "hash") {
+        title = fmt(s.hashingLocal, {
+            done: progress.done || 0,
+            total: progress.total || 0,
+        });
+        if (progress.total) {
+            ratio = Math.min(1, (progress.done || 0) / progress.total);
+        }
     } else if (progress.phase === "download") {
         title = fmt(s.downloadingProgress, {
             done: progress.done || 0,
@@ -967,6 +983,10 @@ function renderSyncModal() {
     els.syncModalPhase.textContent = view.title;
     els.syncModalFile.textContent = view.detail;
     els.syncModalHint.textContent = s.syncModalHint;
+    const modalBox = els.syncModal.querySelector(".sync-modal");
+    if (modalBox) {
+        modalBox.classList.toggle("indeterminate", typeof view.ratio !== "number");
+    }
     if (typeof view.ratio === "number") {
         els.syncModalFill.style.width = `${Math.max(2, view.ratio * 100)}%`;
         els.syncModalPercent.textContent = `${Math.round(view.ratio * 100)}%`;

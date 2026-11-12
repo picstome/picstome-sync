@@ -40,9 +40,32 @@ pub fn scan_local_photos(
     exclude_edited_folders: bool,
     max_bytes: u64,
 ) -> (Vec<RawLocalFile>, Vec<ScanError>) {
+    scan_local_photos_with(
+        dir,
+        max_depth,
+        exclude_edited_folders,
+        max_bytes,
+        &mut |_, _| {},
+    )
+}
+
+/// Same walk as [`scan_local_photos`], reporting `(seen, matched)` entries so
+/// the UI can show that a large folder is progressing instead of appearing
+/// frozen.
+pub fn scan_local_photos_with<F>(
+    dir: &Path,
+    max_depth: usize,
+    exclude_edited_folders: bool,
+    max_bytes: u64,
+    on_progress: &mut F,
+) -> (Vec<RawLocalFile>, Vec<ScanError>)
+where
+    F: FnMut(u64, u64),
+{
     let root = crate::sanitize::lexical_absolute(dir);
     let mut files = Vec::new();
     let mut errors = Vec::new();
+    let mut seen = 0u64;
 
     let walker = WalkDir::new(&root).max_depth(max_depth).into_iter();
     for entry in walker.filter_entry(|entry| {
@@ -74,6 +97,14 @@ pub fn scan_local_photos(
 
         if !entry.file_type().is_file() {
             continue;
+        }
+
+        seen += 1;
+        // Report every 20 entries: enough to keep the counter alive on huge
+        // folders without flooding the IPC channel. The first few are reported
+        // too, so a small folder still shows movement immediately.
+        if seen <= 5 || seen % 20 == 0 {
+            on_progress(seen, files.len() as u64);
         }
 
         let filename = entry.file_name().to_string_lossy().to_string();
@@ -122,6 +153,7 @@ pub fn scan_local_photos(
         });
     }
 
+    on_progress(seen, files.len() as u64);
     files.sort_by(|a, b| a.relative_path.cmp(&b.relative_path));
     (files, errors)
 }
@@ -187,9 +219,46 @@ pub async fn hash_local_records(
     snapshot_files: &[SnapshotFile],
     concurrency: usize,
 ) -> Vec<Result<LocalFile, ScanError>> {
+    hash_local_records_with(records, snapshot_files, concurrency, |_, _| {}).await
+}
+
+/// Same as [`hash_local_records`], reporting `(done, total)` so the UI can show
+/// hashing progress. Hashing thousands of RAW files takes minutes; without this
+/// the scan phase looks frozen.
+pub async fn hash_local_records_with<F>(
+    records: Vec<RawLocalFile>,
+    snapshot_files: &[SnapshotFile],
+    concurrency: usize,
+    on_progress: F,
+) -> Vec<Result<LocalFile, ScanError>>
+where
+    F: Fn(u64, u64) + Send + Sync + 'static,
+{
     let cache = build_cache(snapshot_files);
+    let total = records.len() as u64;
+    let on_progress = std::sync::Arc::new(on_progress);
+    let done = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
+    // Cached hashes need no I/O, so count them before the stream starts.
+    let cached = records
+        .iter()
+        .filter(|record| {
+            cache
+                .get(&record.relative_path)
+                .filter(|file| {
+                    file.local_hash.is_some()
+                        && file.local_size == Some(record.size)
+                        && file.mtime == Some(record.mtime_ms)
+                })
+                .is_some()
+        })
+        .count() as u64;
+    done.fetch_add(cached, std::sync::atomic::Ordering::Relaxed);
+    on_progress(done.load(std::sync::atomic::Ordering::Relaxed), total);
+
     let stream = futures::stream::iter(records.into_iter().map(|record| {
         let cache = &cache;
+        let done = done.clone();
+        let on_progress = on_progress.clone();
         async move {
             let cached = cache.get(&record.relative_path);
             let cached_hash = cached
@@ -203,7 +272,11 @@ pub async fn hash_local_records(
             let hash = match cached_hash {
                 Some(hash) => hash,
                 None => match hash_file(&record.path).await {
-                    Ok(hash) => hash,
+                    Ok(hash) => {
+                        let finished = done.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
+                        on_progress(finished, total);
+                        hash
+                    }
                     Err(err) => {
                         return Err(ScanError {
                             path: record.path.display().to_string(),
@@ -235,6 +308,22 @@ pub async fn scan_and_hash(
     snapshot_files: &[SnapshotFile],
     concurrency: usize,
 ) -> CoreResult<(Vec<LocalFile>, Vec<ScanError>)> {
+    scan_and_hash_with(dir, snapshot_files, concurrency, |_, _| {}, |_, _| {}).await
+}
+
+/// Same as [`scan_and_hash`], reporting progress through `on_scan` (entries
+/// visited / photos matched) and `on_hash` (files hashed / total).
+pub async fn scan_and_hash_with<Scan, Hash>(
+    dir: &Path,
+    snapshot_files: &[SnapshotFile],
+    concurrency: usize,
+    on_scan: Scan,
+    on_hash: Hash,
+) -> CoreResult<(Vec<LocalFile>, Vec<ScanError>)>
+where
+    Scan: Fn(u64, u64) + Send + Sync + 'static,
+    Hash: Fn(u64, u64) + Send + Sync + 'static,
+{
     let metadata = tokio::fs::metadata(dir).await?;
     if !metadata.is_dir() {
         return Err(CoreError::InvalidData(format!(
@@ -243,8 +332,10 @@ pub async fn scan_and_hash(
         )));
     }
 
-    let (records, mut errors) = scan_local_photos(dir, 8, true, MAX_PHOTO_BYTES);
-    let results = hash_local_records(records, snapshot_files, concurrency).await;
+    let mut on_scan_cb = |seen: u64, matched: u64| on_scan(seen, matched);
+    let (records, mut errors) =
+        scan_local_photos_with(dir, 8, true, MAX_PHOTO_BYTES, &mut on_scan_cb);
+    let results = hash_local_records_with(records, snapshot_files, concurrency, on_hash).await;
 
     let mut files = Vec::with_capacity(results.len());
     for result in results {
@@ -431,5 +522,44 @@ mod extra_tests {
         assert!(errors.is_empty());
         let names: Vec<&str> = files.iter().map(|file| file.filename.as_str()).collect();
         assert_eq!(names, vec!["a.jpg", "z.jpg"]);
+    }
+
+    #[tokio::test]
+    async fn scan_and_hash_reports_progress() {
+        use std::sync::atomic::{AtomicU64, Ordering};
+        use std::sync::Arc;
+
+        let dir = tempfile::tempdir().unwrap();
+        for index in 0..60 {
+            std::fs::write(dir.path().join(format!("p{index:02}.jpg")), b"x").unwrap();
+        }
+        std::fs::write(dir.path().join("notes.txt"), b"x").unwrap();
+
+        let scans = Arc::new(AtomicU64::new(0));
+        let hashes = Arc::new(AtomicU64::new(0));
+        let scans_cb = scans.clone();
+        let hashes_cb = hashes.clone();
+        let (files, errors) = scan_and_hash_with(
+            dir.path(),
+            &[],
+            2,
+            move |seen, matched| {
+                assert!(seen >= matched);
+                scans_cb.store(seen, Ordering::SeqCst);
+            },
+            move |done, total| {
+                assert!(done <= total);
+                hashes_cb.store(total, Ordering::SeqCst);
+            },
+        )
+        .await
+        .unwrap();
+
+        assert!(errors.is_empty());
+        assert_eq!(files.len(), 60);
+        // The walk saw the 60 photos plus the text file; the hash phase knew
+        // ahead of time how many files it had to fingerprint.
+        assert_eq!(scans.load(Ordering::SeqCst), 61);
+        assert_eq!(hashes.load(Ordering::SeqCst), 60);
     }
 }

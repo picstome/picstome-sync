@@ -35,7 +35,9 @@ and star-rating workflow.
 - Writes manual 1–5 star ratings to local files with exiftool and exports
   favorite lists for Lightroom, Capture One, Finder/Explorer, or plain text.
 - Shows photo count, disk usage, and a per-gallery activity log; a centered
-  progress modal reports the current sync phase, file and percentage.
+  progress modal reports the current sync phase, file and percentage. Local
+  folders report how many entries have been scanned and how many photos have
+  been fingerprinted, so a large gallery never looks frozen.
 - Opens the linked gallery in Picstome from the title link (falls back to the
   galleries page when the API does not expose `web_url`).
 - Checks GitHub for a newer release on startup, at most once every 15 days,
