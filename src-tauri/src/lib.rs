@@ -162,6 +162,7 @@ pub fn run() {
             commands::list_remote_galleries,
             commands::search_remote_galleries,
             commands::get_gallery_favorites,
+            commands::apply_rating_plan,
             commands::start_sync,
             commands::preview_first_sync,
             commands::sync_gallery,

@@ -187,6 +187,9 @@ mod tests {
             version_number: Some(version_count),
             identity_key: None,
             favorited_at: None,
+            rating: None,
+            is_favorite: None,
+            archived_at: None,
         }
     }
 

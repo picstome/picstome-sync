@@ -1388,6 +1388,24 @@ button.danger:hover {
     margin: 14px 0 16px;
 }
 
+.rating-plan {
+    margin: 10px 0 4px;
+    padding: 10px 12px;
+    border-radius: var(--radius-sm);
+    background: rgba(255, 255, 255, 0.72);
+    max-height: 180px;
+    overflow-y: auto;
+    font-size: 12px;
+    line-height: 1.55;
+    color: var(--graphite);
+}
+
+.rating-plan-item {
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
 .rating-stars strong {
     margin-left: 8px;
     font-size: 18px;

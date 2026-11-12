@@ -327,6 +327,10 @@ mod extra_tests {
             remote_deleted: false,
             keep_local: false,
             favorite_rated_for: None,
+            favorited_at: None,
+            rating: None,
+            rating_applied: None,
+            is_favorite: false,
         }
     }
 

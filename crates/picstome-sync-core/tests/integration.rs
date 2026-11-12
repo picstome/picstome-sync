@@ -7,8 +7,9 @@ use picstome_sync_core::localfiles::hash_file;
 use picstome_sync_core::mock::{start_mock_server, MockServerOptions};
 use picstome_sync_core::model::{GalleryEntry, Snapshot, SnapshotFile, SNAPSHOT_SCHEMA};
 use picstome_sync_core::sync::{
-    apply_remote_deletions, mark_favorites_rated, preview_first_sync, resolve_remote_deletions,
-    run_gallery_sync, FirstSyncItem, RemoteDeleteAction, SyncOptions,
+    apply_remote_deletions, mark_favorites_rated, mark_ratings_applied, preview_first_sync,
+    rating_plan_from_snapshot, resolve_remote_deletions, run_gallery_sync, FirstSyncItem,
+    RemoteDeleteAction, SyncOptions,
 };
 use picstome_sync_core::transfer::{download_file, DownloadOptions};
 
@@ -216,7 +217,10 @@ async fn sync_downloads_then_is_a_noop() {
     assert_eq!(report.downloaded.len(), 50);
     assert_eq!(report.errors.len(), 0);
     assert_eq!(report.counts.remote_new, 50);
-    assert_eq!(report.favorites.len(), 5);
+    // Five favourites carry a heart. Four already have five stars in the
+    // manifest; the legacy one is the only photo the prompt has to ask about.
+    assert_eq!(report.favorites.len(), 1);
+    assert!(!report.rating_plan.is_empty());
     let snapshot = store.load_snapshot("G123").unwrap();
     assert_eq!(snapshot.files.len(), 50);
     assert_eq!(snapshot.local_photo_count, 50);
@@ -304,6 +308,10 @@ async fn remote_only_snapshot_entries_are_downloaded_not_deleted_remotely() {
                 remote_deleted: false,
                 keep_local: false,
                 favorite_rated_for: None,
+                favorited_at: None,
+                rating: None,
+                rating_applied: None,
+                is_favorite: false,
             })
             .collect(),
     };
@@ -578,34 +586,170 @@ async fn remote_deletions_are_reported_and_resolved_explicitly() {
 }
 
 #[tokio::test]
-async fn favorite_ratings_are_not_asked_again() {
+async fn favourite_without_rating_is_asked_once() {
+    // The mock seeds one legacy favourite (heart, no rating) and four
+    // favourites rated 5. Only the legacy one has to be asked.
     let (mock, api, _dir, store, gallery) = setup_sync().await;
     let report = run_gallery_sync(&api, &store, &gallery, SyncOptions::default(), silence())
         .await
         .unwrap();
-    assert_eq!(report.favorites.len(), 5);
+    assert_eq!(report.favorites.len(), 1);
+    assert!(report.favorites[0].rating.is_none());
     let marks: Vec<(String, String)> = report
         .favorites
         .iter()
         .filter_map(|photo| Some((photo.identity_key.clone()?, photo.favorited_at.clone()?)))
         .collect();
-    assert_eq!(marks.len(), 5);
+    assert_eq!(marks.len(), 1);
 
-    assert_eq!(
-        mark_favorites_rated(&store, "G123", &marks[..1]).unwrap(),
-        1
+    assert_eq!(mark_favorites_rated(&store, "G123", &marks).unwrap(), 1);
+    let after = run_gallery_sync(&api, &store, &gallery, SyncOptions::default(), silence())
+        .await
+        .unwrap();
+    assert!(after.favorites.is_empty());
+
+    mock.close().await;
+}
+
+#[tokio::test]
+async fn manifest_ratings_reach_the_rating_plan() {
+    let (mock, api, _dir, store, gallery) = setup_sync().await;
+    let report = run_gallery_sync(&api, &store, &gallery, SyncOptions::default(), silence())
+        .await
+        .unwrap();
+
+    // Exact Picstome ratings (1-5) are planned for disk, with no guessing.
+    let ratings: Vec<(String, Option<u8>)> = report
+        .rating_plan
+        .items
+        .iter()
+        .map(|item| (item.filename.clone(), item.rating))
+        .collect();
+    assert!(
+        ratings.iter().any(|(_, rating)| *rating == Some(5)),
+        "five-star favourites should be written: {ratings:?}"
     );
-    let after_one = run_gallery_sync(&api, &store, &gallery, SyncOptions::default(), silence())
-        .await
-        .unwrap();
-    assert_eq!(after_one.favorites.len(), 4);
+    assert!(
+        ratings
+            .iter()
+            .any(|(_, rating)| matches!(rating, Some(1..=4))),
+        "1-4 star ratings should be written: {ratings:?}"
+    );
+    // The legacy favourite has no rating yet: it is in the prompt instead.
+    assert!(report
+        .rating_plan
+        .items
+        .iter()
+        .all(|item| item.rating.is_some()));
 
-    assert_eq!(mark_favorites_rated(&store, "G123", &marks).unwrap(), 5);
-    let after_all = run_gallery_sync(&api, &store, &gallery, SyncOptions::default(), silence())
+    // A rating-only change must not re-download the file.
+    assert_eq!(report.downloaded.len(), 50);
+    let snapshot = store.load_snapshot("G123").unwrap();
+    let rated_file = snapshot
+        .files
+        .iter()
+        .find(|file| file.rating == Some(5))
+        .expect("snapshot keeps the rating");
+    assert!(rated_file.is_favorite);
+    assert!(rated_file.favorited_at.is_some());
+
+    let second = run_gallery_sync(&api, &store, &gallery, SyncOptions::default(), silence())
         .await
         .unwrap();
-    assert!(after_all.favorites.is_empty());
-    assert!(after_all.skipped);
+    assert!(second.downloaded.is_empty());
+    assert_eq!(second.counts.remote_new, 0);
+    assert_eq!(second.counts.remote_modified, 0);
+
+    mock.close().await;
+}
+
+#[tokio::test]
+async fn applying_a_rating_clears_the_plan() {
+    let (mock, api, _dir, store, gallery) = setup_sync().await;
+    let report = run_gallery_sync(&api, &store, &gallery, SyncOptions::default(), silence())
+        .await
+        .unwrap();
+    assert!(!report.rating_plan.items.is_empty());
+
+    let applied: Vec<(String, Option<u8>)> = report
+        .rating_plan
+        .items
+        .iter()
+        .filter_map(|item| Some((item.identity_key.clone()?, item.rating)))
+        .collect();
+    assert_eq!(
+        mark_ratings_applied(&store, "G123", &applied, &[]).unwrap(),
+        applied.len()
+    );
+
+    let snapshot = store.load_snapshot("G123").unwrap();
+    let plan = rating_plan_from_snapshot(&snapshot, None);
+    assert!(
+        plan.items.is_empty(),
+        "an applied rating must not be queued again: {:?}",
+        plan.items
+    );
+
+    mock.close().await;
+}
+
+#[tokio::test]
+async fn legacy_favourite_uses_the_chosen_stars_from_the_snapshot() {
+    let (mock, api, _dir, store, gallery) = setup_sync().await;
+    let report = run_gallery_sync(&api, &store, &gallery, SyncOptions::default(), silence())
+        .await
+        .unwrap();
+    assert_eq!(report.favorites.len(), 1);
+
+    let snapshot = store.load_snapshot("G123").unwrap();
+    let unanswered = rating_plan_from_snapshot(&snapshot, None);
+    assert_eq!(unanswered.needs_rating.len(), 1);
+    assert!(unanswered
+        .items
+        .iter()
+        .all(|item| item.rating.is_some() && item.applied_rating != item.rating));
+
+    let answered = rating_plan_from_snapshot(&snapshot, Some(4));
+    assert!(answered.needs_rating.is_empty());
+    let legacy = answered
+        .items
+        .iter()
+        .find(|item| item.filename == report.favorites[0].filename)
+        .expect("the chosen stars are applied to the legacy favourite");
+    assert_eq!(legacy.rating, Some(4));
+    assert!(legacy.is_favorite);
+
+    // Once written, the answer is remembered: the prompt does not come back
+    // and the local stars are not cleared just because Picstome has no rating.
+    let applied: Vec<(String, Option<u8>)> = answered
+        .items
+        .iter()
+        .filter_map(|item| Some((item.identity_key.clone()?, item.rating)))
+        .collect();
+    let answered_for: Vec<(String, String)> = report
+        .favorites
+        .iter()
+        .filter_map(|photo| Some((photo.identity_key.clone()?, photo.favorited_at.clone()?)))
+        .collect();
+    mark_ratings_applied(&store, "G123", &applied, &answered_for).unwrap();
+
+    let after = run_gallery_sync(&api, &store, &gallery, SyncOptions::default(), silence())
+        .await
+        .unwrap();
+    assert!(
+        after.favorites.is_empty(),
+        "asked again: {:?}",
+        after.favorites
+    );
+    assert!(
+        after
+            .rating_plan
+            .items
+            .iter()
+            .all(|item| item.filename != report.favorites[0].filename || item.rating == Some(4)),
+        "local stars were cleared: {:?}",
+        after.rating_plan.items
+    );
 
     mock.close().await;
 }

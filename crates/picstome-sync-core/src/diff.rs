@@ -170,6 +170,9 @@ mod tests {
             version_number: Some(version),
             identity_key: None,
             favorited_at: None,
+            rating: None,
+            is_favorite: None,
+            archived_at: None,
         }
     }
 
@@ -203,6 +206,10 @@ mod tests {
             remote_deleted: false,
             keep_local: false,
             favorite_rated_for: None,
+            favorited_at: None,
+            rating: None,
+            rating_applied: None,
+            is_favorite: false,
         }
     }
 
@@ -326,6 +333,9 @@ mod extra_tests {
             version_number: version,
             identity_key: None,
             favorited_at: None,
+            rating: None,
+            is_favorite: None,
+            archived_at: None,
         }
     }
 
@@ -365,6 +375,10 @@ mod extra_tests {
             remote_deleted: false,
             keep_local: false,
             favorite_rated_for: None,
+            favorited_at: None,
+            rating: None,
+            rating_applied: None,
+            is_favorite: false,
         }
     }
 

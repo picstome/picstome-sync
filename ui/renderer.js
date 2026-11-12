@@ -44,6 +44,7 @@ const state = {
         photosDir: null,
         source: "link",
         favorites: [],
+        plan: [],
         busy: false,
         result: null,
     },
@@ -179,6 +180,8 @@ const els = {
     ratingSubtitle: document.getElementById("ratingSubtitle"),
     ratingTarget: document.getElementById("ratingTarget"),
     btnRatingFolder: document.getElementById("btnRatingFolder"),
+    ratingPlan: document.getElementById("ratingPlan"),
+    ratingStars: document.getElementById("ratingStars"),
     ratingValue: document.getElementById("ratingValue"),
     ratingResult: document.getElementById("ratingResult"),
     btnRatingApply: document.getElementById("btnRatingApply"),
@@ -1144,16 +1147,55 @@ function renderRating() {
         return;
     }
     show(els.ratingModal);
-    els.ratingTitle.textContent =
-        state.rating.source === "favorites" ? s.ratingTitle : s.ratePhotosTitle;
-    els.ratingSubtitle.textContent =
-        state.rating.source === "favorites"
-            ? fmt(s.favoritesFound, { n: state.rating.files.length })
-            : s.ratePhotosHint;
+    const isPlan = state.rating.mode === "plan";
+    const favourites = state.rating.favorites || [];
+    els.ratingTitle.textContent = isPlan
+        ? favourites.length > 0
+            ? s.ratingTitle
+            : s.ratingPlanTitle
+        : state.rating.source === "favorites"
+          ? s.ratingTitle
+          : s.ratePhotosTitle;
+    els.ratingSubtitle.textContent = isPlan
+        ? favourites.length > 0
+            ? fmt(s.ratingPlanHintStars, {
+                  n: favourites.length,
+                  total: (state.rating.plan || []).length + favourites.length,
+              })
+            : fmt(s.ratingPlanHint, { n: (state.rating.plan || []).length })
+        : state.rating.source === "favorites"
+          ? fmt(s.favoritesFound, { n: state.rating.files.length })
+          : s.ratePhotosHint;
     const target = ratingTargetText();
     els.ratingTarget.textContent = target || s.noFolder;
     const needsFolder = !state.rating.galleryId && !target;
     els.btnRatingFolder.classList.toggle("hidden", !needsFolder);
+
+    // The star picker only appears when Picstome has favourites with a heart
+    // but no rating: the photographer chooses one value for all of them.
+    const askStars = isPlan ? favourites.length > 0 : true;
+    els.ratingStars.classList.toggle("hidden", !askStars);
+
+    const plan = state.rating.plan || [];
+    if (plan.length > 0) {
+        show(els.ratingPlan);
+        els.ratingPlan.replaceChildren();
+        for (const item of plan) {
+            const line = document.createElement("div");
+            line.className = "rating-plan-item";
+            line.textContent =
+                item.rating == null
+                    ? fmt(s.ratingPlanItemUnrated, { filename: item.filename })
+                    : fmt(s.ratingPlanItem, {
+                          filename: item.filename,
+                          stars: item.rating,
+                      });
+            els.ratingPlan.appendChild(line);
+        }
+    } else {
+        hide(els.ratingPlan);
+        els.ratingPlan.replaceChildren();
+    }
 
     const value = Number(state.rating.value);
     for (const button of els.starButtons) {
@@ -1163,7 +1205,8 @@ function renderRating() {
 
     els.btnRatingApply.disabled =
         state.rating.busy ||
-        state.rating.files.length === 0 ||
+        (!isPlan && state.rating.files.length === 0) ||
+        (isPlan && plan.length === 0 && favourites.length === 0) ||
         (!state.rating.galleryId && !target);
     els.btnRatingApply.textContent = state.rating.busy ? s.applying : s.applyRating;
 
@@ -1293,12 +1336,17 @@ function renderLog() {
 
         if (entry.kind === "rating") {
             const source =
-                entry.source === "favorites"
-                    ? s.ratingSourceFavorites
-                    : s.ratingSourceLink;
+                entry.source === "picstome"
+                    ? s.ratingSourcePicstome
+                    : entry.source === "favorites"
+                      ? s.ratingSourceFavorites
+                      : s.ratingSourceLink;
             head.textContent = `${formatDate(entry.at)} · ${fmt(
                 s.ratingLogLine,
-                { stars: entry.rating, n: entry.rated },
+                {
+                    stars: entry.rating === "mixed" ? "1–5" : entry.rating,
+                    n: entry.rated,
+                },
             )} · ${source}`;
             card.appendChild(head);
             for (const item of entry.files || []) {
@@ -1702,15 +1750,20 @@ async function refreshState() {
 
 function openFavoritesPrompt(report) {
     const favorites = report?.favorites || [];
-    if (favorites.length === 0) return;
+    const plan = report?.ratingPlan?.items || [];
+    if (favorites.length === 0 && plan.length === 0) return;
     state.rating = {
         open: true,
+        // Ask once for every favourite without a rating. The exact Picstome
+        // ratings of the other photos are written as-is.
         files: favorites.map((photo) => stem(photo.filename)),
         value: "5",
         galleryId: report.galleryId,
         photosDir: null,
         source: "favorites",
+        mode: "plan",
         favorites: favorites,
+        plan: plan,
         busy: false,
         result: null,
     };
@@ -2019,12 +2072,35 @@ async function startSync(galleryId, name) {
 }
 
 async function applyRating() {
-    if (state.rating.busy || state.rating.files.length === 0) return;
+    if (state.rating.busy) return;
     const appliedState = state.rating;
+    const isPlan = appliedState.mode === "plan";
+    if (!isPlan && appliedState.files.length === 0) return;
     appliedState.busy = true;
     appliedState.result = null;
     renderRating();
     try {
+        if (isPlan) {
+            // Sync flow: write the exact Picstome ratings, and answer the
+            // "favourite without a rating" prompt with the chosen value.
+            const favourites = appliedState.favorites || [];
+            const result = await invoke("apply_rating_plan", {
+                galleryId: appliedState.galleryId,
+                favouritesWithoutRating: favourites.length > 0
+                    ? Number(appliedState.value)
+                    : null,
+            });
+            appliedState.result = result;
+            if (result.errors === 0 && result.rated > 0) {
+                setTimeout(() => {
+                    if (state.rating === appliedState) {
+                        state.rating.open = false;
+                        renderRating();
+                    }
+                }, 1100);
+            }
+            return;
+        }
         const result = await invoke("rate_files", {
             files: appliedState.files,
             rating: appliedState.value,

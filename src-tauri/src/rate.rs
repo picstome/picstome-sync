@@ -61,7 +61,6 @@ fn rating_percent(rating: &str) -> &'static str {
         _ => "0",
     }
 }
-
 fn normalize_rating(value: &str) -> &'static str {
     match value.trim() {
         "1" => "1",
@@ -153,6 +152,138 @@ async fn run_exiftool(
     let message = String::from_utf8_lossy(&output.stderr).trim().to_string();
     let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
     Err(if message.is_empty() { stdout } else { message })
+}
+
+/// Clear the XMP rating written by an earlier sync. Photo metadata is always
+/// rewritten as a whole, so "no rating" has to be an explicit write.
+async fn clear_exiftool_rating(invocation: &Invocation, files: &[PathBuf]) -> Result<(), String> {
+    let output = Command::new(&invocation.program)
+        .args(&invocation.prefix)
+        .args([
+            "-m",
+            "-overwrite_original",
+            "-P",
+            "-quiet",
+            "-Rating=",
+            "-RatingPercent=",
+        ])
+        .args(files)
+        .output()
+        .await
+        .map_err(|err| err.to_string())?;
+
+    if output.status.success() {
+        return Ok(());
+    }
+
+    let message = String::from_utf8_lossy(&output.stderr).trim().to_string();
+    let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    Err(if message.is_empty() { stdout } else { message })
+}
+
+/// Write one rating per file. Rating 1-5 sets the stars; `None` clears them.
+/// Raw and JPEG versions of the same photo are written together so they never
+/// disagree.
+pub async fn apply_ratings(
+    exiftool: Option<&Path>,
+    photos: &[(String, Option<u8>)],
+    photos_dir: &Path,
+) -> RateResult {
+    if photos.is_empty() {
+        return RateResult {
+            rated: 0,
+            not_found: 0,
+            errors: 0,
+            details: Vec::new(),
+        };
+    }
+    let names: Vec<String> = photos.iter().map(|(name, _)| name.clone()).collect();
+    let Some(names) = sanitize_file_names(&names) else {
+        return RateResult::error_for(&names, "Invalid request");
+    };
+    if names.len() > MAX_FILES {
+        return RateResult::error_for(&names, format!("Too many files (limit {MAX_FILES})"));
+    }
+    let Some(exiftool) = (match exiftool {
+        Some(path) => resolve_exiftool(path).await,
+        None => None,
+    }) else {
+        return RateResult::error_for(&names, "Photo tool unavailable");
+    };
+    if !photos_dir.is_dir() {
+        return RateResult::error_for(&names, "Folder not accessible");
+    }
+
+    let (records, _) = scan_local_photos(photos_dir, 8, true, MAX_PHOTO_BYTES);
+    let mut by_stem: HashMap<String, Vec<(String, PathBuf)>> = HashMap::new();
+    for record in records {
+        let Some(stem) = Path::new(&record.filename)
+            .file_stem()
+            .and_then(|stem| stem.to_str())
+        else {
+            continue;
+        };
+        by_stem
+            .entry(stem.to_lowercase())
+            .or_default()
+            .push((record.filename, record.path));
+    }
+
+    let mut rated = 0usize;
+    let mut errors = 0usize;
+    let mut not_found = 0usize;
+    let mut details = Vec::new();
+    for (name, rating) in photos {
+        let base = Path::new(name)
+            .file_stem()
+            .and_then(|stem| stem.to_str())
+            .unwrap_or(name)
+            .to_lowercase();
+        let Some(entries) = by_stem.get(&base) else {
+            not_found += 1;
+            details.push(RateDetail {
+                name: name.clone(),
+                status: "notfound".into(),
+                file: None,
+                msg: Some("not found".into()),
+            });
+            continue;
+        };
+        for (filename, path) in entries {
+            let paths = [path.clone()];
+            let result = match rating {
+                Some(value) => run_exiftool(&exiftool, &paths, &value.to_string()).await,
+                None => clear_exiftool_rating(&exiftool, &paths).await,
+            };
+            match result {
+                Ok(()) => {
+                    rated += 1;
+                    details.push(RateDetail {
+                        name: name.clone(),
+                        status: "ok".into(),
+                        file: Some(filename.clone()),
+                        msg: None,
+                    });
+                }
+                Err(err) => {
+                    errors += 1;
+                    details.push(RateDetail {
+                        name: name.clone(),
+                        status: "error".into(),
+                        file: Some(filename.clone()),
+                        msg: Some(err),
+                    });
+                }
+            }
+        }
+    }
+
+    RateResult {
+        rated,
+        not_found,
+        errors,
+        details,
+    }
 }
 
 pub async fn rate_files(

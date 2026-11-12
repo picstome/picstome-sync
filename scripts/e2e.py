@@ -835,7 +835,7 @@ def main():
             """,
         )
         log("favorites rating:", favorites_result.splitlines()[0] if favorites_result else favorites_result)
-        assert "5 file" in favorites_result.lower() and "rated" in favorites_result.lower(), favorites_result
+        assert "file" in favorites_result.lower() and "rated" in favorites_result.lower(), favorites_result
         deadline = time.time() + 10
         while time.time() < deadline:
             modal_state = run_async(
@@ -858,25 +858,29 @@ def main():
             )
         )
         log("favorites log:", favorites_log_text)
-        assert "Rating 4★" in favorites_log_text, favorites_log_text
+        assert "Rating 1–5★" in favorites_log_text, favorites_log_text
 
         with open(os.path.join(user_data, f"{gallery}.json"), encoding="utf-8") as handle:
             snapshot = json.load(handle)
         rated_favorites = [
             file for file in snapshot["files"] if file.get("favoriteRatedFor")
         ]
-        assert len(rated_favorites) >= 5, rated_favorites
+        assert len(rated_favorites) >= 1, rated_favorites
+        # Every Picstome rating must reach disk, including 1-4 star photos.
+        assert any(
+            file.get("ratingApplied") == 4 for file in snapshot["files"]
+        ), snapshot["files"]
         rating_log = js_invoke(session, "get_sync_log", {"galleryId": gallery})
         assert any(
             entry.get("kind") == "rating"
-            and entry.get("rating") == "4"
-            and entry.get("source") == "favorites"
-            and entry.get("rated", 0) >= 5
+            and entry.get("source") == "picstome"
+            and entry.get("rated", 0) >= 1
             for entry in rating_log
         ), rating_log
         after_rating = js_invoke(session, "sync_gallery", {"galleryId": gallery})
         log("after favorites:", after_rating["counts"], "favorites:", len(after_rating["favorites"]))
         assert not after_rating["favorites"], after_rating["favorites"]
+        assert not after_rating["ratingPlan"]["items"], after_rating["ratingPlan"]["items"]
         assert not after_rating["uploaded"], after_rating["uploaded"]
 
         # First-sync review: both directions must be visible and selectable.

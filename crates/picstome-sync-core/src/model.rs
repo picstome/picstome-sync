@@ -1,11 +1,24 @@
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize};
 use serde_json::Value;
 
 pub const DEFAULT_API_BASE: &str = "https://app.picstome.com";
 pub const CLIENT_NAME: &str = "picstome-sync";
-/// Snapshot schema written by this engine. Older snapshots are discarded and
-/// rebuilt from the current remote/local state.
-pub const SNAPSHOT_SCHEMA: u32 = 4;
+/// Snapshot schema written by this engine. Snapshots from the previous schema
+/// are upgraded in place so the app does not ask for a first-sync preview just
+/// because new rating fields were added.
+pub const SNAPSHOT_SCHEMA: u32 = 5;
+
+/// Distinguishes a missing field from an explicit `null`: `None` means the
+/// server did not send the field (older API), `Some(None)` means it sent
+/// `null`. Rating writes must never clear a local value just because an older
+/// server omitted the field.
+fn deserialize_double_option<'de, D, T>(deserializer: D) -> Result<Option<Option<T>>, D::Error>
+where
+    D: Deserializer<'de>,
+    T: Deserialize<'de>,
+{
+    Option::<T>::deserialize(deserializer).map(Some)
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 #[serde(rename_all = "camelCase", default)]
@@ -82,8 +95,24 @@ pub struct SnapshotFile {
     pub remote_deleted: bool,
     #[serde(default)]
     pub keep_local: bool,
+    /// `favorited_at` for which the photographer already answered the
+    /// "favourite without a rating" prompt, so it is asked only once.
     #[serde(default)]
     pub favorite_rated_for: Option<String>,
+    /// `favorited_at` reported by the last manifest, so a new heart re-opens
+    /// the "apply a rating" prompt.
+    #[serde(default)]
+    pub favorited_at: Option<String>,
+    /// Photographer rating reported by the last manifest (1-5 or none).
+    #[serde(default)]
+    pub rating: Option<u8>,
+    /// Rating that was last written to the local file metadata. It lets the
+    /// app avoid rewriting EXIF and re-prompting on every sync.
+    #[serde(default)]
+    pub rating_applied: Option<u8>,
+    /// Favourite state reported by the last manifest (heart).
+    #[serde(default)]
+    pub is_favorite: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -121,6 +150,17 @@ pub struct Photo {
     pub identity_key: Option<String>,
     #[serde(default)]
     pub favorited_at: Option<String>,
+    /// Photographer-only stars. Double option so an older server that omits
+    /// the field (`None`) is distinguishable from an explicit clear
+    /// (`Some(None)`).
+    #[serde(default, deserialize_with = "deserialize_double_option")]
+    pub rating: Option<Option<u8>>,
+    /// Heart mirror of `favorited_at`. `None` when an older server omits it.
+    #[serde(default)]
+    pub is_favorite: Option<bool>,
+    /// Archived photos are still listed; only the prompt ignores them.
+    #[serde(default)]
+    pub archived_at: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -356,6 +396,50 @@ pub struct FavoritePhoto {
     pub identity_key: Option<String>,
     #[serde(default)]
     pub favorited_at: Option<String>,
+    /// Photographer stars, when the manifest includes them.
+    #[serde(default)]
+    pub rating: Option<u8>,
+    #[serde(default)]
+    pub archived: bool,
+}
+
+/// One photo whose Picstome rating has to be written to the local file.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RatingSyncItem {
+    pub id: String,
+    pub filename: String,
+    #[serde(default)]
+    pub identity_key: Option<String>,
+    /// Stars in Picstome (1-5). `None` means unrated.
+    #[serde(default)]
+    pub rating: Option<u8>,
+    #[serde(default)]
+    pub is_favorite: bool,
+    #[serde(default)]
+    pub archived: bool,
+    /// Stars previously written to the local file, when known.
+    #[serde(default)]
+    pub applied_rating: Option<u8>,
+}
+
+/// What the desktop still has to apply after a sync.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RatingSyncPlan {
+    /// Photos whose Picstome rating differs from the local EXIF value.
+    #[serde(default)]
+    pub items: Vec<RatingSyncItem>,
+    /// Favourites with a heart but no rating: the photographer is asked once
+    /// for a star value, then it is written to all of them.
+    #[serde(default)]
+    pub needs_rating: Vec<FavoritePhoto>,
+}
+
+impl RatingSyncPlan {
+    pub fn is_empty(&self) -> bool {
+        self.items.is_empty() && self.needs_rating.is_empty()
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -384,6 +468,9 @@ pub struct SyncReport {
     pub remote_deleted: Vec<RemoteDeletedItem>,
     pub proposals: DeleteProposals,
     pub favorites: Vec<FavoritePhoto>,
+    /// Picstome ratings that still have to be written to the local files.
+    #[serde(default)]
+    pub rating_plan: RatingSyncPlan,
     pub errors: Vec<SyncErrorItem>,
     #[serde(default)]
     pub warnings: Vec<SyncWarningItem>,
@@ -455,15 +542,19 @@ pub struct ConfigView {
 }
 
 impl Manifest {
+    /// Every photo that carries a heart, including legacy favourites that have
+    /// no rating yet (the case the photographer has to answer).
     pub fn favorite_photos(&self) -> Vec<FavoritePhoto> {
         self.photos
             .iter()
-            .filter(|photo| photo.favorited_at.is_some())
+            .filter(|photo| photo.has_heart())
             .map(|photo| FavoritePhoto {
                 id: photo.id.clone(),
                 filename: photo.filename.clone(),
                 identity_key: photo.identity(),
                 favorited_at: photo.favorited_at.clone(),
+                rating: photo.rating_value(),
+                archived: photo.archived_at.is_some(),
             })
             .collect()
     }
@@ -481,6 +572,31 @@ impl Photo {
             .clone()
             .or_else(|| crate::identity::identity_key(&self.filename))
     }
+
+    /// Stars reported by the manifest. A field omitted by an older server is
+    /// treated as "not rated" here; the sync engine keeps any stored value.
+    pub fn rating_value(&self) -> Option<u8> {
+        self.rating.flatten()
+    }
+
+    pub fn is_archived(&self) -> bool {
+        self.archived_at.is_some()
+    }
+
+    /// The heart, from `is_favorite` when present and `favorited_at` otherwise.
+    /// Five stars implies the heart, matching the web rules.
+    pub fn has_heart(&self) -> bool {
+        self.is_favorite
+            .unwrap_or_else(|| self.favorited_at.is_some())
+            || self.rating_value() == Some(5)
+    }
+
+    /// A favourite the photographer never rated: the prompt has to ask for a
+    /// star value instead of silently assuming five. Archived photos are asked
+    /// too: archiving is not a rating decision.
+    pub fn needs_rating(&self) -> bool {
+        self.has_heart() && self.rating_value().is_none()
+    }
 }
 
 impl SnapshotFile {
@@ -488,6 +604,35 @@ impl SnapshotFile {
         self.identity_key
             .clone()
             .or_else(|| crate::identity::identity_key(&self.filename))
+    }
+
+    /// Refresh the rating/heart reported by the manifest. A manifest that
+    /// omits `rating` (older server) leaves the stored value untouched, while
+    /// an explicit `null` clears it. The locally applied value is carried over
+    /// so a re-sync does not ask again.
+    pub fn apply_remote_rating(
+        &mut self,
+        photo: &Photo,
+        rating_applied: Option<u8>,
+        favorite_rated_for: Option<String>,
+    ) {
+        if let Some(rating) = photo.rating {
+            self.rating = rating;
+        }
+        // Prefer the explicit flag. When the server omits it but does speak the
+        // ratings contract, `favorited_at` is authoritative (it is always
+        // serialized, null included). Only a server that sends neither keeps
+        // the stored heart, so an older API cannot un-favourite everything.
+        let heart = match (photo.is_favorite, photo.rating) {
+            (Some(flag), _) => Some(flag),
+            (None, Some(_)) => Some(photo.favorited_at.is_some()),
+            (None, None) => photo.favorited_at.as_ref().map(|_| true),
+        };
+        if let Some(heart) = heart {
+            self.is_favorite = heart;
+        }
+        self.rating_applied = rating_applied;
+        self.favorite_rated_for = favorite_rated_for;
     }
 }
 
@@ -593,6 +738,9 @@ mod tests {
                     version_number: None,
                     identity_key: None,
                     favorited_at: Some("2026-01-01T12:00:00Z".into()),
+                    rating: Some(Some(5)),
+                    is_favorite: Some(true),
+                    archived_at: None,
                 },
                 Photo {
                     id: "p2".into(),
@@ -607,6 +755,9 @@ mod tests {
                     version_number: None,
                     identity_key: None,
                     favorited_at: None,
+                    rating: None,
+                    is_favorite: None,
+                    archived_at: None,
                 },
             ],
         };
@@ -620,6 +771,102 @@ mod tests {
             favorites[0].favorited_at.as_deref(),
             Some("2026-01-01T12:00:00Z")
         );
+        assert_eq!(favorites[0].rating, Some(5));
+    }
+
+    #[test]
+    fn legacy_favourite_without_rating_is_flagged() {
+        let photo = Photo {
+            id: "p1".into(),
+            filename: "a.jpg".into(),
+            size: None,
+            hash: None,
+            download_hash: None,
+            hash_algo: None,
+            url: String::new(),
+            updated_at: None,
+            version_count: None,
+            version_number: None,
+            identity_key: None,
+            favorited_at: Some("2026-01-01T12:00:00Z".into()),
+            rating: Some(None),
+            is_favorite: Some(true),
+            archived_at: None,
+        };
+        assert!(photo.has_heart());
+        assert!(photo.needs_rating());
+
+        // Five stars implies the heart even when the server forgets the flag.
+        let rated = Photo {
+            rating: Some(Some(5)),
+            is_favorite: None,
+            favorited_at: None,
+            ..photo.clone()
+        };
+        assert!(rated.has_heart());
+        assert!(!rated.needs_rating());
+
+        // Archived photos are still rated, and the prompt asks for them too:
+        // archiving is not a rating decision.
+        let archived = Photo {
+            archived_at: Some("2026-02-01T10:00:00Z".into()),
+            ..photo.clone()
+        };
+        assert!(archived.needs_rating());
+    }
+
+    #[test]
+    fn missing_rating_field_keeps_the_stored_value() {
+        // `rating` absent must not be confused with an explicit null: an older
+        // server cannot wipe a value the app already knows.
+        let photo: Photo = serde_json::from_value(serde_json::json!({
+            "id": "1",
+            "filename": "a.jpg",
+        }))
+        .unwrap();
+        assert_eq!(photo.rating, None);
+        assert_eq!(photo.is_favorite, None);
+
+        let cleared: Photo = serde_json::from_value(serde_json::json!({
+            "id": "1",
+            "filename": "a.jpg",
+            "rating": null,
+            "is_favorite": false,
+        }))
+        .unwrap();
+        assert_eq!(cleared.rating, Some(None));
+        assert_eq!(cleared.is_favorite, Some(false));
+
+        let mut file = SnapshotFile {
+            id: "1".into(),
+            filename: "a.jpg".into(),
+            identity_key: None,
+            relative_path: None,
+            hash: None,
+            hash_algo: None,
+            size: None,
+            mtime: None,
+            local_present: true,
+            local_hash: None,
+            local_size: None,
+            version_count: None,
+            version_number: None,
+            remote_deleted: false,
+            keep_local: false,
+            favorite_rated_for: None,
+            favorited_at: None,
+            rating: Some(4),
+            rating_applied: Some(3),
+            is_favorite: true,
+        };
+        // Absent field: nothing changes.
+        file.apply_remote_rating(&photo, Some(3), None);
+        assert_eq!(file.rating, Some(4));
+
+        // Explicit clear: both the rating and the heart go away.
+        file.apply_remote_rating(&cleared, Some(4), None);
+        assert_eq!(file.rating, None);
+        assert!(!file.is_favorite);
     }
 
     #[test]

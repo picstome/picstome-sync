@@ -53,6 +53,8 @@ pub struct PhotoRecord {
     pub version_number: u64,
     pub updated_at: String,
     pub favorited_at: Option<String>,
+    pub rating: Option<u8>,
+    pub archived_at: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -108,6 +110,8 @@ fn make_photo(id: String, filename: String, seed: &str, size: usize, version: u6
         version_number: version,
         updated_at: iso_now(),
         favorited_at: None,
+        rating: None,
+        archived_at: None,
     }
 }
 
@@ -132,6 +136,17 @@ pub fn seed_galleries(photo_size: usize) -> HashMap<String, GalleryRecord> {
         );
         if index % 10 == 0 {
             photo.favorited_at = Some(format!("2026-01-{:02}T12:00:00Z", index));
+            // Legacy favourite: heart but no rating. The photographer is asked
+            // once which stars to apply to these.
+            if index != 20 {
+                photo.rating = Some(5);
+            }
+        } else if index % 7 == 0 {
+            // Rated without a heart: 1-4 stars only.
+            photo.rating = Some(((index % 4) + 1) as u8);
+        }
+        if index == 30 {
+            photo.archived_at = Some("2026-02-01T10:00:00Z".to_string());
         }
         weddings.push(photo);
     }
@@ -269,6 +284,9 @@ fn manifest_photo(photo: &PhotoRecord, base: &str, gallery_id: &str) -> Value {
         "version_number": photo.version_number,
         "identity_key": photo.identity_key,
         "favorited_at": photo.favorited_at,
+        "is_favorite": photo.favorited_at.is_some() || photo.rating == Some(5),
+        "rating": photo.rating,
+        "archived_at": photo.archived_at,
     })
 }
 

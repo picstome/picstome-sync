@@ -157,9 +157,18 @@ impl Store {
 
     pub fn load_snapshot(&self, gallery_id: &str) -> Option<Snapshot> {
         let path = self.snapshot_path(gallery_id).ok()?;
-        let snapshot: Snapshot = read_json(&path)?;
-        if snapshot.schema != SNAPSHOT_SCHEMA {
+        let mut snapshot: Snapshot = read_json(&path)?;
+        if snapshot.schema == 0 {
             return None;
+        }
+        if snapshot.schema > SNAPSHOT_SCHEMA {
+            return None;
+        }
+        if snapshot.schema < SNAPSHOT_SCHEMA {
+            // Upgrading in place keeps the diff baseline, so adding rating
+            // fields never makes the app ask for a first-sync preview again.
+            snapshot.schema = SNAPSHOT_SCHEMA;
+            let _ = self.save_snapshot(&snapshot);
         }
         Some(snapshot)
     }
@@ -366,11 +375,32 @@ mod extra_tests {
     }
 
     #[test]
-    fn outdated_snapshot_schema_is_ignored() {
+    fn older_snapshot_schema_is_upgraded_in_place() {
         let dir = tempfile::tempdir().unwrap();
         let store = Store::new(dir.path()).unwrap();
         let snapshot = Snapshot {
             schema: SNAPSHOT_SCHEMA - 1,
+            gallery_id: "G123".into(),
+            name: "MiBoda".into(),
+            local_path: "/tmp/a".into(),
+            last_sync_at: 1,
+            remote_rev: None,
+            local_photo_count: 0,
+            local_bytes: 0,
+            files: vec![],
+        };
+        store.save_snapshot(&snapshot).unwrap();
+        let loaded = store.load_snapshot("G123").expect("upgraded snapshot");
+        assert_eq!(loaded.schema, SNAPSHOT_SCHEMA);
+        assert_eq!(loaded.name, "MiBoda");
+    }
+
+    #[test]
+    fn newer_snapshot_schema_is_ignored() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::new(dir.path()).unwrap();
+        let snapshot = Snapshot {
+            schema: SNAPSHOT_SCHEMA + 1,
             gallery_id: "G123".into(),
             name: "MiBoda".into(),
             local_path: "/tmp/a".into(),

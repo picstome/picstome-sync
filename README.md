@@ -29,8 +29,11 @@ and star-rating workflow.
 - Searches synced and remote Picstome galleries with pagination; choosing a
   remote result asks for the local folder and links it.
 - The `+` button opens the gallery-creation page on the current API target.
-- Writes 1–5 star ratings to local files with exiftool and exports favorite
-  lists for Lightroom, Capture One, Finder/Explorer, or plain text.
+- Syncs the photographer's Picstome star rating (1–5) to the local files with
+  exiftool, always after asking first. Photos with a heart but no rating open a
+  single prompt: the stars chosen there apply to all of them.
+- Writes manual 1–5 star ratings to local files with exiftool and exports
+  favorite lists for Lightroom, Capture One, Finder/Explorer, or plain text.
 - Shows photo count, disk usage, and a per-gallery activity log; a centered
   progress modal reports the current sync phase, file and percentage.
 - Opens the linked gallery in Picstome from the title link (falls back to the
@@ -60,6 +63,13 @@ and star-rating workflow.
   ignored again** in the report to clear them.
 - **Downloads:** signed URLs with parallel range requests and resume support.
   Verification uses the manifest `download_hash` when available.
+- **Ratings:** the manifest `rating` (1–5) is the source of truth and is copied
+  to the local file metadata via exiftool after a confirmation. A rating-only
+  change never re-downloads the file. `is_favorite` drives the heart; a heart
+  without a rating is queued in a single "favourite photos" prompt instead of
+  being assumed to be five stars. `rating_applied` in the snapshot remembers
+  what was written, so re-syncs do not ask or rewrite again. The manual Rate tab
+  (deep link or manual pick) is separate and only changes local metadata.
 - **Safety:** writes stay inside the linked folder, filenames are sanitized,
   and destructive actions require explicit confirmation. Local deletions go to
   the OS trash or a `.picstome-trash` folder inside the gallery.

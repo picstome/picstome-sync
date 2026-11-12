@@ -18,8 +18,9 @@ use crate::localfiles::{
 };
 use crate::model::{
     DeleteProposal, DeleteProposals, DeleteResponse, Diff, DownloadedItem, FavoritePhoto,
-    GalleryEntry, Manifest, Photo, Progress, Snapshot, SnapshotFile, SyncErrorItem, SyncReport,
-    SyncWarningItem, TrashedFile, UploadedItem, SNAPSHOT_SCHEMA,
+    GalleryEntry, Manifest, Photo, Progress, RatingSyncItem, RatingSyncPlan, Snapshot,
+    SnapshotFile, SyncErrorItem, SyncReport, SyncWarningItem, TrashedFile, UploadedItem,
+    SNAPSHOT_SCHEMA,
 };
 use crate::sanitize::{is_inside, safe_join, sanitize_file_name};
 use crate::transfer::{download_file, DownloadOptions, ProgressFn};
@@ -130,6 +131,10 @@ fn snapshot_entry(
         remote_deleted,
         keep_local,
         favorite_rated_for,
+        favorited_at: None,
+        rating: None,
+        rating_applied: None,
+        is_favorite: false,
     }
 }
 
@@ -379,6 +384,24 @@ fn build_snapshot(
             .then_with(|| a.relative_path.cmp(&b.relative_path))
     });
 
+    // Copy the photographer rating and heart from the manifest into the
+    // snapshot. A manifest that omits `rating` keeps whatever was stored, so
+    // an older server cannot wipe a value locally. A rating already written to
+    // the file (`rating_applied`) is carried over so the prompt and the EXIF
+    // write stay idempotent across syncs.
+    for file in &mut files {
+        let Some(key) = file.identity() else {
+            continue;
+        };
+        let stored = previous_by_key.get(&key).copied();
+        let applied = stored.and_then(|entry| entry.rating_applied);
+        let answered = stored.and_then(|entry| entry.favorite_rated_for.clone());
+        if let Some(photo) = manifest_by_key.get(&key) {
+            file.apply_remote_rating(photo, applied, answered);
+            file.favorited_at = photo.favorited_at.clone();
+        }
+    }
+
     let mut local_photo_count = local_files.len() as u64;
     let mut local_bytes: u64 = local_files.iter().map(|file| file.size).sum();
     let mut local_sizes: HashMap<String, u64> = local_files
@@ -409,6 +432,139 @@ fn build_snapshot(
         local_photo_count,
         local_bytes,
         files,
+    }
+}
+
+/// Work out which Picstome ratings still have to reach the local files.
+///
+/// Runs against the snapshot that was just built, so downloads and uploads of
+/// this sync are already on disk. A photo whose rating was already written
+/// (`rating_applied` matches the manifest) is skipped, which makes a re-sync a
+/// no-op. Archived photos are included: archiving is not a rating decision.
+fn build_rating_plan(photos: &[Photo], files: &[SnapshotFile]) -> RatingSyncPlan {
+    let by_key: HashMap<String, &SnapshotFile> = files
+        .iter()
+        .filter_map(|file| file.identity().map(|key| (key, file)))
+        .collect();
+
+    let mut items = Vec::new();
+    let mut needs_rating = Vec::new();
+    for photo in photos {
+        let Some(key) = photo.identity() else {
+            continue;
+        };
+        let Some(file) = by_key.get(&key).copied() else {
+            continue;
+        };
+        if !file.local_present {
+            continue;
+        }
+        let applied = file.rating_applied;
+        // `rating` absent means an older server: keep whatever is stored and
+        // do not queue a clear.
+        let Some(remote) = photo.rating else {
+            continue;
+        };
+
+        // Legacy favourite (heart, no rating): the photographer answers once.
+        // Until then it is a question, never an assumption of five stars, and
+        // after the answer the local value must not be cleared just because
+        // Picstome still stores `rating = null`.
+        if photo.has_heart() && remote.is_none() {
+            let answered = applied.is_some()
+                || (file.favorite_rated_for.is_some()
+                    && file.favorite_rated_for == photo.favorited_at);
+            if !answered {
+                needs_rating.push(FavoritePhoto {
+                    id: photo.id.clone(),
+                    filename: photo.filename.clone(),
+                    identity_key: Some(key),
+                    favorited_at: photo.favorited_at.clone(),
+                    rating: None,
+                    archived: photo.is_archived(),
+                });
+            }
+            continue;
+        }
+
+        if remote == applied || (remote.is_none() && applied.is_none()) {
+            continue;
+        }
+        items.push(RatingSyncItem {
+            id: photo.id.clone(),
+            filename: photo.filename.clone(),
+            identity_key: Some(key),
+            rating: remote,
+            is_favorite: photo.has_heart(),
+            archived: photo.is_archived(),
+            applied_rating: applied,
+        });
+    }
+    items.sort_by(|a, b| a.filename.cmp(&b.filename));
+    needs_rating.sort_by(|a, b| a.filename.cmp(&b.filename));
+    RatingSyncPlan {
+        items,
+        needs_rating,
+    }
+}
+
+/// Rebuild the rating work from a stored snapshot, without another API call.
+///
+/// `favourites_without_rating` is the star value the photographer chose for
+/// photos that have a heart but no rating (the legacy case from issue #321).
+/// Until they answer, those photos stay in `needs_rating`.
+pub fn rating_plan_from_snapshot(
+    snapshot: &Snapshot,
+    favourites_without_rating: Option<u8>,
+) -> RatingSyncPlan {
+    let mut items = Vec::new();
+    let mut needs_rating = Vec::new();
+    for file in snapshot.files.iter().filter(|file| file.local_present) {
+        let Some(key) = file.identity() else {
+            continue;
+        };
+        let heart_without_rating = file.is_favorite && file.rating.is_none();
+        // Already answered (or already written to disk): never ask again, and
+        // never clear the local stars just because Picstome stores no rating.
+        let answered = file.rating_applied.is_some()
+            || (file.favorite_rated_for.is_some() && file.favorite_rated_for == file.favorited_at);
+        if heart_without_rating && answered {
+            continue;
+        }
+        if heart_without_rating && favourites_without_rating.is_none() {
+            needs_rating.push(FavoritePhoto {
+                id: file.id.clone(),
+                filename: file.filename.clone(),
+                identity_key: Some(key),
+                favorited_at: file.favorited_at.clone(),
+                rating: None,
+                archived: false,
+            });
+            continue;
+        }
+        let target = if heart_without_rating {
+            favourites_without_rating
+        } else {
+            file.rating
+        };
+        if target == file.rating_applied || (target.is_none() && file.rating_applied.is_none()) {
+            continue;
+        }
+        items.push(RatingSyncItem {
+            id: file.id.clone(),
+            filename: file.filename.clone(),
+            identity_key: Some(key),
+            rating: target,
+            is_favorite: file.is_favorite,
+            archived: false,
+            applied_rating: file.rating_applied,
+        });
+    }
+    items.sort_by(|a, b| a.filename.cmp(&b.filename));
+    needs_rating.sort_by(|a, b| a.filename.cmp(&b.filename));
+    RatingSyncPlan {
+        items,
+        needs_rating,
     }
 }
 
@@ -589,6 +745,50 @@ pub fn mark_favorites_rated(
             file.favorite_rated_for = Some((*favorited_at).to_string());
             updated += 1;
         }
+    }
+    store.save_snapshot(&snapshot)?;
+    Ok(updated)
+}
+
+/// Record the stars that were just written to the local files (and, for
+/// favourites without a rating, the answer the photographer gave).
+///
+/// `applied` is `(identity_key, rating)`. Photos are also marked as answered
+/// for the current `favorited_at`, so the prompt is not shown again on the
+/// next sync even when the photographer chose fewer than five stars.
+pub fn mark_ratings_applied(
+    store: &Store,
+    gallery_id: &str,
+    applied: &[(String, Option<u8>)],
+    answered_for: &[(String, String)],
+) -> CoreResult<usize> {
+    if applied.is_empty() && answered_for.is_empty() {
+        return Ok(0);
+    }
+    let mut snapshot = store
+        .load_snapshot(gallery_id)
+        .ok_or_else(|| CoreError::InvalidData("gallery snapshot not found".into()))?;
+    let ratings: HashMap<&str, Option<u8>> = applied
+        .iter()
+        .map(|(key, rating)| (key.as_str(), *rating))
+        .collect();
+    let answers: HashMap<&str, &str> = answered_for
+        .iter()
+        .map(|(key, favorited_at)| (key.as_str(), favorited_at.as_str()))
+        .collect();
+    let mut updated = 0;
+    for file in &mut snapshot.files {
+        let Some(key) = file.identity() else {
+            continue;
+        };
+        let Some(rating) = ratings.get(key.as_str()) else {
+            continue;
+        };
+        file.rating_applied = *rating;
+        if let Some(favorited_at) = answers.get(key.as_str()) {
+            file.favorite_rated_for = Some((*favorited_at).to_string());
+        }
+        updated += 1;
     }
     store.save_snapshot(&snapshot)?;
     Ok(updated)
@@ -1158,6 +1358,7 @@ pub async fn run_gallery_sync(
             }
         },
         favorites: Vec::new(),
+        rating_plan: RatingSyncPlan::default(),
         errors: report_errors,
         warnings: duplicate_local_warnings(&local_files),
         ignored_local: ignored_local_files
@@ -1367,32 +1568,6 @@ pub async fn run_gallery_sync(
         }
     }
 
-    let previous_by_key: HashMap<String, &SnapshotFile> = previous_files
-        .iter()
-        .filter_map(|file| file.identity().map(|key| (key, file)))
-        .collect();
-    report.favorites = active_photos
-        .iter()
-        .filter(|photo| photo.favorited_at.is_some())
-        .filter(|photo| {
-            let already_rated = photo
-                .identity()
-                .and_then(|key| previous_by_key.get(&key))
-                .map(|file| {
-                    file.favorite_rated_for.is_some()
-                        && file.favorite_rated_for == photo.favorited_at
-                })
-                .unwrap_or(false);
-            !already_rated
-        })
-        .map(|photo| FavoritePhoto {
-            id: photo.id.clone(),
-            filename: photo.filename.clone(),
-            identity_key: photo.identity(),
-            favorited_at: photo.favorited_at.clone(),
-        })
-        .collect();
-
     let mut snapshot = build_snapshot(
         gallery,
         &manifest,
@@ -1412,6 +1587,12 @@ pub async fn run_gallery_sync(
             .map(|file| file.size)
             .sum::<u64>(),
     );
+
+    report.rating_plan = build_rating_plan(&active_photos, &snapshot.files);
+    // The prompt and the plan share one source of truth: a favourite without a
+    // rating is asked once, and only while it has not been answered.
+    report.favorites = report.rating_plan.needs_rating.clone();
+
     store.save_snapshot(&snapshot)?;
 
     if store
@@ -1513,6 +1694,9 @@ mod tests {
             version_number: Some(1),
             identity_key: None,
             favorited_at: None,
+            rating: None,
+            is_favorite: None,
+            archived_at: None,
         }
     }
 
@@ -1546,6 +1730,10 @@ mod tests {
             remote_deleted: false,
             keep_local: false,
             favorite_rated_for: None,
+            favorited_at: None,
+            rating: None,
+            rating_applied: None,
+            is_favorite: false,
         }
     }
 
@@ -1846,5 +2034,82 @@ mod tests {
         let after = compute_diff(&saved.files, &[remote()], &[local_file]);
         assert_eq!(after.counts.local_modified, 0);
         assert_eq!(after.counts.in_sync, 1);
+    }
+
+    #[test]
+    fn rating_plan_only_lists_ratings_that_are_not_on_disk() {
+        let mut file = previous(Some(123));
+        file.identity_key = Some("image:a".into());
+        file.rating = Some(4);
+        file.rating_applied = Some(4);
+        let mut photo = remote();
+        photo.rating = Some(Some(4));
+        photo.is_favorite = Some(false);
+        photo.favorited_at = None;
+        let plan = build_rating_plan(&[photo.clone()], std::slice::from_ref(&file));
+        assert!(plan.items.is_empty());
+        assert!(plan.needs_rating.is_empty());
+
+        // A rating-only change (four to three stars) is planned without any
+        // download: the file diff never enters this function.
+        let mut changed = photo.clone();
+        changed.rating = Some(Some(3));
+        let plan = build_rating_plan(&[changed], std::slice::from_ref(&file));
+        assert_eq!(plan.items.len(), 1);
+        assert_eq!(plan.items[0].rating, Some(3));
+        assert_eq!(plan.items[0].applied_rating, Some(4));
+        assert!(!plan.items[0].is_favorite);
+    }
+
+    #[test]
+    fn rating_plan_asks_for_legacy_favourites_including_archived() {
+        let mut file = previous(Some(123));
+        file.identity_key = Some("image:a".into());
+        file.rating = None;
+        file.is_favorite = true;
+        file.favorited_at = Some("2026-01-01T12:00:00Z".into());
+
+        let mut photo = remote();
+        photo.rating = Some(None);
+        photo.is_favorite = Some(true);
+        photo.favorited_at = Some("2026-01-01T12:00:00Z".into());
+        let plan = build_rating_plan(&[photo.clone()], std::slice::from_ref(&file));
+        assert_eq!(plan.needs_rating.len(), 1);
+        assert_eq!(
+            plan.needs_rating[0].identity_key.as_deref(),
+            Some("image:a")
+        );
+        // Nothing is queued until the photographer answers.
+        assert!(plan.items.is_empty());
+
+        // Archived photos are still rated on disk; the prompt asks for them
+        // too because archiving is not a rating decision.
+        let mut archived = photo;
+        archived.archived_at = Some("2026-02-01T10:00:00Z".into());
+        let plan = build_rating_plan(&[archived], std::slice::from_ref(&file));
+        assert_eq!(plan.needs_rating.len(), 1);
+    }
+
+    #[test]
+    fn snapshot_keeps_the_rating_when_the_manifest_omits_it() {
+        let mut file = previous(Some(123));
+        file.identity_key = Some("image:a".into());
+        file.rating = Some(4);
+        file.is_favorite = true;
+        let mut photo = remote();
+        // Old server: no rating/is_favorite field at all.
+        photo.rating = None;
+        photo.is_favorite = None;
+        file.apply_remote_rating(&photo, Some(3), None);
+        assert_eq!(file.rating, Some(4));
+        assert!(file.is_favorite);
+        assert_eq!(file.rating_applied, Some(3));
+
+        // Explicit null clears the stars and the heart.
+        photo.rating = Some(None);
+        photo.is_favorite = Some(false);
+        file.apply_remote_rating(&photo, Some(4), None);
+        assert_eq!(file.rating, None);
+        assert!(!file.is_favorite);
     }
 }

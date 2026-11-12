@@ -21,7 +21,7 @@ use picstome_sync_core::model::{
 use picstome_sync_core::sanitize::{safe_join, sanitize_file_names, sanitize_gallery_id};
 use picstome_sync_core::sync::{
     adopt_local_changes, apply_remote_deletions, folder_exists, mark_favorites_rated,
-    preview_first_sync as preview_first_sync_core,
+    mark_ratings_applied, preview_first_sync as preview_first_sync_core, rating_plan_from_snapshot,
     resolve_remote_deletions as resolve_remote_deletions_core, run_gallery_sync, FirstSyncItem,
     FirstSyncPreview, RemoteDeleteAction, SyncOptions,
 };
@@ -695,6 +695,121 @@ pub async fn get_gallery_favorites(
     };
     let manifest = state.api().await.manifest(&id).await?;
     Ok(manifest.favorite_photos())
+}
+
+/// Write Picstome ratings to the local files.
+///
+/// `favourites_without_rating` is the star value chosen for favourites that
+/// have a heart but no rating; it is applied to every one of them. The sync
+/// never writes anything on its own: the UI asks first and then calls this.
+#[tauri::command]
+pub async fn apply_rating_plan(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    gallery_id: String,
+    favourites_without_rating: Option<u8>,
+) -> Result<RateResult, ErrorPayload> {
+    let Some(id) = sanitize_gallery_id(&gallery_id) else {
+        return Err(invalid_gallery());
+    };
+    let Some(gallery) = state.store.get_gallery(&id) else {
+        return Err(not_linked());
+    };
+    let Some(snapshot) = state.store.load_snapshot(&id) else {
+        return Err(command_error(
+            "Sync this gallery before applying ratings",
+            "invalid_request",
+        ));
+    };
+    let fallback = favourites_without_rating.filter(|value| (1..=5).contains(value));
+    // Photos the prompt asked about, so a chosen value also marks them
+    // answered and the question is not repeated on the next sync.
+    let asked = rating_plan_from_snapshot(&snapshot, None).needs_rating;
+    let plan = rating_plan_from_snapshot(&snapshot, fallback);
+    if plan.items.is_empty() {
+        return Ok(RateResult {
+            rated: 0,
+            not_found: 0,
+            errors: 0,
+            details: Vec::new(),
+        });
+    }
+
+    let ratings: Vec<(String, Option<u8>)> = plan
+        .items
+        .iter()
+        .map(|item| (item.filename.clone(), item.rating))
+        .collect();
+    let result = rate::apply_ratings(
+        state.exiftool.as_deref(),
+        &ratings,
+        Path::new(&gallery.local_path),
+    )
+    .await;
+
+    // The write rewrites the files. Adopt the new bytes as the sync baseline so
+    // the next run does not upload every rated photo as a new version.
+    let rated_files: Vec<String> = result
+        .details
+        .iter()
+        .filter(|detail| detail.status == "ok")
+        .filter_map(|detail| detail.file.clone())
+        .collect();
+    if !rated_files.is_empty() {
+        let _ = adopt_local_changes(&state.store, &id, &rated_files).await;
+    }
+
+    let rated_keys: std::collections::HashSet<String> = result
+        .details
+        .iter()
+        .filter(|detail| detail.status == "ok")
+        .filter_map(|detail| {
+            Path::new(detail.file.as_deref()?)
+                .file_stem()?
+                .to_str()
+                .map(str::to_lowercase)
+        })
+        .collect();
+    let mut applied: Vec<(String, Option<u8>)> = Vec::new();
+    let mut answered_for: Vec<(String, String)> = Vec::new();
+    for item in &plan.items {
+        let Some(key) = item.identity_key.clone() else {
+            continue;
+        };
+        let Some(stem) = Path::new(&item.filename)
+            .file_stem()
+            .and_then(|stem| stem.to_str())
+            .map(str::to_lowercase)
+        else {
+            continue;
+        };
+        if !rated_keys.contains(&stem) {
+            continue;
+        }
+        applied.push((key.clone(), item.rating));
+        if let Some(favorited_at) = asked
+            .iter()
+            .find(|photo| photo.identity_key.as_deref() == Some(key.as_str()))
+            .and_then(|photo| photo.favorited_at.clone())
+        {
+            answered_for.push((key, favorited_at));
+        }
+    }
+    let _ = mark_ratings_applied(&state.store, &id, &applied, &answered_for);
+
+    // Log what was actually written, not the prompt answer: a sync can write
+    // 1-5 stars in one go. `mixed` renders as a star range in the log.
+    let mut values: Vec<u8> = applied.iter().filter_map(|(_, rating)| *rating).collect();
+    values.sort_unstable();
+    values.dedup();
+    let log_rating = match values.as_slice() {
+        [] => String::new(),
+        [single] => single.to_string(),
+        _ => "mixed".to_string(),
+    };
+    append_rating_log(&state.store, Some(&id), &log_rating, &result, "picstome");
+    emit_state(&app, &state).await;
+    Ok(result)
 }
 
 #[derive(Debug, Serialize)]
