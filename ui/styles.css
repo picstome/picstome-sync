@@ -165,11 +165,21 @@ body {
     padding: 2px 4px;
 }
 
+/* Rows and section wrappers keep their natural height; the list scrolls.
+   Flexbox would otherwise compress them and let text overlap. */
+.gallery-list > * {
+    flex: 0 0 auto;
+}
+
 .gallery-row {
     display: flex;
     align-items: center;
     gap: 10px;
     width: 100%;
+    /* Never squeeze a row: the list scrolls instead. Without this, a long
+       gallery list shrinks rows to their 38px min-height and the three text
+       lines (name/stats/last sync) overflow into the next row. */
+    flex: 0 0 auto;
     padding: 9px 10px;
     border: 0;
     border-radius: var(--radius-sm);
@@ -336,6 +346,7 @@ body {
 }
 
 .sidebar-empty {
+    flex: 0 0 auto;
     padding: 18px 12px;
     text-align: center;
 }
@@ -1615,6 +1626,7 @@ button.danger:hover {
 }
 
 .search-row {
+    flex: 0 0 auto;
     padding: 0 4px 8px;
 }
 
@@ -1642,6 +1654,7 @@ button.danger:hover {
 }
 
 .search-empty {
+    flex: 0 0 auto;
     padding: 10px 8px;
     font-size: 12px;
     color: var(--muted);

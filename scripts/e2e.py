@@ -458,10 +458,90 @@ def main():
         # Fetching the manifest has no known total either: keep the bar moving.
         assert dialog["manifest"]["indeterminate"], dialog["manifest"]
 
+        # Sidebar layout regression guard: with many galleries the list must
+        # scroll, never compress rows into each other. Flexbox used to shrink
+        # each row to its 38px min-height while the three text lines needed
+        # ~42-64px, so names and "last sync" lines overlapped between rows.
+        sidebar_layout = json.loads(
+            run_async(
+                session,
+                """
+                const done = arguments[arguments.length - 1];
+                const list = document.getElementById('galleryList');
+                const original = list.innerHTML;
+                const names = [
+                  'Halloween 2026',
+                  'Laura - Street Book',
+                  'Leslie - Otono 2026 - Editorial',
+                  'Rebeca fitness - Editadas',
+                  'Jennifer - Puesta de sol',
+                  'Chema Photo',
+                  'Boda Marta y Luis',
+                  'Sesion producto'
+                ];
+                list.innerHTML = '';
+                for (const name of names) {
+                  const row = document.createElement('button');
+                  row.type = 'button';
+                  row.className = 'gallery-row';
+                  const avatar = document.createElement('span');
+                  avatar.className = 'gallery-avatar';
+                  avatar.textContent = name.trim().charAt(0).toUpperCase();
+                  const info = document.createElement('span');
+                  info.className = 'gallery-info';
+                  const title = document.createElement('span');
+                  title.className = 'gallery-name';
+                  title.textContent = name;
+                  const stats = document.createElement('span');
+                  stats.className = 'gallery-stats';
+                  stats.textContent = '330 fotos - 4.3 GB en disco';
+                  const meta = document.createElement('span');
+                  meta.className = 'gallery-meta';
+                  meta.textContent = 'Ultima sync: 5 nov';
+                  info.append(title, stats, meta);
+                  row.append(avatar, info);
+                  list.appendChild(row);
+                }
+                // Reproduce a short window, where the bug appeared.
+                list.style.maxHeight = '260px';
+                const rects = Array.from(list.children).map((row) => {
+                  const box = row.getBoundingClientRect();
+                  return {
+                    top: box.top,
+                    bottom: box.bottom,
+                    height: box.height,
+                    contentHeight: row.scrollHeight
+                  };
+                });
+                const overlaps = [];
+                for (let i = 1; i < rects.length; i += 1) {
+                  if (rects[i].top < rects[i - 1].bottom - 0.5) {
+                    overlaps.push(i);
+                  }
+                }
+                const clipped = rects.filter((r) => r.contentHeight > r.height + 0.5).length;
+                const scrolls = list.scrollHeight > list.clientHeight;
+                list.style.maxHeight = '';
+                list.innerHTML = original;
+                done(JSON.stringify({ overlaps, clipped, scrolls, count: rects.length }));
+                """,
+            )
+        )
+        log("sidebar layout:", sidebar_layout)
+        assert sidebar_layout["count"] == 8, sidebar_layout
+        assert not sidebar_layout["overlaps"], (
+            f"gallery rows overlap at {sidebar_layout['overlaps']}: {sidebar_layout}"
+        )
+        assert sidebar_layout["clipped"] == 0, (
+            f"gallery row text is clipped: {sidebar_layout}"
+        )
+        assert sidebar_layout["scrolls"], (
+            f"long gallery list should scroll instead of shrinking rows: {sidebar_layout}"
+        )
+
         second = js_invoke(session, "sync_gallery", {"galleryId": gallery})
         log("second:", second["counts"], "skipped:", second["skipped"])
         assert second["skipped"] and not second["downloaded"], second["counts"]
-
         stats_text = run_async(
             session,
             """
