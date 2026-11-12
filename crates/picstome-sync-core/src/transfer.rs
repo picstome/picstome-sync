@@ -349,6 +349,10 @@ async fn download_chunked(
                 .await?;
             file.seek(std::io::SeekFrom::Start(0)).await?;
             file.write_all(&bytes).await?;
+            // See the note in the chunk loop: an unflushed write is lost when
+            // another handle syncs the same path afterwards.
+            file.flush().await?;
+            file.sync_all().await?;
         }
         let current =
             downloaded.fetch_add(bytes.len() as u64, Ordering::SeqCst) + bytes.len() as u64;
@@ -400,6 +404,13 @@ async fn download_chunked(
                         .await?;
                     file.seek(std::io::SeekFrom::Start(start)).await?;
                     file.write_all(&bytes).await?;
+                    // Dropping a tokio file handle without a flush loses the
+                    // write: only the buffered copy is queued and a later
+                    // `sync_all` on another handle truncates it, leaving a
+                    // file of zeros with the right size. That silently
+                    // corrupted downloads, so flush *and* sync here.
+                    file.flush().await?;
+                    file.sync_all().await?;
                 }
                 let current =
                     downloaded.fetch_add(bytes.len() as u64, Ordering::SeqCst) + bytes.len() as u64;
@@ -595,9 +606,18 @@ pub async fn download_file(
     let hash = hash_file(&part).await?;
     if let Some(expected) = options.expected_hash {
         if hash != expected {
+            let size = tokio::fs::metadata(&part)
+                .await
+                .map(|metadata| metadata.len())
+                .unwrap_or(0);
             let _ = tokio::fs::remove_file(&part).await;
             let _ = tokio::fs::remove_file(meta_path(dest)).await;
-            return Err(CoreError::HashMismatch(dest.display().to_string()));
+            return Err(CoreError::HashMismatchDetail {
+                path: dest.display().to_string(),
+                expected,
+                actual: hash,
+                size,
+            });
         }
     }
 

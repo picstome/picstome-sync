@@ -16,6 +16,13 @@ pub enum CoreError {
     },
     #[error("download hash mismatch for {0}")]
     HashMismatch(String),
+    #[error("download hash mismatch for {path} (expected {expected}, got {actual}, {size} bytes on disk)")]
+    HashMismatchDetail {
+        path: String,
+        expected: String,
+        actual: String,
+        size: u64,
+    },
     #[error("{0}")]
     Other(String),
 }
@@ -28,6 +35,7 @@ impl CoreError {
             CoreError::Network(_) => "network_error",
             CoreError::Api { code, .. } => code,
             CoreError::HashMismatch(_) => "hash_mismatch",
+            CoreError::HashMismatchDetail { .. } => "hash_mismatch",
             CoreError::Other(_) => "error",
         }
     }

@@ -154,3 +154,66 @@ async fn falls_back_to_single_stream_when_server_ignores_range() {
     assert_eq!(std::fs::read(&dest).unwrap(), payload);
     server.abort();
 }
+
+/// Regression for silent download corruption.
+///
+/// `download_chunked` pre-sizes `.part` with `set_len` and then writes each
+/// chunk through a *separate* tokio file handle. A `tokio::fs::File` only
+/// queues its write: dropping it without a flush loses the data and can leave
+/// a file of the right size full of zeros (or with missing chunks), which the
+/// hash check then reports as an intermittent "hash mismatch". Isolated at
+/// ~49/50 lost writes without the explicit flush, 0/50 with it. This test
+/// downloads real bytes and compares them one by one, so a lost chunk is a
+/// failure even when the size still matches.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn chunked_download_writes_every_byte_exactly() {
+    let mock = mock().await;
+    let api = ApiClient::new(Some(&mock.url), None).unwrap();
+    api.dev_login().await.unwrap();
+    let manifest = api.manifest("G123").await.unwrap();
+    let client = api.http();
+
+    for round in 0..15 {
+        for (index, photo) in manifest.photos.iter().take(4).enumerate() {
+            let expected = {
+                let galleries = mock.state.galleries.read().await;
+                galleries["G123"]
+                    .photos
+                    .iter()
+                    .find(|candidate| candidate.id == photo.id)
+                    .expect("photo")
+                    .data
+                    .clone()
+            };
+            let dir = tempfile::tempdir().unwrap();
+            let dest = dir.path().join(format!("round{round}-{index}.jpg"));
+            download_file(
+                &client,
+                &photo.url,
+                &dest,
+                DownloadOptions {
+                    expected_hash: photo.content_hash().map(str::to_string),
+                    expected_size: photo.size,
+                    // A chunk larger than the file means the download is a
+                    // single chunk, written by the "chunk 0" path and then
+                    // finalised by a second handle. That is the exact shape
+                    // that produced all-zero files.
+                    chunk_bytes: 4 * 1024 * 1024,
+                    parallel: 6,
+                    retries: 0,
+                },
+                Arc::new(|_, _| {}),
+            )
+            .await
+            .unwrap_or_else(|err| panic!("round {round} file {index}: {err}"));
+            let got = std::fs::read(&dest).unwrap();
+            assert_eq!(
+                got.as_slice(),
+                expected.as_slice(),
+                "round {round} file {index} downloaded different bytes"
+            );
+        }
+    }
+
+    mock.close().await;
+}
