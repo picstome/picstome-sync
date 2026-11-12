@@ -45,7 +45,7 @@ pub struct GalleryEntry {
     pub parent_gallery_id: Option<String>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Snapshot {
     #[serde(default)]
@@ -64,7 +64,7 @@ pub struct Snapshot {
     pub files: Vec<SnapshotFile>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SnapshotFile {
     pub id: String,
@@ -453,6 +453,29 @@ pub struct TrashedFile {
     pub trash_path: Option<String>,
 }
 
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SyncTimings {
+    pub manifest_ms: u64,
+    pub scan_ms: u64,
+    pub hash_ms: u64,
+    pub download_ms: u64,
+    pub upload_ms: u64,
+    pub snapshot_ms: u64,
+}
+
+/// How much local work the sync avoided, so a repeat sync can be checked for
+/// "no content was read".
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SyncScanStats {
+    pub files: u64,
+    pub hashed: u64,
+    pub cached: u64,
+    pub skipped_duplicates: u64,
+    pub bytes_read: u64,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SyncReport {
@@ -480,6 +503,10 @@ pub struct SyncReport {
     pub ignored_remote: Vec<String>,
     #[serde(default)]
     pub trashed_local: Vec<TrashedFile>,
+    #[serde(default)]
+    pub timings: SyncTimings,
+    #[serde(default)]
+    pub scan_stats: SyncScanStats,
     pub skipped: bool,
 }
 

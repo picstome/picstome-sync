@@ -13,14 +13,14 @@ use crate::error::{CoreError, CoreResult};
 use crate::identity::{identity_key, preference_rank, preferred_file};
 use crate::ignored::{GalleryIgnores, IgnoredLocal};
 use crate::localfiles::{
-    folder_exists as path_is_dir, group_local_files, preferred_local_files, scan_and_hash_with,
-    scan_local_photos, scan_local_photos_with, RawLocalFile, MAX_PHOTO_BYTES,
+    file_identity, folder_exists as path_is_dir, group_local_files, preferred_local_files,
+    scan_local_photos_with, RawLocalFile, MAX_PHOTO_BYTES,
 };
 use crate::model::{
     DeleteProposal, DeleteProposals, DeleteResponse, Diff, DownloadedItem, FavoritePhoto,
     GalleryEntry, Manifest, Photo, Progress, RatingSyncItem, RatingSyncPlan, Snapshot,
-    SnapshotFile, SyncErrorItem, SyncReport, SyncWarningItem, TrashedFile, UploadedItem,
-    SNAPSHOT_SCHEMA,
+    SnapshotFile, SyncErrorItem, SyncReport, SyncScanStats, SyncTimings, SyncWarningItem,
+    TrashedFile, UploadedItem, SNAPSHOT_SCHEMA,
 };
 use crate::sanitize::{is_inside, safe_join, sanitize_file_name};
 use crate::transfer::{download_file, DownloadOptions, ProgressFn};
@@ -37,6 +37,9 @@ pub struct SyncOptions {
     /// Local-only files the user chose to move to the trash during the first
     /// sync preview. They are trashed before scanning so they are not uploaded.
     pub trash_local: Vec<FirstSyncItem>,
+    /// Scan already performed by the first-sync preview. Reusing it avoids
+    /// walking and fingerprinting the folder twice in the same user action.
+    pub prepared_scan: Option<PreparedScan>,
 }
 
 impl Default for SyncOptions {
@@ -46,9 +49,41 @@ impl Default for SyncOptions {
             upload_concurrency: 3,
             chunk_bytes: crate::transfer::DOWNLOAD_CHUNK_BYTES,
             parallel: crate::transfer::DOWNLOAD_PARALLEL,
-            hash_concurrency: 4,
+            hash_concurrency: default_hash_concurrency(),
             trash_local: Vec::new(),
+            prepared_scan: None,
         }
+    }
+}
+
+/// Parallel hashing is disk bound; more streams than the device can serve only
+/// adds seeking. Four is a safe floor, eight keeps an NVMe busy.
+pub fn default_hash_concurrency() -> usize {
+    std::env::var("PICSTOME_HASH_CONCURRENCY")
+        .ok()
+        .and_then(|value| value.parse::<usize>().ok())
+        .filter(|value| *value > 0)
+        .unwrap_or_else(|| {
+            std::thread::available_parallelism()
+                .map(|count| count.get().clamp(4, 8))
+                .unwrap_or(4)
+        })
+}
+
+/// A local walk already performed by the first-sync preview. Reusing it inside
+/// the same user action skips a second directory walk; the hashes are still
+/// computed here, from the current bytes on disk, so nothing is trusted from
+/// the preview.
+#[derive(Debug, Clone, Default)]
+pub struct PreparedScan {
+    pub records: Vec<RawLocalFile>,
+}
+
+impl SyncOptions {
+    /// Drop a prepared scan. Used when the folder changed between the preview
+    /// and the sync (files were trashed), so a stale walk is never reused.
+    pub fn clear_prepared_scan(&mut self) {
+        self.prepared_scan = None;
     }
 }
 
@@ -820,6 +855,7 @@ pub async fn adopt_local_changes(
     }
 
     let mut updated = 0;
+    let mut fingerprints = store.load_fingerprints(&gallery.gallery_id, &gallery.local_path);
     for file in &mut snapshot.files {
         let Some(key) = file.identity() else {
             continue;
@@ -831,6 +867,9 @@ pub async fn adopt_local_changes(
             continue;
         };
         let Ok(metadata) = tokio::fs::metadata(&path).await else {
+            continue;
+        };
+        let Some(mtime_ms) = file_mtime_ms(&path).await else {
             continue;
         };
         let Ok(hash) = crate::localfiles::hash_file(&path).await else {
@@ -845,15 +884,32 @@ pub async fn adopt_local_changes(
         }
         snapshot.local_bytes = snapshot.local_bytes.saturating_add(metadata.len());
 
+        // The rewrite happened outside a sync (exiftool). Record the new bytes
+        // in the fingerprint cache as well, otherwise the next sync reads the
+        // whole file again to recompute a hash we just computed here.
+        let relative = file
+            .relative_path
+            .clone()
+            .unwrap_or_else(|| file.filename.clone());
+        fingerprints.insert(
+            relative,
+            metadata.len(),
+            mtime_ms,
+            file_identity(&metadata).0,
+            file_identity(&metadata).1,
+            hash.clone(),
+        );
+
         file.local_present = true;
         file.local_hash = Some(hash);
         file.local_size = Some(metadata.len());
-        file.mtime = file_mtime_ms(&path).await;
+        file.mtime = Some(mtime_ms);
         updated += 1;
     }
 
     if updated > 0 {
         store.save_snapshot(&snapshot)?;
+        let _ = store.save_fingerprints(&fingerprints);
     }
     Ok(updated)
 }
@@ -941,10 +997,20 @@ pub async fn resolve_remote_deletions(
         snapshot
             .files
             .retain(|file| !resolved_set.contains(&file.id));
-        let (local, _) =
-            scan_local_photos(Path::new(&gallery.local_path), 8, true, MAX_PHOTO_BYTES);
-        snapshot.local_photo_count = local.len() as u64;
-        snapshot.local_bytes = local.iter().map(|file| file.size).sum();
+        // Recompute the counters from the snapshot instead of walking the
+        // whole folder again: the files that were just trashed are the only
+        // change.
+        snapshot.local_photo_count = snapshot
+            .files
+            .iter()
+            .filter(|file| file.local_present)
+            .count() as u64;
+        snapshot.local_bytes = snapshot
+            .files
+            .iter()
+            .filter(|file| file.local_present)
+            .filter_map(|file| file.local_size.or(file.size))
+            .sum();
         snapshot.last_sync_at = now;
         store.save_snapshot(&snapshot)?;
         store.patch_gallery(&gallery.gallery_id, |entry| {
@@ -1114,27 +1180,57 @@ pub async fn preview_first_sync_with<F>(
 where
     F: Fn(u64, u64) + Send + Sync + 'static,
 {
+    Ok(preview_first_sync_prepared(api, store, gallery, on_scan)
+        .await?
+        .0)
+}
+
+/// First-sync preview that also hands back the walk it performed, so the sync
+/// that follows in the same user action does not walk the folder again.
+///
+/// The walk runs on the blocking pool and overlaps the manifest request; it is
+/// a synchronous `WalkDir` and used to stall the async runtime.
+pub async fn preview_first_sync_prepared<F>(
+    api: &ApiClient,
+    store: &Store,
+    gallery: &GalleryEntry,
+    on_scan: F,
+) -> CoreResult<(FirstSyncPreview, Option<PreparedScan>)>
+where
+    F: Fn(u64, u64) + Send + Sync + 'static,
+{
     if store.load_snapshot(&gallery.gallery_id).is_some() {
-        return Ok(FirstSyncPreview::default());
+        return Ok((FirstSyncPreview::default(), None));
     }
 
-    let mut on_scan_cb = |seen: u64, matched: u64| on_scan(seen, matched);
-    let (records, _) = scan_local_photos_with(
-        Path::new(&gallery.local_path),
-        8,
-        true,
-        MAX_PHOTO_BYTES,
-        &mut on_scan_cb,
-    );
+    let api_for_manifest = api.clone();
+    let gallery_for_manifest = gallery.gallery_id.clone();
+    let manifest_task =
+        tokio::spawn(async move { api_for_manifest.manifest(&gallery_for_manifest).await });
+
+    let walk_dir = Path::new(&gallery.local_path).to_path_buf();
+    let (records, _) = tokio::task::spawn_blocking(move || {
+        let mut on_scan_cb = |seen: u64, matched: u64| on_scan(seen, matched);
+        scan_local_photos_with(&walk_dir, 8, true, MAX_PHOTO_BYTES, &mut on_scan_cb)
+    })
+    .await
+    .map_err(|err| CoreError::Other(format!("scan task failed: {err}")))?;
+
+    let manifest = manifest_task
+        .await
+        .map_err(|err| CoreError::Other(format!("manifest task failed: {err}")))?
+        .map_err(|err| CoreError::Other(format!("manifest request failed: {err}")))?;
+
     if records.is_empty() {
-        return Ok(FirstSyncPreview {
-            local_total: 0,
-            remote_total: 0,
-            ..Default::default()
-        });
+        return Ok((
+            FirstSyncPreview {
+                local_total: 0,
+                remote_total: 0,
+                ..Default::default()
+            },
+            Some(PreparedScan { records }),
+        ));
     }
-
-    let manifest = api.manifest(&gallery.gallery_id).await?;
 
     let mut local_groups: HashMap<String, Vec<&RawLocalFile>> = HashMap::new();
     for record in &records {
@@ -1196,14 +1292,17 @@ where
         && !records.is_empty()
         && (!local_only.is_empty() || !remote_only.is_empty());
 
-    Ok(FirstSyncPreview {
-        needed,
-        local_total: records.len() as u64,
-        remote_total: manifest.photos.len() as u64,
-        in_sync,
-        local_only,
-        remote_only,
-    })
+    Ok((
+        FirstSyncPreview {
+            needed,
+            local_total: records.len() as u64,
+            remote_total: manifest.photos.len() as u64,
+            in_sync,
+            local_only,
+            remote_only,
+        },
+        Some(PreparedScan { records }),
+    ))
 }
 
 pub async fn run_gallery_sync(
@@ -1214,25 +1313,25 @@ pub async fn run_gallery_sync(
     progress: SyncProgressFn,
 ) -> CoreResult<SyncReport> {
     let now = now_millis();
+    let mut timings = SyncTimings::default();
+    let mut scan_stats = SyncScanStats::default();
 
-    progress(Progress {
-        gallery_id: gallery.gallery_id.clone(),
-        phase: "manifest".into(),
-        done: 0,
-        total: 1,
-        ..Default::default()
-    });
-    let manifest = api.manifest(&gallery.gallery_id).await?;
-    progress(Progress {
-        gallery_id: gallery.gallery_id.clone(),
-        phase: "manifest".into(),
-        done: 1,
-        total: 1,
-        ..Default::default()
-    });
+    // Fail before touching the network or the cache: a missing or unmounted
+    // folder must never look like "everything was deleted locally".
+    let folder = tokio::fs::metadata(&gallery.local_path).await?;
+    if !folder.is_dir() {
+        return Err(CoreError::InvalidData(format!(
+            "not a directory: {}",
+            gallery.local_path
+        )));
+    }
 
     let previous = store.load_snapshot(&gallery.gallery_id);
-    let previous_files = previous.map(|snapshot| snapshot.files).unwrap_or_default();
+    let previous_files = match previous {
+        Some(snapshot) => snapshot.files,
+        None => Vec::new(),
+    };
+    let mut fingerprints = store.load_fingerprints(&gallery.gallery_id, &gallery.local_path);
 
     let trash_items = std::mem::take(&mut options.trash_local);
     let mut trashed_local = Vec::new();
@@ -1289,31 +1388,93 @@ pub async fn run_gallery_sync(
         }
     }
 
+    // Once files were moved to the trash, a walk performed before that is
+    // stale; drop it and rescan so trashed files are never uploaded.
+    let prepared_records = if target_items.is_empty() {
+        options
+            .prepared_scan
+            .take()
+            .map(|scan| scan.records)
+            .filter(|records| !records.is_empty())
+    } else {
+        None
+    };
+
     progress(Progress {
         gallery_id: gallery.gallery_id.clone(),
-        phase: "scan".into(),
+        phase: "manifest".into(),
         done: 0,
         total: 1,
         ..Default::default()
     });
+    // The manifest request and the local walk are independent; overlapping
+    // them removes one full round trip from every sync.
+    let api_for_manifest = api.clone();
+    let gallery_for_manifest = gallery.gallery_id.clone();
+    let manifest_task = tokio::spawn(async move {
+        let started = std::time::Instant::now();
+        let result = api_for_manifest.manifest(&gallery_for_manifest).await;
+        (result, started.elapsed().as_millis() as u64)
+    });
+
+    let scan_started = std::time::Instant::now();
     let progress_scan = progress.clone();
     let gallery_for_scan = gallery.gallery_id.clone();
-    let progress_hash = progress.clone();
-    let gallery_for_hash = gallery.gallery_id.clone();
-    let (all_local_files, scan_errors) = scan_and_hash_with(
-        Path::new(&gallery.local_path),
-        &previous_files,
-        options.hash_concurrency,
-        move |seen, matched| {
-            progress_scan(Progress {
-                gallery_id: gallery_for_scan.clone(),
+    let walk_dir = Path::new(&gallery.local_path).to_path_buf();
+    let (records, mut scan_errors) = match prepared_records {
+        Some(records) => (records, Vec::new()),
+        None => {
+            progress(Progress {
+                gallery_id: gallery.gallery_id.clone(),
                 phase: "scan".into(),
-                done: matched,
-                total: 0,
-                file_done: Some(seen),
+                done: 0,
+                total: 1,
                 ..Default::default()
             });
-        },
+            tokio::task::spawn_blocking(move || {
+                let mut on_scan = |seen: u64, matched: u64| {
+                    progress_scan(Progress {
+                        gallery_id: gallery_for_scan.clone(),
+                        phase: "scan".into(),
+                        done: matched,
+                        total: 0,
+                        file_done: Some(seen),
+                        ..Default::default()
+                    });
+                };
+                scan_local_photos_with(&walk_dir, 8, true, MAX_PHOTO_BYTES, &mut on_scan)
+            })
+            .await
+            .map_err(|err| CoreError::Other(format!("scan task failed: {err}")))?
+        }
+    };
+
+    // Remember every file the walk actually saw so the cache never grows
+    // entries for deleted paths, and keep the metadata around to write the
+    // fingerprints after hashing.
+    let seen_paths: HashSet<String> = records
+        .iter()
+        .map(|record| record.relative_path.clone())
+        .collect();
+    let metadata_by_path: HashMap<String, RawLocalFile> = records
+        .iter()
+        .map(|record| (record.relative_path.clone(), record.clone()))
+        .collect();
+
+    let progress_hash = progress.clone();
+    let gallery_for_hash = gallery.gallery_id.clone();
+    let previous_for_hash = previous_files.clone();
+    let fingerprints_for_hash = fingerprints.clone();
+    let hash_concurrency = options.hash_concurrency;
+    let hash_started = std::time::Instant::now();
+    // Hashing runs concurrently with the manifest request. It is a plain
+    // future (not a task) so an API failure can drop it immediately instead of
+    // making the user wait for minutes of disk reads to see the error.
+    let mut hash_fut = Box::pin(crate::localfiles::hash_local_records_cached(
+        records,
+        &previous_for_hash,
+        Some(&fingerprints_for_hash),
+        hash_concurrency,
         move |done, total| {
             progress_hash(Progress {
                 gallery_id: gallery_for_hash.clone(),
@@ -1323,8 +1484,79 @@ pub async fn run_gallery_sync(
                 ..Default::default()
             });
         },
-    )
-    .await?;
+    ));
+
+    let mut manifest_task = manifest_task;
+    let mut hash_output: Option<(
+        Vec<Result<crate::model::LocalFile, crate::localfiles::ScanError>>,
+        crate::localfiles::HashStats,
+    )> = None;
+    let manifest_task_result = tokio::select! {
+        result = &mut manifest_task => result,
+        output = &mut hash_fut => {
+            hash_output = Some(output);
+            manifest_task.await
+        }
+    };
+    let (manifest, manifest_ms) = manifest_task_result
+        .map_err(|err| CoreError::Other(format!("manifest task failed: {err}")))?;
+    let manifest = manifest?;
+    timings.manifest_ms = manifest_ms;
+
+    let (results, hash_stats) = match hash_output {
+        Some(output) => output,
+        None => hash_fut.await,
+    };
+    let mut all_local_files = Vec::with_capacity(results.len());
+    for result in results {
+        match result {
+            Ok(file) => all_local_files.push(file),
+            Err(err) => scan_errors.push(err),
+        }
+    }
+    all_local_files.sort_by(|a, b| a.relative_path.cmp(&b.relative_path));
+    timings.scan_ms = scan_started.elapsed().as_millis() as u64;
+    timings.hash_ms = hash_started.elapsed().as_millis() as u64;
+
+    // Fold the fresh hashes into the cache and persist it. This is the write
+    // that makes the next sync a metadata-only pass.
+    for file in &all_local_files {
+        let Some(hash) = file.hash.as_deref() else {
+            continue;
+        };
+        // Use the metadata of the bytes that were actually hashed. Only keep
+        // the inode when the file did not change between the walk and the read,
+        // otherwise the recorded identity would belong to a different file.
+        let (inode, device) = metadata_by_path
+            .get(&file.relative_path)
+            .filter(|record| record.size == file.size && record.mtime_ms == file.mtime_ms)
+            .map(|record| (record.inode, record.device))
+            .unwrap_or((None, None));
+        fingerprints.insert(
+            file.relative_path.clone(),
+            file.size,
+            file.mtime_ms,
+            inode,
+            device,
+            hash,
+        );
+    }
+    fingerprints.retain_paths(&seen_paths);
+    let _ = store.save_fingerprints(&fingerprints);
+
+    scan_stats.files = hash_stats.files;
+    scan_stats.hashed = hash_stats.hashed;
+    scan_stats.cached = hash_stats.cached;
+    scan_stats.skipped_duplicates = hash_stats.skipped;
+    scan_stats.bytes_read = hash_stats.bytes_read;
+
+    progress(Progress {
+        gallery_id: gallery.gallery_id.clone(),
+        phase: "manifest".into(),
+        done: 1,
+        total: 1,
+        ..Default::default()
+    });
     let mut ignores = GalleryIgnores::load(Path::new(&gallery.local_path));
     let released = ignores.release_cross_side(&all_local_files, &manifest.photos);
     let mut retained = ignores.retain_current(&all_local_files, &manifest.photos);
@@ -1414,6 +1646,8 @@ pub async fn run_gallery_sync(
             .map(|photo| photo.filename.clone())
             .collect(),
         trashed_local,
+        timings,
+        scan_stats,
         skipped: false,
     };
     if scan_had_errors && diff.counts.local_deleted > 0 {
@@ -1436,6 +1670,7 @@ pub async fn run_gallery_sync(
         .collect();
     let total_downloads = to_download.len() as u64;
     let downloaded_count = Arc::new(AtomicU64::new(0));
+    let download_started = std::time::Instant::now();
 
     let download_results: Vec<Result<DownloadedItem, SyncErrorItem>> =
         futures::stream::iter(to_download)
@@ -1479,6 +1714,7 @@ pub async fn run_gallery_sync(
                         &dest,
                         DownloadOptions {
                             expected_hash: photo.content_hash().map(str::to_string),
+                            expected_size: photo.size,
                             chunk_bytes,
                             parallel,
                             ..Default::default()
@@ -1528,6 +1764,7 @@ pub async fn run_gallery_sync(
             Err(error) => report.errors.push(error),
         }
     }
+    timings.download_ms = download_started.elapsed().as_millis() as u64;
 
     let to_upload: Vec<(crate::model::LocalFile, String)> = diff
         .local_new
@@ -1541,6 +1778,7 @@ pub async fn run_gallery_sync(
         .collect();
     let total_uploads = to_upload.len() as u64;
     let uploaded_count = Arc::new(AtomicU64::new(0));
+    let upload_started = std::time::Instant::now();
 
     let upload_results: Vec<Result<UploadedItem, SyncErrorItem>> = futures::stream::iter(to_upload)
         .map(|(entry, reason)| {
@@ -1611,7 +1849,9 @@ pub async fn run_gallery_sync(
             Err(error) => report.errors.push(error),
         }
     }
+    timings.upload_ms = upload_started.elapsed().as_millis() as u64;
 
+    let snapshot_started = std::time::Instant::now();
     let mut snapshot = build_snapshot(
         gallery,
         &manifest,
@@ -1639,6 +1879,16 @@ pub async fn run_gallery_sync(
 
     store.save_snapshot(&snapshot)?;
 
+    // The snapshot now knows the bytes of everything just transferred, so the
+    // fingerprint cache can describe them too without another read.
+    for item in &report.downloaded {
+        if let (Some(hash), Some(mtime)) = (item.hash.as_deref(), item.mtime) {
+            fingerprints.insert(item.filename.clone(), item.size, mtime, None, None, hash);
+        }
+    }
+    let _ = store.save_fingerprints(&fingerprints);
+    timings.snapshot_ms = snapshot_started.elapsed().as_millis() as u64;
+
     if store
         .patch_gallery(&gallery.gallery_id, |entry| {
             entry.name = snapshot.name.clone();
@@ -1660,6 +1910,8 @@ pub async fn run_gallery_sync(
     report.name = snapshot.name;
     report.rev = snapshot.remote_rev;
     report.skipped = !diff.has_changes();
+    report.timings = timings;
+    report.scan_stats = scan_stats;
 
     progress(Progress {
         gallery_id: gallery.gallery_id.clone(),
@@ -1697,6 +1949,21 @@ pub async fn apply_remote_deletions(
         snapshot.last_sync_at = now_millis();
         snapshot.remote_rev = result.rev.clone().or(snapshot.remote_rev);
         store.save_snapshot(&snapshot)?;
+        if let Some(gallery) = store.get_gallery(gallery_id) {
+            let mut fingerprints = store.load_fingerprints(gallery_id, &gallery.local_path);
+            let keep: HashSet<String> = snapshot
+                .files
+                .iter()
+                .filter(|file| file.local_present)
+                .map(|file| {
+                    file.relative_path
+                        .clone()
+                        .unwrap_or_else(|| file.filename.clone())
+                })
+                .collect();
+            fingerprints.retain_paths(&keep);
+            let _ = store.save_fingerprints(&fingerprints);
+        }
         store.patch_gallery(gallery_id, |entry| {
             entry.last_sync_at = Some(snapshot.last_sync_at);
         })?;

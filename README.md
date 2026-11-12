@@ -56,6 +56,13 @@ and star-rating workflow.
   Remote changes are detected by `version_count`; local changes by the file
   hash, size, and modification time. This avoids treating a resized web copy as
   a conflict with the original local file.
+- **Local fingerprint cache:** content hashes live in
+  `cache/fingerprints/<gallery-id>.json`, keyed by relative path and validated
+  against size, mtime, and (on Unix) inode/device. A repeat sync resolves every
+  hash from metadata alone and reads **no file content**; a RAW that sits next
+  to its JPEG is never re-read once the JPEG is known. The cache is an
+  accelerator only: a corrupt or stale entry falls back to a full hash, and it
+  is discarded when the folder changes.
 - **First sync:** without a snapshot the app cannot tell a new local photo from
   one deleted remotely, so it shows a preview before transferring. Local-only
   files can be uploaded, kept only on disk, or moved to the OS trash (with the
@@ -64,7 +71,13 @@ and star-rating workflow.
   file or receiving a new remote version makes it eligible again. Use **Include
   ignored again** in the report to clear them.
 - **Downloads:** signed URLs with parallel range requests and resume support.
-  Verification uses the manifest `download_hash` when available.
+  Chunks are written directly at their offsets (no concatenation pass) and the
+  manifest `download_hash` is verified when available.
+- **Performance:** the manifest request overlaps the local walk, the first-sync
+  preview reuses its walk instead of scanning twice, and every sync reports
+  `timings` and `scanStats` (`hashed`, `cached`, `bytesRead`) in the activity
+  log so a no-op sync can be proven to read nothing. `PICSTOME_HASH_CONCURRENCY`
+  overrides the hashing parallelism (default: CPU count clamped to 4–8).
 - **Ratings:** the manifest `rating` (1–5) is the source of truth and is copied
   to the local file metadata via exiftool after a confirmation. A rating-only
   change never re-downloads the file. `is_favorite` drives the heart; a heart
@@ -159,6 +172,9 @@ cargo test --workspace --all-targets
 
 # app smoke test: fake API, download, resume/no-op verification
 cargo run -p picstome-sync -- --smoke
+
+# local scan/hash benchmark: the second pass must read 0 bytes
+cargo run -p picstome-sync-core --bin sync-bench -- 500 8
 
 # full UI E2E through WebDriver
 cargo build -p picstome-sync

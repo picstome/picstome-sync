@@ -1027,3 +1027,226 @@ async fn first_sync_trashes_every_local_representation() {
     assert_eq!(api.manifest("G123").await.unwrap().photos.len(), 50);
     mock.close().await;
 }
+
+/// The regression test for the "it re-reads every image on every sync" bug.
+///
+/// A shoot folder holds a JPEG and a RAW for the same photo. The snapshot only
+/// covers the preferred JPEG, so the RAW used to be re-hashed (full content
+/// read) on every single sync. A repeat sync must now read no file content at
+/// all: everything resolves from the fingerprint cache.
+#[tokio::test]
+async fn repeat_sync_reads_no_file_content_not_even_raw_duplicates() {
+    let (mock, api, _dir, store, gallery) = setup_sync().await;
+    run_gallery_sync(&api, &store, &gallery, SyncOptions::default(), silence())
+        .await
+        .unwrap();
+
+    let root = std::path::Path::new(&gallery.local_path);
+    let jpg = root.join("PAIR.JPG");
+    let dng = root.join("PAIR.DNG");
+    std::fs::write(&jpg, jpeg_bytes(4096, 7)).unwrap();
+    let mut raw = b"II*\0".to_vec();
+    raw.resize(8192, 9);
+    std::fs::write(&dng, &raw).unwrap();
+
+    // First run hashes the new files (the RAW is a duplicate of the JPEG).
+    let first = run_gallery_sync(&api, &store, &gallery, SyncOptions::default(), silence())
+        .await
+        .unwrap();
+    assert!(first.scan_stats.hashed >= 1, "{:?}", first.scan_stats);
+    // The RAW is never read: only the preferred JPEG is fingerprinted.
+    assert!(
+        first.scan_stats.bytes_read <= 4096 + 60 * 4096,
+        "unexpected first-run read volume: {:?}",
+        first.scan_stats
+    );
+
+    // Second run: nothing changed anywhere, so not a single byte may be read.
+    let second = run_gallery_sync(&api, &store, &gallery, SyncOptions::default(), silence())
+        .await
+        .unwrap();
+    assert!(second.skipped, "second sync should be a no-op");
+    assert_eq!(
+        second.scan_stats.hashed, 0,
+        "repeat sync re-hashed files: {:?}",
+        second.scan_stats
+    );
+    assert_eq!(
+        second.scan_stats.bytes_read, 0,
+        "repeat sync re-read content: {:?}",
+        second.scan_stats
+    );
+    // Every file is accounted for without reading: the JPEG is cached, the RAW
+    // is a duplicate that is deliberately never hashed.
+    assert!(
+        second.scan_stats.cached + second.scan_stats.skipped_duplicates == second.scan_stats.files,
+        "{:?}",
+        second.scan_stats
+    );
+
+    // Now add a *new* RAW next to an already-cached JPEG. The JPEG's hash is
+    // known, so the RAW is skipped instead of being read in full.
+    let mut late_raw = b"II*\0".to_vec();
+    late_raw.resize(8192, 8);
+    std::fs::write(root.join("PAIR.CR3"), &late_raw).unwrap();
+    let third = run_gallery_sync(&api, &store, &gallery, SyncOptions::default(), silence())
+        .await
+        .unwrap();
+    assert_eq!(
+        third.scan_stats.hashed, 0,
+        "new duplicate RAW was read: {:?}",
+        third.scan_stats
+    );
+    assert!(
+        third.scan_stats.skipped_duplicates >= 1,
+        "{:?}",
+        third.scan_stats
+    );
+
+    mock.close().await;
+}
+
+/// The fingerprint cache must survive a snapshot reset (re-link or schema
+/// bump) so a folder that has not changed is never rehashed from scratch.
+#[tokio::test]
+async fn fingerprint_cache_survives_snapshot_reset() {
+    let (mock, api, _dir, store, gallery) = setup_sync().await;
+    run_gallery_sync(&api, &store, &gallery, SyncOptions::default(), silence())
+        .await
+        .unwrap();
+
+    store.delete_snapshot("G123").unwrap();
+    let report = run_gallery_sync(&api, &store, &gallery, SyncOptions::default(), silence())
+        .await
+        .unwrap();
+    // With no snapshot the files are adopted as in sync and nothing is read.
+    assert_eq!(report.scan_stats.hashed, 0, "{:?}", report.scan_stats);
+    assert_eq!(report.scan_stats.bytes_read, 0, "{:?}", report.scan_stats);
+
+    mock.close().await;
+}
+
+/// A file that changes on disk must be re-hashed, even when only its content
+/// changes and the size stays the same (mtime still moves in real life, but
+/// the cache must not rely on the hash alone).
+#[tokio::test]
+async fn changed_file_is_rehashed_and_uploaded() {
+    let (mock, api, _dir, store, gallery) = setup_sync().await;
+    run_gallery_sync(&api, &store, &gallery, SyncOptions::default(), silence())
+        .await
+        .unwrap();
+
+    let target = std::fs::read_dir(&gallery.local_path)
+        .unwrap()
+        .filter_map(Result::ok)
+        .map(|entry| entry.path())
+        .find(|path| path.extension().and_then(|ext| ext.to_str()) == Some("jpg"))
+        .unwrap();
+    let mut bytes = std::fs::read(&target).unwrap();
+    let last = bytes.len() - 1;
+    bytes[last] = bytes[last].wrapping_add(1);
+    std::fs::write(&target, &bytes).unwrap();
+    // Guarantee an mtime change even on coarse filesystems.
+    filetime_bump(&target);
+
+    let report = run_gallery_sync(&api, &store, &gallery, SyncOptions::default(), silence())
+        .await
+        .unwrap();
+    assert_eq!(report.scan_stats.hashed, 1, "{:?}", report.scan_stats);
+    assert_eq!(report.uploaded.len(), 1, "{:?}", report.uploaded);
+
+    mock.close().await;
+}
+
+fn filetime_bump(path: &std::path::Path) {
+    use std::time::{Duration, SystemTime};
+    let later = SystemTime::now() + Duration::from_secs(2);
+    let file = std::fs::OpenOptions::new().write(true).open(path).unwrap();
+    file.set_modified(later).unwrap();
+}
+
+/// The download path must not depend on a range probe: the manifest size is
+/// enough. This is what removes one HTTP round trip per downloaded photo.
+#[tokio::test]
+async fn downloads_with_known_size_skip_the_probe_request() {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    let payload = b"picstome-sync-probe-check".repeat(200);
+    let body = payload.clone();
+    let requests = Arc::new(AtomicUsize::new(0));
+
+    let app = {
+        let body = body.clone();
+        let requests = requests.clone();
+        axum::Router::new().route(
+            "/file",
+            axum::routing::get(move |headers: axum::http::HeaderMap| {
+                let body = body.clone();
+                let requests = requests.clone();
+                async move {
+                    requests.fetch_add(1, Ordering::SeqCst);
+                    let range = headers
+                        .get(axum::http::header::RANGE)
+                        .and_then(|value| value.to_str().ok())
+                        .unwrap_or_default()
+                        .to_string();
+                    if let Some(spec) = range.strip_prefix("bytes=") {
+                        let (start, end) = spec.split_once('-').unwrap_or(("0", ""));
+                        let start: usize = start.parse().unwrap_or(0);
+                        let end: usize = end
+                            .parse()
+                            .unwrap_or(body.len().saturating_sub(1))
+                            .min(body.len().saturating_sub(1));
+                        let slice = body[start..=end].to_vec();
+                        return axum::response::Response::builder()
+                            .status(axum::http::StatusCode::PARTIAL_CONTENT)
+                            .header(
+                                axum::http::header::CONTENT_RANGE,
+                                format!("bytes {start}-{end}/{}", body.len()),
+                            )
+                            .body(axum::body::Body::from(slice))
+                            .unwrap();
+                    }
+                    axum::response::Response::builder()
+                        .status(axum::http::StatusCode::OK)
+                        .body(axum::body::Body::from(body))
+                        .unwrap()
+                }
+            }),
+        )
+    };
+
+    let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
+        .await
+        .unwrap();
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+
+    let dir = tempfile::tempdir().unwrap();
+    let dest = dir.path().join("file.bin");
+    let result = download_file(
+        &reqwest::Client::new(),
+        &format!("http://{addr}/file"),
+        &dest,
+        DownloadOptions {
+            expected_hash: Some(picstome_sync_core::localfiles::hash_bytes(&payload)),
+            expected_size: Some(payload.len() as u64),
+            chunk_bytes: 1024,
+            parallel: 4,
+            ..Default::default()
+        },
+        Arc::new(|_, _| {}),
+    )
+    .await
+    .unwrap();
+
+    assert_eq!(std::fs::read(&dest).unwrap(), payload);
+    assert_eq!(result.size, payload.len() as u64);
+    // One request per chunk, and no extra `bytes=0-0` probe.
+    let expected_chunks = payload.len().div_ceil(1024);
+    assert_eq!(
+        requests.load(Ordering::SeqCst),
+        expected_chunks,
+        "unexpected request count (probe?)"
+    );
+}

@@ -21,6 +21,9 @@ pub type ProgressFn = Arc<dyn Fn(u64, u64) + Send + Sync>;
 #[derive(Debug, Clone)]
 pub struct DownloadOptions {
     pub expected_hash: Option<String>,
+    /// Size reported by the manifest. When known it lets us skip the
+    /// destination pre-hash (a full read) whenever the sizes already differ.
+    pub expected_size: Option<u64>,
     pub chunk_bytes: u64,
     pub parallel: usize,
     pub retries: usize,
@@ -30,6 +33,7 @@ impl Default for DownloadOptions {
     fn default() -> Self {
         Self {
             expected_hash: None,
+            expected_size: None,
             chunk_bytes: DOWNLOAD_CHUNK_BYTES,
             parallel: DOWNLOAD_PARALLEL,
             retries: DOWNLOAD_RETRIES,
@@ -122,10 +126,11 @@ async fn fetch_range(
                 .header(RANGE, format!("bytes={start}-{end}"))
                 .send()
                 .await?;
-            if !response.status().is_success() {
+            let status = response.status();
+            if !status.is_success() {
                 return Err(CoreError::Network(format!(
                     "download failed (HTTP {})",
-                    response.status().as_u16()
+                    status.as_u16()
                 )));
             }
             let bytes = response.bytes().await?;
@@ -135,6 +140,55 @@ async fn fetch_range(
 
         match result {
             Ok(bytes) => return Ok(bytes),
+            Err(err) => {
+                last_error = Some(err);
+                if attempt < retries {
+                    sleep_ms(150 * (attempt as u64 + 1)).await;
+                }
+            }
+        }
+    }
+    Err(last_error.unwrap_or_else(|| CoreError::Network("download failed".into())))
+}
+
+/// One ranged request that also reports whether the server honoured the range
+/// and, when it did, the total file size from `Content-Range`.
+async fn fetch_range_checked(
+    client: &Client,
+    url: &str,
+    start: u64,
+    end: u64,
+    retries: usize,
+) -> CoreResult<(Vec<u8>, bool, Option<u64>)> {
+    let mut last_error = None;
+    for attempt in 0..=retries {
+        let result = async {
+            let response = client
+                .get(url)
+                .header(RANGE, format!("bytes={start}-{end}"))
+                .send()
+                .await?;
+            let status = response.status();
+            if !status.is_success() {
+                return Err(CoreError::Network(format!(
+                    "download failed (HTTP {})",
+                    status.as_u16()
+                )));
+            }
+            let ranged = status.as_u16() == 206;
+            let remote_total = response
+                .headers()
+                .get("content-range")
+                .and_then(|value| value.to_str().ok())
+                .and_then(|value| value.rsplit('/').next())
+                .and_then(|value| value.parse::<u64>().ok());
+            let bytes = response.bytes().await?;
+            Ok::<(Vec<u8>, bool, Option<u64>), CoreError>((bytes.to_vec(), ranged, remote_total))
+        }
+        .await;
+
+        match result {
+            Ok(value) => return Ok(value),
             Err(err) => {
                 last_error = Some(err);
                 if attempt < retries {
@@ -176,10 +230,6 @@ fn write_meta(path: &Path, url: &str, total: u64, chunk_bytes: u64, count: u64, 
     }
 }
 
-fn parts_dir(dest: &Path) -> PathBuf {
-    PathBuf::from(format!("{}.parts", dest.display()))
-}
-
 fn part_path(dest: &Path) -> PathBuf {
     PathBuf::from(format!("{}.part", dest.display()))
 }
@@ -188,6 +238,13 @@ fn meta_path(dest: &Path) -> PathBuf {
     PathBuf::from(format!("{}.part.json", dest.display()))
 }
 
+/// Download a file in parallel ranges, writing each chunk straight into its
+/// final offset in `.part`.
+///
+/// The previous implementation wrote one file per chunk, read them all back to
+/// concatenate, and then read the result again to hash it: three full passes
+/// over the bytes. Writing at offsets means one write pass and one read pass,
+/// and the resumed state (`.part.json`) keeps exactly the same meaning.
 async fn download_chunked(
     client: &Client,
     url: &str,
@@ -198,10 +255,34 @@ async fn download_chunked(
 ) -> CoreResult<()> {
     let count = total.div_ceil(options.chunk_bytes);
     let meta_file = meta_path(dest);
-    let dir = parts_dir(dest);
-    tokio::fs::create_dir_all(&dir).await?;
+    let part = part_path(dest);
 
-    let completed = read_meta(&meta_file, url, total, options.chunk_bytes, count);
+    // Any chunk recorded in `.part.json` is only trusted when `.part` is
+    // already the full size: a missing or truncated partial file must never be
+    // "resumed" into a file full of zeros. The hash check at the end of the
+    // download is the second line of defence.
+    let existing_len = tokio::fs::metadata(&part)
+        .await
+        .map(|metadata| metadata.len())
+        .unwrap_or(0);
+    let resumable = existing_len == total;
+
+    // Pre-size the partial file so every chunk can seek to its own offset.
+    if existing_len != total {
+        let file = tokio::fs::OpenOptions::new()
+            .write(true)
+            .create(true)
+            .truncate(false)
+            .open(&part)
+            .await?;
+        file.set_len(total).await?;
+    }
+
+    let completed = if resumable {
+        read_meta(&meta_file, url, total, options.chunk_bytes, count)
+    } else {
+        Vec::new()
+    };
     let completed_set = Arc::new(std::sync::Mutex::new(
         completed
             .iter()
@@ -218,25 +299,85 @@ async fn download_chunked(
         progress(already_downloaded, total);
     }
 
-    let results: Vec<CoreResult<()>> = futures::stream::iter(0..count)
+    // Ask for chunk 0 first. If the server answers `200` it ignored the range
+    // and sent the whole file, so fall back to writing it as one stream rather
+    // than fanning out requests that would each return the full body.
+    if !completed_set
+        .lock()
+        .expect("chunk set poisoned")
+        .contains(&0)
+    {
+        let end = options.chunk_bytes.min(total) - 1;
+        let (bytes, ranged, remote_total) =
+            fetch_range_checked(client, url, 0, end, options.retries).await?;
+        if let Some(remote_total) = remote_total {
+            // The manifest size is what the *version* should weigh. If the CDN
+            // serves something else, the bytes on disk would not match the
+            // remote, so stop before writing an unusable file.
+            if remote_total != total {
+                let _ = tokio::fs::remove_file(&meta_file).await;
+                let _ = tokio::fs::remove_file(&part).await;
+                return Err(CoreError::Network(format!(
+                    "server reported {remote_total} bytes, manifest says {total}"
+                )));
+            }
+        }
+        if !ranged {
+            if bytes.len() as u64 != total {
+                return Err(CoreError::Network(format!(
+                    "server ignored range and returned {} bytes, expected {total}",
+                    bytes.len()
+                )));
+            }
+            let _ = tokio::fs::remove_file(&meta_file).await;
+            tokio::fs::write(&part, &bytes).await?;
+            progress(total, total);
+            return Ok(());
+        }
+        if bytes.len() as u64 != end + 1 {
+            return Err(CoreError::Network(format!(
+                "short read at 0-{end}: got {}, expected {}",
+                bytes.len(),
+                end + 1
+            )));
+        }
+        {
+            use tokio::io::{AsyncSeekExt, AsyncWriteExt};
+            let mut file = tokio::fs::OpenOptions::new()
+                .write(true)
+                .open(&part)
+                .await?;
+            file.seek(std::io::SeekFrom::Start(0)).await?;
+            file.write_all(&bytes).await?;
+        }
+        let current =
+            downloaded.fetch_add(bytes.len() as u64, Ordering::SeqCst) + bytes.len() as u64;
+        progress(current, total);
+        let done = {
+            let mut set = completed_set.lock().expect("chunk set poisoned");
+            set.insert(0);
+            let mut done: Vec<u64> = set.iter().copied().collect();
+            done.sort_unstable();
+            done
+        };
+        write_meta(&meta_file, url, total, options.chunk_bytes, count, &done);
+    }
+
+    let results: Vec<CoreResult<()>> = futures::stream::iter(1..count)
         .map(|index| {
             let client = client.clone();
             let url = url.to_string();
-            let dir = dir.clone();
+            let part = part.clone();
             let meta_file = meta_file.clone();
             let downloaded = downloaded.clone();
             let progress = progress.clone();
             let options = options.clone();
             let completed_set = completed_set.clone();
             async move {
-                let chunk_path = dir.join(index.to_string());
                 {
-                    let mut set = completed_set.lock().expect("chunk set poisoned");
+                    let set = completed_set.lock().expect("chunk set poisoned");
                     if set.contains(&index) {
-                        if chunk_path.exists() {
-                            return Ok(());
-                        }
-                        set.remove(&index);
+                        return Ok(());
                     }
                 }
 
@@ -251,7 +392,15 @@ async fn download_chunked(
                     )));
                 }
 
-                tokio::fs::write(&chunk_path, &bytes).await?;
+                {
+                    use tokio::io::{AsyncSeekExt, AsyncWriteExt};
+                    let mut file = tokio::fs::OpenOptions::new()
+                        .write(true)
+                        .open(&part)
+                        .await?;
+                    file.seek(std::io::SeekFrom::Start(start)).await?;
+                    file.write_all(&bytes).await?;
+                }
                 let current =
                     downloaded.fetch_add(bytes.len() as u64, Ordering::SeqCst) + bytes.len() as u64;
                 progress(current, total);
@@ -275,23 +424,17 @@ async fn download_chunked(
         result?;
     }
 
-    let part = part_path(dest);
     let mut output = tokio::fs::OpenOptions::new()
         .write(true)
-        .create(true)
-        .truncate(true)
         .open(&part)
         .await?;
-    for index in 0..count {
-        let chunk_path = dir.join(index.to_string());
-        let mut input = tokio::fs::File::open(&chunk_path).await?;
-        tokio::io::copy(&mut input, &mut output).await?;
-    }
+    output.flush().await?;
     output.sync_all().await?;
     drop(output);
 
-    let _ = tokio::fs::remove_dir_all(&dir).await;
     let _ = tokio::fs::remove_file(&meta_file).await;
+    // Older builds kept one file per chunk in `<dest>.parts`; clean it up.
+    let _ = tokio::fs::remove_dir_all(PathBuf::from(format!("{}.parts", dest.display()))).await;
     Ok(())
 }
 
@@ -377,26 +520,44 @@ pub async fn download_file(
         tokio::fs::create_dir_all(parent).await?;
     }
 
-    if let Some(expected) = options.expected_hash.clone() {
-        if tokio::fs::metadata(dest).await.is_ok() {
-            if let Ok(existing) = hash_file(dest).await {
-                if existing == expected {
-                    let size = tokio::fs::metadata(dest)
-                        .await
-                        .map(|metadata| metadata.len())
-                        .unwrap_or(0);
-                    progress(size, size);
-                    return Ok(DownloadResult {
-                        skipped: true,
-                        hash: existing,
-                        size,
-                    });
+    // Cheaply decide whether the destination is already the wanted file. The
+    // manifest size lets us rule it out with a stat instead of reading the
+    // whole file, which matters when a download is retried in a loop.
+    if let (Some(expected), Some(expected_size)) = (&options.expected_hash, options.expected_size) {
+        if let Ok(metadata) = tokio::fs::metadata(dest).await {
+            if metadata.len() == expected_size {
+                if let Ok(existing) = hash_file(dest).await {
+                    if &existing == expected {
+                        progress(expected_size, expected_size);
+                        return Ok(DownloadResult {
+                            skipped: true,
+                            hash: existing,
+                            size: expected_size,
+                        });
+                    }
                 }
             }
         }
     }
 
-    let probe = probe(client, url, options.retries).await?;
+    // A known size means we do not need the `Range: 0-0` probe: the first
+    // range response already tells us whether ranging works.
+    let probe = match options.expected_size {
+        Some(total) if total > 0 => Probe {
+            ranges: true,
+            total: Some(total),
+        },
+        Some(_) => {
+            tokio::fs::write(dest, b"").await?;
+            return Ok(DownloadResult {
+                skipped: false,
+                hash: crate::localfiles::hash_bytes(b""),
+                size: 0,
+            });
+        }
+        None => probe(client, url, options.retries).await?,
+    };
+
     if probe.total == Some(0) {
         tokio::fs::write(dest, b"").await?;
         return Ok(DownloadResult {

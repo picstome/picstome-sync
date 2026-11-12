@@ -21,9 +21,10 @@ use picstome_sync_core::model::{
 use picstome_sync_core::sanitize::{safe_join, sanitize_file_names, sanitize_gallery_id};
 use picstome_sync_core::sync::{
     adopt_local_changes, apply_remote_deletions, folder_exists, mark_favorites_rated,
-    mark_ratings_applied, preview_first_sync as preview_first_sync_core, preview_first_sync_with,
-    rating_plan_from_snapshot, resolve_remote_deletions as resolve_remote_deletions_core,
-    run_gallery_sync, FirstSyncItem, FirstSyncPreview, RemoteDeleteAction, SyncOptions,
+    mark_ratings_applied, preview_first_sync as preview_first_sync_core,
+    preview_first_sync_prepared, rating_plan_from_snapshot,
+    resolve_remote_deletions as resolve_remote_deletions_core, run_gallery_sync, FirstSyncItem,
+    FirstSyncPreview, RemoteDeleteAction, SyncOptions,
 };
 use picstome_sync_core::ApiClient;
 
@@ -389,6 +390,8 @@ fn append_sync_log(store: &Store, report: &SyncReport) {
         })).collect::<Vec<_>>(),
         "ignoredLocal": report.ignored_local,
         "ignoredRemote": report.ignored_remote,
+        "timings": report.timings,
+        "scanStats": report.scan_stats,
         "trashedLocal": report.trashed_local.iter().map(|item| json!({
             "filename": item.filename,
             "location": item.location,
@@ -865,17 +868,18 @@ pub async fn start_sync(
     let api = state.api().await;
     let progress = progress_emitter(app.clone());
     let gallery_for_scan = id.clone();
-    let preview = preview_first_sync_with(&api, &state.store, &gallery, move |seen, matched| {
-        progress(Progress {
-            gallery_id: gallery_for_scan.clone(),
-            phase: "scan".into(),
-            done: matched,
-            total: 0,
-            file_done: Some(seen),
-            ..Default::default()
+    let (preview, prepared_scan) =
+        preview_first_sync_prepared(&api, &state.store, &gallery, move |seen, matched| {
+            progress(Progress {
+                gallery_id: gallery_for_scan.clone(),
+                phase: "scan".into(),
+                done: matched,
+                total: 0,
+                file_done: Some(seen),
+                ..Default::default()
+            })
         })
-    })
-    .await?;
+        .await?;
     if preview.needed {
         return Ok(StartSyncResult {
             canceled: false,
@@ -886,7 +890,18 @@ pub async fn start_sync(
 
     Ok(StartSyncResult {
         canceled: false,
-        report: Some(sync_linked(&app, &state, &id, SyncOptions::default()).await?),
+        report: Some(
+            sync_linked(
+                &app,
+                &state,
+                &id,
+                SyncOptions {
+                    prepared_scan,
+                    ..Default::default()
+                },
+            )
+            .await?,
+        ),
         preview: None,
     })
 }

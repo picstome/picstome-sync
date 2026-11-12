@@ -73,6 +73,16 @@ pub fn write_json_atomic<T: Serialize>(path: &Path, value: &T) -> CoreResult<()>
     Ok(())
 }
 
+/// Same atomic guarantees as [`write_json_atomic`] without pretty printing.
+/// Used for caches and snapshots: they can grow to megabytes and are never
+/// meant to be read by a human.
+pub fn write_json_compact_atomic<T: Serialize>(path: &Path, value: &T) -> CoreResult<()> {
+    let mut data = serde_json::to_vec(value)?;
+    data.push(b'\n');
+    write_bytes(path, &data)?;
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
