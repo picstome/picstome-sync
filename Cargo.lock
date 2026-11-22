@@ -2908,7 +2908,7 @@ dependencies = [
 
 [[package]]
 name = "picstome-sync"
-version = "0.1.50"
+version = "0.1.51"
 dependencies = [
  "base64 0.22.1",
  "futures",
@@ -2933,7 +2933,7 @@ dependencies = [
 
 [[package]]
 name = "picstome-sync-core"
-version = "0.1.50"
+version = "0.1.51"
 dependencies = [
  "axum",
  "bytes",
