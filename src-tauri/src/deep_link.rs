@@ -119,9 +119,9 @@ pub async fn handle_url(app: AppHandle, raw: String) {
                         .map(|me| me.email.clone())
                         .or_else(|| response.email.clone());
                     let name = me.as_ref().and_then(|me| me.display_name.clone());
+                    let avatar = me.as_ref().and_then(|me| me.avatar_url.clone());
                     let _ = store.update_config(|config| {
-                        config.account_email = email.clone();
-                        config.account_name = name.clone();
+                        config.set_account(email.clone(), name.clone(), avatar.clone());
                     });
                     let view = build_state(&app_state).await;
                     let _ = app.emit("app-state", view);

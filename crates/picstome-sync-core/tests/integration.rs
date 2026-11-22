@@ -1321,8 +1321,30 @@ async fn resolves_and_caches_gallery_covers() {
     assert_eq!(cover.mime, "image/svg+xml");
     assert!(String::from_utf8_lossy(&cover.bytes).contains("<svg"));
 
+    // The photographer's profile photo comes from /me and is cached the same way.
+    let avatar_url = api.me().await.unwrap().avatar_url.expect("avatar url");
+    let avatar = picstome_sync_core::covers::cached_or_fetch(
+        &api.http(),
+        &cache,
+        "@account",
+        &avatar_url,
+        1_000,
+    )
+    .await
+    .expect("avatar");
+    assert_eq!(avatar.mime, "image/svg+xml");
+
     // Fresh cache: served without asking Picstome, even when it is gone.
     mock.close().await;
+    let offline_avatar = picstome_sync_core::covers::cached_or_fetch(
+        &api.http(),
+        &cache,
+        "@account",
+        &avatar_url,
+        2_000,
+    )
+    .await;
+    assert_eq!(offline_avatar, Some(avatar));
     let cached = resolve_cover(&api, &cache, "G123", "MiBoda", dir.path(), 2_000)
         .await
         .expect("cached cover");

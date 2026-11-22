@@ -62,6 +62,15 @@
                 <path d="M5.8 5.8A7 7 0 0 0 9 19h8.5a4.5 4.5 0 0 0 1.3-.2" />
                 <path d="M21.5 16.6A4.5 4.5 0 0 0 17.5 10h-1.8a7 7 0 0 0-5.3-4.9" />
             </symbol>
+            <symbol id="i-logout" viewBox="0 0 24 24">
+                <path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4" />
+                <path d="m16 17 5-5-5-5" />
+                <path d="M21 12H9" />
+            </symbol>
+            <symbol id="i-info" viewBox="0 0 24 24">
+                <circle cx="12" cy="12" r="10" />
+                <path d="M12 16v-4M12 8h.01" />
+            </symbol>
             <symbol id="i-chevron" viewBox="0 0 24 24">
                 <path d="m9 18 6-6-6-6" />
             </symbol>
@@ -79,46 +88,33 @@
             </symbol>
         </svg>
 
+        <!--
+            Layout: sidebar + main pane on top, one full-width app bar at the
+            bottom. App-level actions (home, account, info) sit on its left;
+            actions for the selected gallery on its right.
+        -->
         <div class="app-shell">
+            <div class="app-body">
             <aside class="sidebar">
-                <div class="sidebar-brand" id="brandHome" role="button" tabindex="0">
-                    <img
-                        class="brand-logo"
-                        src="./assets/picstome-sync-logo.png"
-                        alt="Picstome Sync"
-                    />
-                    <div class="brand-text">
-                        <span class="brand-name">Picstome Sync</span>
-                        <span class="env-badge hidden" id="envBadge"></span>
+                <div class="sidebar-top">
+                    <div class="search-row">
+                        <svg class="icon search-icon" aria-hidden="true"><use href="#i-search" /></svg>
+                        <input
+                            id="gallerySearch"
+                            type="search"
+                            autocomplete="off"
+                            spellcheck="false"
+                        />
                     </div>
-                </div>
-
-                <div class="sidebar-heading">
-                    <span id="galleriesLabel">Galleries</span>
                     <button
                         type="button"
-                        class="icon-button"
+                        class="icon-button add-button"
                         id="btnAddGallery"
                         title="Open Picstome"
                     >
                         <svg class="icon" aria-hidden="true"><use href="#i-plus" /></svg>
                     </button>
                 </div>
-
-                <div class="search-row">
-                    <svg class="icon search-icon" aria-hidden="true"><use href="#i-search" /></svg>
-                    <input
-                        id="gallerySearch"
-                        type="search"
-                        autocomplete="off"
-                        spellcheck="false"
-                    />
-                </div>
-
-                <button type="button" class="nav-row" id="btnHome">
-                    <svg class="icon" aria-hidden="true"><use href="#i-home" /></svg>
-                    <span class="label">Home</span>
-                </button>
 
                 <div class="gallery-list" id="galleryList"></div>
                 <div class="search-empty hidden" id="searchEmpty"></div>
@@ -133,49 +129,18 @@
                     </button>
                 </div>
 
-                <div class="sidebar-spacer"></div>
-
-                <div class="sidebar-footer">
-                    <button
-                        type="button"
-                        class="account-button"
-                        id="accountChip"
-                        title="Open account profile"
-                    >
-                        <span class="account-avatar" id="accountInitial">?</span>
-                        <span class="account-text">
-                            <span class="account-name" id="accountName"
-                                >Not connected</span
-                            >
-                            <span class="account-email" id="accountEmail"></span>
-                        </span>
-                    </button>
-                    <div class="sidebar-actions">
-                        <button
-                            type="button"
-                            class="primary small"
-                            id="btnConnect"
-                        >
-                            Open Picstome
-                        </button>
-                        <button
-                            type="button"
-                            class="ghost small hidden"
-                            id="btnLogout"
-                        >
-                            Log out
-                        </button>
-                        <button type="button" class="ghost small" id="btnInfo">
-                            Info
-                        </button>
-                    </div>
-                </div>
             </aside>
 
             <main class="main-pane">
                 <header class="main-header">
                     <div class="main-title">
                         <div class="title-row">
+                            <img
+                                class="title-logo hidden"
+                                id="titleLogo"
+                                src="./assets/picstome-sync-logo.png"
+                                alt=""
+                            />
                             <h1 id="detailName">Picstome Sync</h1>
                             <button
                                 type="button"
@@ -350,12 +315,60 @@
                     </details>
                 </section>
 
-                <footer class="main-footer" id="mainFooter">
+            </main>
+            </div>
+
+            <footer class="app-bar">
+                <div class="app-bar-left">
                     <button
                         type="button"
-                        class="footer-action"
-                        id="btnChangeFolder"
+                        class="bar-icon"
+                        id="btnHome"
+                        title="Home"
+                        aria-label="Home"
                     >
+                        <svg class="icon" aria-hidden="true"><use href="#i-home" /></svg>
+                    </button>
+                    <span class="bar-divider" aria-hidden="true"></span>
+                    <button
+                        type="button"
+                        class="account-button"
+                        id="accountChip"
+                        title="Open account profile"
+                    >
+                        <span class="account-avatar" id="accountInitial">?</span>
+                        <span class="account-text">
+                            <span class="account-name" id="accountName"
+                                >Not connected</span
+                            >
+                            <span class="account-email" id="accountEmail"></span>
+                        </span>
+                    </button>
+                    <button type="button" class="primary small" id="btnConnect">
+                        Open Picstome
+                    </button>
+                    <button
+                        type="button"
+                        class="bar-icon hidden"
+                        id="btnLogout"
+                        title="Log out"
+                        aria-label="Log out"
+                    >
+                        <svg class="icon" aria-hidden="true"><use href="#i-logout" /></svg>
+                    </button>
+                    <button
+                        type="button"
+                        class="bar-icon"
+                        id="btnInfo"
+                        title="Info"
+                        aria-label="Info"
+                    >
+                        <svg class="icon" aria-hidden="true"><use href="#i-info" /></svg>
+                    </button>
+                    <span class="env-badge hidden" id="envBadge"></span>
+                </div>
+                <div class="app-bar-right" id="mainFooter">
+                    <button type="button" class="footer-action" id="btnChangeFolder">
                         <svg class="icon" aria-hidden="true"><use href="#i-folder-open" /></svg>
                         <span class="label">Change folder…</span>
                     </button>
@@ -363,8 +376,8 @@
                         <svg class="icon" aria-hidden="true"><use href="#i-unlink" /></svg>
                         <span class="label">Unlink</span>
                     </button>
-                </footer>
-            </main>
+                </div>
+            </footer>
         </div>
 
         <div class="modal-backdrop hidden" id="infoModal">

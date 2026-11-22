@@ -90,6 +90,9 @@ struct ErrorBody {
 pub struct Me {
     pub email: String,
     pub display_name: Option<String>,
+    /// Profile photo, only present when the photographer uploaded one
+    /// (Picstome's generated initials avatar is not sent).
+    pub avatar_url: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -276,6 +279,11 @@ impl ApiClient {
             display_name: value
                 .get("display_name")
                 .and_then(Value::as_str)
+                .map(str::to_string),
+            avatar_url: value
+                .get("avatar_url")
+                .and_then(Value::as_str)
+                .filter(|url| !url.is_empty())
                 .map(str::to_string),
         })
     }

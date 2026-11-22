@@ -420,7 +420,11 @@ async fn me(State(state): State<Arc<MockState>>, headers: HeaderMap) -> Response
     }
     json_response(
         StatusCode::OK,
-        json!({"email": DEMO_EMAIL, "display_name": "Desktop Demo"}),
+        json!({
+            "email": DEMO_EMAIL,
+            "display_name": "Desktop Demo",
+            "avatar_url": format!("{}/covers/G456.svg?avatar=1", host_base(&headers)),
+        }),
     )
 }
 

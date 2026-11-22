@@ -45,6 +45,12 @@ const state = {
     covers: {},
     /** Linked gallery ids the covers were last loaded for. */
     coversKey: null,
+    /** Show every linked gallery instead of the most recent ones. */
+    showAllLinked: false,
+    /** Photographer's profile photo (data: URL) or null when there is none. */
+    avatar: null,
+    /** Account the avatar was last loaded for. */
+    avatarFor: null,
     syncBusy: false,
     syncTarget: null,
     progress: null,
@@ -99,11 +105,9 @@ const state = {
 
 const els = {
     envBadge: document.getElementById("envBadge"),
-    galleriesLabel: document.getElementById("galleriesLabel"),
     btnAddGallery: document.getElementById("btnAddGallery"),
     galleryList: document.getElementById("galleryList"),
     btnHome: document.getElementById("btnHome"),
-    brandHome: document.getElementById("brandHome"),
     mainActions: document.getElementById("mainActions"),
     home: document.getElementById("home"),
     homeSyncedSection: document.getElementById("homeSyncedSection"),
@@ -134,6 +138,7 @@ const els = {
     btnInfo: document.getElementById("btnInfo"),
 
     detailName: document.getElementById("detailName"),
+    titleLogo: document.getElementById("titleLogo"),
     btnOpenWebGallery: document.getElementById("btnOpenWebGallery"),
     detailPath: document.getElementById("detailPath"),
     detailPathText: document.getElementById("detailPathText"),
@@ -316,6 +321,12 @@ function setLabel(button, text) {
     (label || button).textContent = text;
 }
 
+/** Tooltip and accessible name of an icon-only button. */
+function setTooltip(button, text) {
+    button.title = text;
+    button.setAttribute("aria-label", text);
+}
+
 function fmt(template, vars) {
     return String(template || "").replace(/\{(\w+)\}/g, (match, key) =>
         key in vars ? String(vars[key]) : match,
@@ -457,8 +468,7 @@ function applyStrings() {
     const s = state.strings;
     if (!s) return;
 
-    els.galleriesLabel.textContent = s.galleries;
-    setLabel(els.btnHome, s.home);
+    setTooltip(els.btnHome, s.home);
     els.gallerySearch.placeholder = s.searchGalleries;
     els.btnAddGallery.title = s.createGallery;
     els.btnAddGallery.setAttribute("aria-label", s.createGallery);
@@ -469,8 +479,8 @@ function applyStrings() {
     els.btnConnect.textContent = s.connect;
     els.btnConnectWelcome.textContent = s.connect;
     els.btnDemoWelcome.textContent = s.syncDemo;
-    els.btnLogout.textContent = s.logout;
-    els.btnInfo.textContent = s.info;
+    setTooltip(els.btnLogout, s.logout);
+    setTooltip(els.btnInfo, s.info);
     renderSyncButton(s);
     setLabel(els.btnChangeFolder, s.changeFolder);
     els.btnChangeFolder.title = s.changeFolder;
@@ -529,7 +539,16 @@ function renderAccount() {
     const name = state.auth.name || state.auth.email || "";
     els.accountName.textContent = connected ? name || s.connectedAs : s.notConnected;
     els.accountEmail.textContent = connected ? state.auth.email || "" : "";
-    els.accountInitial.textContent = initial(name);
+    // Only a real profile photo is shown: a letter tile added nothing next
+    // to the name, so without a photo the avatar is left out entirely.
+    els.accountInitial.replaceChildren();
+    if (connected && state.avatar) {
+        const img = el("img", "gallery-cover");
+        img.src = state.avatar;
+        img.alt = "";
+        els.accountInitial.appendChild(img);
+    }
+    els.accountInitial.classList.toggle("hidden", !(connected && state.avatar));
     els.accountChip.title = connected ? s.openProfile : s.connect;
 
     els.btnConnect.classList.toggle("hidden", connected);
@@ -616,6 +635,9 @@ function byLastSync(a, b) {
     return (b.lastSyncAt || 0) - (a.lastSyncAt || 0);
 }
 
+/** Linked galleries listed before the "Show all" toggle. */
+const LINKED_PREVIEW = 12;
+
 /** Linked galleries in sidebar/home order. */
 function sortedGalleries(galleries = state.galleries) {
     return [...galleries].sort(byLastSync);
@@ -633,6 +655,19 @@ function recentGalleryItems(limit = 5) {
         })
         .sort(byNewestCreated)
         .slice(0, limit);
+}
+
+/** Load the photographer's profile photo once per signed-in account. */
+async function loadAvatar() {
+    const key = state.auth.email || state.auth.name || "";
+    if (state.avatarFor === key) return;
+    state.avatarFor = key;
+    try {
+        state.avatar = (await invoke("get_account_avatar")) || null;
+    } catch {
+        state.avatar = null;
+    }
+    renderAccount();
 }
 
 /* Covers */
@@ -951,7 +986,14 @@ function renderGalleryList() {
         els.galleryList.appendChild(head);
     }
 
-    for (const gallery of sortedGalleries(galleries)) {
+    // With dozens or hundreds of linked galleries the list would push
+    // "Recent in Picstome" out of sight: show the most recent ones and a
+    // toggle. A search always lists every match.
+    const ordered = sortedGalleries(galleries);
+    const collapsible = !state.galleryQuery.trim() && ordered.length > LINKED_PREVIEW;
+    const visible =
+        collapsible && !state.showAllLinked ? ordered.slice(0, LINKED_PREVIEW) : ordered;
+    for (const gallery of visible) {
         const row = el("button", "gallery-row");
         row.type = "button";
         row.dataset.galleryId = gallery.galleryId;
@@ -976,6 +1018,16 @@ function renderGalleryList() {
         );
         row.append(galleryAvatar(gallery), info);
         els.galleryList.appendChild(row);
+    }
+    if (collapsible) {
+        const toggle = el(
+            "button",
+            "list-toggle",
+            state.showAllLinked ? s.showFewer : fmt(s.showAll, { n: ordered.length }),
+        );
+        toggle.type = "button";
+        toggle.dataset.toggle = "linked";
+        els.galleryList.appendChild(toggle);
     }
 
     renderRecentGallerySection(s);
@@ -1077,7 +1129,10 @@ function renderMain() {
         els.welcome.classList.toggle("hidden", homeVisible);
         els.home.classList.toggle("hidden", !homeVisible);
         renderHome();
-        els.detailName.textContent = homeVisible ? s.home : s.appTitle;
+        // Home is the app's front page: it carries the app's own name and
+        // logo (the sidebar no longer repeats them).
+        els.detailName.textContent = s.appTitle;
+        show(els.titleLogo);
         els.btnOpenWebGallery.classList.add("hidden");
         els.detailPathText.textContent = s.syncHint;
         els.detailPath.disabled = true;
@@ -1098,6 +1153,7 @@ function renderMain() {
 
     hide(els.welcome);
     hide(els.home);
+    hide(els.titleLogo);
     const showIdle =
         !state.syncBusy &&
         !state.report &&
@@ -1924,7 +1980,13 @@ function setState(next) {
         state.currentGalleryId = null;
     }
     // No gallery is auto-selected: the app opens on the home page.
-    if (state.auth.connected) loadCovers();
+    if (state.auth.connected) {
+        loadCovers();
+        loadAvatar();
+    } else {
+        state.avatar = null;
+        state.avatarFor = null;
+    }
     if (
         state.rating.open &&
         state.rating.galleryId &&
@@ -2481,6 +2543,11 @@ els.galleryList.addEventListener("click", (event) => {
         }
         return;
     }
+    if (event.target.closest(".list-toggle")) {
+        state.showAllLinked = !state.showAllLinked;
+        renderGalleryList();
+        return;
+    }
     const row = event.target.closest(".gallery-row");
     if (!row) return;
     if (row.dataset.remote === "1") {
@@ -2494,10 +2561,6 @@ els.galleryList.addEventListener("click", (event) => {
 });
 
 els.btnHome.addEventListener("click", goHome);
-els.brandHome.addEventListener("click", goHome);
-els.brandHome.addEventListener("keydown", (event) => {
-    if (event.key === "Enter" || event.key === " ") goHome();
-});
 els.home.addEventListener("click", (event) => {
     const card = event.target.closest(".home-card");
     if (!card) return;
@@ -2768,6 +2831,8 @@ els.btnConfirmOk.addEventListener("click", () => settleConfirm(true));
 
 els.gallerySearch.addEventListener("input", () => {
     state.galleryQuery = els.gallerySearch.value;
+    // New query, new list: start reading it from the top.
+    els.galleryList.scrollTop = 0;
     renderGalleryList();
     scheduleRemoteSearch();
 });

@@ -300,23 +300,48 @@ pub async fn resolve_cover(
             }
         }
     };
-    let source = source_key(&url);
+    match fetch_if_changed(&api.http(), cache, gallery_id, &url, cached, now).await {
+        Some(cover) => Some(cover),
+        None => local_thumbnail(cache, gallery_id, folder, None, now).await,
+    }
+}
+
+/// Return the cached image for `key` when it came from `url`'s source,
+/// otherwise download and cache it. A failed download keeps the old image.
+async fn fetch_if_changed(
+    http: &reqwest::Client,
+    cache: &CoverCache,
+    key: &str,
+    url: &str,
+    cached: Option<(Cover, CoverMeta)>,
+    now: i64,
+) -> Option<Cover> {
+    let source = source_key(url);
     if let Some((cover, meta)) = &cached {
         if meta.source == source {
-            cache.touch(gallery_id, meta, now);
+            cache.touch(key, meta, now);
             return Some(cover.clone());
         }
     }
-    match fetch_cover(&api.http(), &url).await {
+    match fetch_cover(http, url).await {
         Ok(cover) => {
-            let _ = cache.save(gallery_id, &source, &cover, now);
+            let _ = cache.save(key, &source, &cover, now);
             Some(cover)
         }
-        Err(_) => match cached {
-            Some((cover, _)) => Some(cover),
-            None => local_thumbnail(cache, gallery_id, folder, None, now).await,
-        },
+        Err(_) => cached.map(|(cover, _)| cover),
     }
+}
+
+/// An image known by URL (the photographer's avatar), cached under `key`
+/// and re-downloaded only when its source changes.
+pub async fn cached_or_fetch(
+    http: &reqwest::Client,
+    cache: &CoverCache,
+    key: &str,
+    url: &str,
+    now: i64,
+) -> Option<Cover> {
+    fetch_if_changed(http, cache, key, url, cache.load(key), now).await
 }
 
 /// [`local_fallback`] on the blocking pool: it walks the folder and decodes

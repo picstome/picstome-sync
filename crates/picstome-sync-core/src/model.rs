@@ -28,7 +28,28 @@ pub struct Config {
     pub last_update_check_at: Option<i64>,
     pub account_email: Option<String>,
     pub account_name: Option<String>,
+    /// Profile photo URL from `/api/v1/me`, when the photographer has one.
+    pub account_avatar_url: Option<String>,
     pub api_base: Option<String>,
+}
+
+impl Config {
+    /// Remember who is signed in, from a `/api/v1/me` answer.
+    pub fn set_account(
+        &mut self,
+        email: Option<String>,
+        name: Option<String>,
+        avatar: Option<String>,
+    ) {
+        self.account_email = email;
+        self.account_name = name;
+        self.account_avatar_url = avatar;
+    }
+
+    /// Forget the signed-in account (log out, environment switch).
+    pub fn clear_account(&mut self) {
+        self.set_account(None, None, None);
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]

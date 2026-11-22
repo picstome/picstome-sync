@@ -121,8 +121,11 @@ pub fn run() {
                         if let Ok(me) = api.me().await {
                             let store = app_for_account.state::<AppState>().store.clone();
                             let _ = store.update_config(|config| {
-                                config.account_email = Some(me.email.clone());
-                                config.account_name = me.display_name.clone();
+                                config.set_account(
+                                    Some(me.email.clone()),
+                                    me.display_name.clone(),
+                                    me.avatar_url.clone(),
+                                );
                             });
                             let view = {
                                 let state = app_for_account.state::<AppState>();
@@ -156,6 +159,7 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             commands::get_state,
             commands::get_gallery_covers,
+            commands::get_account_avatar,
             commands::get_config,
             commands::choose_folder,
             commands::connect,

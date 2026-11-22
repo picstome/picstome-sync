@@ -11,6 +11,7 @@ use tauri_plugin_opener::OpenerExt;
 
 use picstome_sync_core::atomic::write_bytes;
 use picstome_sync_core::config::Store;
+use picstome_sync_core::covers::CoverCache;
 use picstome_sync_core::error::ErrorPayload;
 use picstome_sync_core::ignored::{GalleryIgnores, IgnoredLocal, IgnoredRemote};
 use picstome_sync_core::mock::MockServer;
@@ -692,9 +693,8 @@ pub async fn logout(app: AppHandle, state: State<'_, AppState>) -> Result<Value,
     }
     api.set_token(None).await;
     let _ = state.token_store.save(None);
-    let _ = state.store.update_config(|config| {
-        config.account_email = None;
-    });
+    let _ = state.store.update_config(|config| config.clear_account());
+    CoverCache::new(state.store.root()).remove(ACCOUNT_AVATAR_KEY);
     emit_state(&app, &state).await;
     Ok(json!({"ok": true}))
 }
@@ -706,6 +706,44 @@ pub async fn list_remote_galleries(
     Ok(state.api().await.galleries().await?)
 }
 
+/// Cache key of the signed-in photographer's profile photo. `@` cannot occur
+/// in a gallery id, so it never collides with a gallery cover.
+const ACCOUNT_AVATAR_KEY: &str = "@account";
+
+/// Encode an image as a `data:` URL the webview can show under its CSP.
+fn data_url(cover: &picstome_sync_core::covers::Cover) -> String {
+    use base64::Engine;
+    format!(
+        "data:{};base64,{}",
+        cover.mime,
+        base64::engine::general_purpose::STANDARD.encode(&cover.bytes)
+    )
+}
+
+/// The photographer's profile photo as a `data:` URL, or `null` when
+/// Picstome has none (the UI then shows no avatar at all rather than an
+/// initial). Cached on disk so it also shows offline.
+#[tauri::command]
+pub async fn get_account_avatar(
+    state: State<'_, AppState>,
+) -> Result<Option<String>, ErrorPayload> {
+    let cache = CoverCache::new(state.store.root());
+    let Some(url) = state.store.load_config().account_avatar_url else {
+        cache.remove(ACCOUNT_AVATAR_KEY);
+        return Ok(None);
+    };
+    let api = state.api().await;
+    let cover = picstome_sync_core::covers::cached_or_fetch(
+        &api.http(),
+        &cache,
+        ACCOUNT_AVATAR_KEY,
+        &url,
+        now_millis(),
+    )
+    .await;
+    Ok(cover.as_ref().map(data_url))
+}
+
 /// Cover thumbnails of the linked galleries, as `data:` URLs keyed by
 /// gallery id. Galleries without a cover (no photos yet, or Picstome
 /// unreachable on first use) are simply absent; the UI then shows the
@@ -714,9 +752,8 @@ pub async fn list_remote_galleries(
 pub async fn get_gallery_covers(
     state: State<'_, AppState>,
 ) -> Result<std::collections::HashMap<String, String>, ErrorPayload> {
-    use base64::Engine;
     use futures::StreamExt;
-    use picstome_sync_core::covers::{resolve_cover, CoverCache};
+    use picstome_sync_core::covers::resolve_cover;
 
     let api = state.api().await;
     let cache = CoverCache::new(state.store.root());
@@ -735,13 +772,7 @@ pub async fn get_gallery_covers(
                     now,
                 )
                 .await;
-                let url = cover.map(|cover| {
-                    format!(
-                        "data:{};base64,{}",
-                        cover.mime,
-                        base64::engine::general_purpose::STANDARD.encode(&cover.bytes)
-                    )
-                });
+                let url = cover.as_ref().map(data_url);
                 (gallery.gallery_id, url)
             }
         })
@@ -1108,7 +1139,7 @@ pub fn unlink_gallery(
     let _ops = state.try_gallery_ops()?;
     let local_path = state.store.get_gallery(&id).map(|entry| entry.local_path);
     state.store.remove_gallery(&id)?;
-    picstome_sync_core::covers::CoverCache::new(state.store.root()).remove(&id);
+    CoverCache::new(state.store.root()).remove(&id);
     let _ = state.store.delete_snapshot(&id);
     if let Some(local_path) = local_path {
         let _ = GalleryIgnores::clear(Path::new(&local_path));
@@ -1486,8 +1517,7 @@ pub async fn set_test_mode(
     state.set_mock(false);
     let _ = state.store.update_config(|config| {
         config.api_base = None;
-        config.account_email = None;
-        config.account_name = None;
+        config.clear_account();
     });
 
     let view = build_state(&state).await;
