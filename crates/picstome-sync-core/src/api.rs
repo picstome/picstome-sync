@@ -3,6 +3,7 @@ use std::path::Path;
 use std::sync::Arc;
 use std::time::Duration;
 
+use futures::StreamExt;
 use reqwest::header::{HeaderMap, HeaderValue, ACCEPT};
 use reqwest::multipart::{Form, Part};
 use reqwest::{Client, Method, Response};
@@ -20,6 +21,11 @@ use crate::model::{
     CLIENT_NAME, DEFAULT_API_BASE,
 };
 use crate::sanitize::urlencode;
+use crate::transfer::ProgressFn;
+
+/// Read size for streamed uploads. The default 4 KiB turns a 40 MB RAW into
+/// ten thousand tiny reads and progress callbacks.
+const UPLOAD_BUFFER_BYTES: usize = 256 * 1024;
 
 fn valid_image_header(filename: &str, header: &[u8]) -> bool {
     match crate::identity::extension_of(filename).as_str() {
@@ -62,6 +68,15 @@ async fn open_upload_file(
     file.seek(SeekFrom::Start(0)).await?;
     Ok(file)
 }
+
+/// Upper bound for a JSON API round trip (manifest, galleries, deletes...).
+/// Transfers are *not* bounded by this: a 200 MB video on a slow uplink can
+/// legitimately take many minutes.
+pub const API_REQUEST_TIMEOUT: Duration = Duration::from_secs(60);
+/// A transfer that receives no bytes for this long is considered dead. This is
+/// what catches a stalled connection without capping the total duration.
+pub const TRANSFER_READ_TIMEOUT: Duration = Duration::from_secs(60);
+pub const CONNECT_TIMEOUT: Duration = Duration::from_secs(15);
 
 #[derive(Debug, Deserialize)]
 struct ErrorBody {
@@ -112,11 +127,16 @@ impl ApiClient {
             .to_string();
         let mut default_headers = HeaderMap::new();
         default_headers.insert(ACCEPT, HeaderValue::from_static("application/json"));
+        // No client-wide `timeout`: it bounds the *whole* request, which made
+        // every upload or download slower than 60 s fail (large RAW files and
+        // videos on a home connection). JSON calls set a per-request timeout in
+        // `send`; transfers rely on `read_timeout` to detect a stall.
         let client = Client::builder()
-            .user_agent("Picstome Sync")
+            .user_agent(concat!("Picstome Sync/", env!("CARGO_PKG_VERSION")))
             .default_headers(default_headers)
-            .timeout(Duration::from_secs(60))
-            .connect_timeout(Duration::from_secs(15))
+            .connect_timeout(CONNECT_TIMEOUT)
+            .read_timeout(TRANSFER_READ_TIMEOUT)
+            .tcp_keepalive(Duration::from_secs(30))
             .build()?;
         Ok(Self {
             base_url,
@@ -164,7 +184,10 @@ impl ApiClient {
     }
 
     async fn send(&self, method: Method, path: &str, body: Option<Value>) -> CoreResult<Response> {
-        let mut request = self.client.request(method, self.url(path));
+        let mut request = self
+            .client
+            .request(method, self.url(path))
+            .timeout(API_REQUEST_TIMEOUT);
         if let Some(token) = self.token().await {
             request = request.bearer_auth(token);
         }
@@ -295,8 +318,29 @@ impl ApiClient {
         size: u64,
         hash: Option<&str>,
     ) -> CoreResult<UploadResponse> {
+        self.upload_photo_with_progress(gallery_id, filename, file_path, size, hash, None)
+            .await
+    }
+
+    /// Same as [`ApiClient::upload_photo`], reporting `(sent, total)` bytes as
+    /// the body is streamed so a large upload never looks frozen.
+    pub async fn upload_photo_with_progress(
+        &self,
+        gallery_id: &str,
+        filename: &str,
+        file_path: &Path,
+        size: u64,
+        hash: Option<&str>,
+        on_bytes: Option<ProgressFn>,
+    ) -> CoreResult<UploadResponse> {
         let file = open_upload_file(filename, file_path, size).await?;
-        let stream = ReaderStream::new(file);
+        let mut sent = 0u64;
+        let stream = ReaderStream::with_capacity(file, UPLOAD_BUFFER_BYTES).inspect(move |chunk| {
+            if let (Ok(bytes), Some(report)) = (chunk, on_bytes.as_ref()) {
+                sent = sent.saturating_add(bytes.len() as u64);
+                report(sent, size);
+            }
+        });
         let part = Part::stream_with_length(reqwest::Body::wrap_stream(stream), size)
             .file_name(crate::sanitize::escape_header_value(filename))
             .mime_str(mime_for(filename))?;

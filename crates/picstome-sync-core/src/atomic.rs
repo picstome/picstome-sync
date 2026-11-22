@@ -1,3 +1,7 @@
+//! Crash-safe file writes: data goes to a sibling temporary file, is synced,
+//! and then renamed over the destination, so readers only ever observe the
+//! old or the new contents.
+
 use std::fs;
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
@@ -18,7 +22,12 @@ fn temporary_path(path: &Path) -> PathBuf {
     path.with_extension(format!("{extension}.{}.{sequence}.tmp", std::process::id()))
 }
 
-fn replace_file(from: &Path, to: &Path) -> io::Result<()> {
+/// Rename `from` over `to`, replacing it.
+///
+/// `rename` already replaces atomically on Unix and (via `MoveFileExW`) on
+/// Windows; the fallback only covers Windows cases where the destination is
+/// read-only or briefly locked by another process (indexers, antivirus).
+pub fn replace_file(from: &Path, to: &Path) -> io::Result<()> {
     match fs::rename(from, to) {
         Ok(()) => Ok(()),
         #[cfg(windows)]

@@ -19,10 +19,22 @@ pub const EDITED_FOLDER_NAMES: &[&str] =
 /// 40 MB RAW into 640 blocking-pool round trips.
 const HASH_BUFFER_BYTES: usize = 1024 * 1024;
 
+/// Message used for files skipped because they exceed [`MAX_PHOTO_BYTES`].
+pub const FILE_TOO_LARGE: &str = "file too large";
+
+/// A file or folder the scan could not use.
 #[derive(Debug, Clone)]
 pub struct ScanError {
     pub path: String,
     pub error: String,
+}
+
+impl ScanError {
+    /// The file was skipped on purpose for its size, not because it could not
+    /// be read. Such a skip does not make the scan incomplete.
+    pub fn is_oversized(&self) -> bool {
+        self.error == FILE_TOO_LARGE
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -160,7 +172,7 @@ where
         if metadata.len() > max_bytes {
             errors.push(ScanError {
                 path: entry.path().display().to_string(),
-                error: "file too large".into(),
+                error: FILE_TOO_LARGE.into(),
             });
             continue;
         }

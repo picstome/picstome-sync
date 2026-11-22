@@ -1,3 +1,9 @@
+//! Resumable, parallel downloads with integrity checks.
+//!
+//! A download goes to `<dest>.part`, is verified against the manifest size and
+//! hash, and only then replaces `<dest>`. The destination therefore always
+//! holds either the previous version or the complete new one.
+
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
@@ -41,8 +47,11 @@ impl Default for DownloadOptions {
     }
 }
 
+/// Resume state stored next to a partial download (`<dest>.part.json`).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct PartMeta {
+    /// Resume key (see [`resume_key`]). Named `url` for compatibility with the
+    /// files written by older builds.
     url: String,
     total: u64,
     chunk_bytes: u64,
@@ -63,151 +72,153 @@ struct Probe {
     total: Option<u64>,
 }
 
-fn sleep_ms(ms: u64) -> tokio::time::Sleep {
-    tokio::time::sleep(Duration::from_millis(ms))
+/// One ranged response: the body, whether the server honoured the range
+/// (`206`), and the total size announced by `Content-Range`.
+struct RangeResponse {
+    bytes: Vec<u8>,
+    ranged: bool,
+    remote_total: Option<u64>,
 }
 
-async fn probe_once(client: &Client, url: &str) -> CoreResult<Probe> {
-    let response = client.get(url).header(RANGE, "bytes=0-0").send().await?;
-    let status = response.status();
-    if status.as_u16() == 206 {
-        let total = response
-            .headers()
-            .get("content-range")
-            .and_then(|value| value.to_str().ok())
-            .and_then(|value| value.rsplit('/').next())
-            .and_then(|value| value.parse::<u64>().ok());
-        return Ok(Probe {
-            ranges: true,
-            total,
-        });
+/// Failure of a single HTTP attempt, tagged with whether trying again can help.
+struct AttemptError {
+    error: CoreError,
+    retryable: bool,
+}
+
+impl From<reqwest::Error> for AttemptError {
+    fn from(error: reqwest::Error) -> Self {
+        // Connection resets, timeouts and truncated bodies are transient.
+        Self {
+            error: error.into(),
+            retryable: true,
+        }
     }
-    if status.is_success() {
-        let total = response.content_length();
-        return Ok(Probe {
-            ranges: false,
-            total,
-        });
+}
+
+/// `5xx`, `408 Request Timeout` and `429 Too Many Requests` are worth another
+/// attempt. Any other `4xx` (an expired signed URL, a missing object) will
+/// fail identically, so retrying only delays the error.
+fn retryable_status(status: u16) -> bool {
+    status >= 500 || status == 408 || status == 429
+}
+
+fn status_error(context: &str, status: u16) -> AttemptError {
+    AttemptError {
+        error: CoreError::Network(format!("{context} (HTTP {status})")),
+        retryable: retryable_status(status),
     }
-    Err(CoreError::Network(format!(
-        "cannot probe download (HTTP {})",
-        status.as_u16()
-    )))
+}
+
+/// Exponential backoff: 250 ms, 500 ms, 1 s, 2 s... capped at 4 s.
+fn backoff(attempt: usize) -> Duration {
+    Duration::from_millis((250u64 << attempt.min(4)).min(4_000))
+}
+
+/// Run `operation` up to `retries + 1` times, backing off between transient
+/// failures. Permanent failures are returned immediately.
+async fn with_retries<T, F, Fut>(retries: usize, mut operation: F) -> CoreResult<T>
+where
+    F: FnMut() -> Fut,
+    Fut: std::future::Future<Output = Result<T, AttemptError>>,
+{
+    let mut attempt = 0;
+    loop {
+        match operation().await {
+            Ok(value) => return Ok(value),
+            Err(failure) if failure.retryable && attempt < retries => {
+                tokio::time::sleep(backoff(attempt)).await;
+                attempt += 1;
+            }
+            Err(failure) => return Err(failure.error),
+        }
+    }
+}
+
+fn content_range_total(response: &reqwest::Response) -> Option<u64> {
+    response
+        .headers()
+        .get(reqwest::header::CONTENT_RANGE)
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| value.rsplit('/').next())
+        .and_then(|value| value.parse::<u64>().ok())
 }
 
 async fn probe(client: &Client, url: &str, retries: usize) -> CoreResult<Probe> {
-    let mut last_error = None;
-    for attempt in 0..=retries {
-        match probe_once(client, url).await {
-            Ok(probe) => return Ok(probe),
-            Err(err) => {
-                last_error = Some(err);
-                if attempt < retries {
-                    sleep_ms(150 * (attempt as u64 + 1)).await;
-                }
-            }
+    with_retries(retries, || async {
+        let response = client.get(url).header(RANGE, "bytes=0-0").send().await?;
+        let status = response.status().as_u16();
+        if status == 206 {
+            return Ok(Probe {
+                ranges: true,
+                total: content_range_total(&response),
+            });
         }
-    }
-    Err(last_error.unwrap_or_else(|| CoreError::Network("cannot probe download".into())))
+        if response.status().is_success() {
+            return Ok(Probe {
+                ranges: false,
+                total: response.content_length(),
+            });
+        }
+        Err(status_error("cannot probe download", status))
+    })
+    .await
 }
 
+/// Fetch `bytes=start-end` (inclusive), retrying transient failures.
 async fn fetch_range(
     client: &Client,
     url: &str,
     start: u64,
     end: u64,
     retries: usize,
-) -> CoreResult<Vec<u8>> {
-    let mut last_error = None;
-    for attempt in 0..=retries {
-        let result = async {
-            let response = client
-                .get(url)
-                .header(RANGE, format!("bytes={start}-{end}"))
-                .send()
-                .await?;
-            let status = response.status();
-            if !status.is_success() {
-                return Err(CoreError::Network(format!(
-                    "download failed (HTTP {})",
-                    status.as_u16()
-                )));
-            }
-            let bytes = response.bytes().await?;
-            Ok::<Vec<u8>, CoreError>(bytes.to_vec())
+) -> CoreResult<RangeResponse> {
+    with_retries(retries, || async {
+        let response = client
+            .get(url)
+            .header(RANGE, format!("bytes={start}-{end}"))
+            .send()
+            .await?;
+        let status = response.status().as_u16();
+        if !response.status().is_success() {
+            return Err(status_error("download failed", status));
         }
-        .await;
-
-        match result {
-            Ok(bytes) => return Ok(bytes),
-            Err(err) => {
-                last_error = Some(err);
-                if attempt < retries {
-                    sleep_ms(150 * (attempt as u64 + 1)).await;
-                }
-            }
-        }
-    }
-    Err(last_error.unwrap_or_else(|| CoreError::Network("download failed".into())))
+        let remote_total = content_range_total(&response);
+        let bytes = response.bytes().await?;
+        Ok(RangeResponse {
+            bytes: bytes.to_vec(),
+            ranged: status == 206,
+            remote_total,
+        })
+    })
+    .await
 }
 
-/// One ranged request that also reports whether the server honoured the range
-/// and, when it did, the total file size from `Content-Range`.
-async fn fetch_range_checked(
-    client: &Client,
-    url: &str,
-    start: u64,
-    end: u64,
-    retries: usize,
-) -> CoreResult<(Vec<u8>, bool, Option<u64>)> {
-    let mut last_error = None;
-    for attempt in 0..=retries {
-        let result = async {
-            let response = client
-                .get(url)
-                .header(RANGE, format!("bytes={start}-{end}"))
-                .send()
-                .await?;
-            let status = response.status();
-            if !status.is_success() {
-                return Err(CoreError::Network(format!(
-                    "download failed (HTTP {})",
-                    status.as_u16()
-                )));
-            }
-            let ranged = status.as_u16() == 206;
-            let remote_total = response
-                .headers()
-                .get("content-range")
-                .and_then(|value| value.to_str().ok())
-                .and_then(|value| value.rsplit('/').next())
-                .and_then(|value| value.parse::<u64>().ok());
-            let bytes = response.bytes().await?;
-            Ok::<(Vec<u8>, bool, Option<u64>), CoreError>((bytes.to_vec(), ranged, remote_total))
-        }
-        .await;
-
-        match result {
-            Ok(value) => return Ok(value),
-            Err(err) => {
-                last_error = Some(err);
-                if attempt < retries {
-                    sleep_ms(150 * (attempt as u64 + 1)).await;
-                }
-            }
-        }
+/// Identity of the resource behind a download URL, used to decide whether a
+/// `.part` file can be resumed. Signed URLs carry a fresh signature (query
+/// string) on every manifest, so the query is ignored; the manifest hash, when
+/// known, identifies the exact bytes even better.
+fn resume_key(url: &str, expected_hash: Option<&str>) -> String {
+    if let Some(hash) = expected_hash.filter(|hash| !hash.is_empty()) {
+        return format!("sha256:{hash}");
     }
-    Err(last_error.unwrap_or_else(|| CoreError::Network("download failed".into())))
+    url.split(['?', '#']).next().unwrap_or(url).to_string()
 }
 
-fn read_meta(path: &Path, url: &str, total: u64, chunk_bytes: u64, count: u64) -> Vec<u64> {
-    let Ok(contents) = std::fs::read_to_string(path) else {
+fn read_meta(path: &Path, key: &str, total: u64, chunk_bytes: u64, count: u64) -> Vec<u64> {
+    let Ok(contents) = std::fs::read(path) else {
         return vec![];
     };
-    let Ok(meta) = serde_json::from_str::<PartMeta>(&contents) else {
+    let Ok(meta) = serde_json::from_slice::<PartMeta>(&contents) else {
         return vec![];
     };
-    if meta.url != url
+    // Older builds stored the full URL; compare it the same way.
+    let stored_key = if meta.url.starts_with("sha256:") {
+        meta.url.clone()
+    } else {
+        resume_key(&meta.url, None)
+    };
+    if stored_key != key
         || meta.total != total
         || meta.chunk_bytes != chunk_bytes
         || meta.count != count
@@ -215,18 +226,73 @@ fn read_meta(path: &Path, url: &str, total: u64, chunk_bytes: u64, count: u64) -
         return vec![];
     }
     meta.completed
+        .into_iter()
+        .filter(|index| *index < count)
+        .collect()
 }
 
-fn write_meta(path: &Path, url: &str, total: u64, chunk_bytes: u64, count: u64, completed: &[u64]) {
+/// Persist which chunks are on disk. Atomic, so a crash never leaves a
+/// half-written file that would discard the whole resume state.
+fn write_meta(path: &Path, key: &str, total: u64, chunk_bytes: u64, count: u64, completed: &[u64]) {
     let meta = PartMeta {
-        url: url.to_string(),
+        url: key.to_string(),
         total,
         chunk_bytes,
         count,
         completed: completed.to_vec(),
     };
-    if let Ok(serialized) = serde_json::to_vec_pretty(&meta) {
-        let _ = std::fs::write(path, serialized);
+    let _ = crate::atomic::write_json_compact_atomic(path, &meta);
+}
+
+/// Write `bytes` at `offset` of the pre-sized partial file and make them
+/// durable before the chunk is recorded as complete in `.part.json`.
+///
+/// The explicit `flush` matters: a tokio `File` dropped with a write still in
+/// flight finishes it in the background, so a later rename or hash could run
+/// before the bytes land. That silently produced files full of zeros.
+async fn write_chunk_at(part: &Path, offset: u64, bytes: &[u8]) -> CoreResult<()> {
+    use tokio::io::AsyncSeekExt;
+    let mut file = tokio::fs::OpenOptions::new().write(true).open(part).await?;
+    file.seek(std::io::SeekFrom::Start(offset)).await?;
+    file.write_all(bytes).await?;
+    file.flush().await?;
+    file.sync_data().await?;
+    Ok(())
+}
+
+/// Shared bookkeeping for the chunks of one download.
+struct ChunkLedger {
+    completed: std::sync::Mutex<std::collections::HashSet<u64>>,
+    meta_file: PathBuf,
+    key: String,
+    total: u64,
+    chunk_bytes: u64,
+    count: u64,
+}
+
+impl ChunkLedger {
+    fn contains(&self, index: u64) -> bool {
+        self.completed
+            .lock()
+            .expect("chunk set poisoned")
+            .contains(&index)
+    }
+
+    /// Record a finished chunk. The meta file is written while holding the
+    /// lock so an older snapshot can never overwrite a newer one.
+    fn complete(&self, index: u64) {
+        let mut set = self.completed.lock().expect("chunk set poisoned");
+        set.insert(index);
+        let mut done: Vec<u64> = set.iter().copied().collect();
+        done.sort_unstable();
+        write_meta(
+            &self.meta_file,
+            &self.key,
+            self.total,
+            self.chunk_bytes,
+            self.count,
+            &done,
+        );
     }
 }
 
@@ -241,10 +307,9 @@ fn meta_path(dest: &Path) -> PathBuf {
 /// Download a file in parallel ranges, writing each chunk straight into its
 /// final offset in `.part`.
 ///
-/// The previous implementation wrote one file per chunk, read them all back to
-/// concatenate, and then read the result again to hash it: three full passes
-/// over the bytes. Writing at offsets means one write pass and one read pass,
-/// and the resumed state (`.part.json`) keeps exactly the same meaning.
+/// Writing at offsets means one write pass and one read pass (the hash), and
+/// `.part.json` records finished chunks so an interrupted download resumes
+/// where it stopped.
 async fn download_chunked(
     client: &Client,
     url: &str,
@@ -256,6 +321,7 @@ async fn download_chunked(
     let count = total.div_ceil(options.chunk_bytes);
     let meta_file = meta_path(dest);
     let part = part_path(dest);
+    let key = resume_key(url, options.expected_hash.as_deref());
 
     // Any chunk recorded in `.part.json` is only trusted when `.part` is
     // already the full size: a missing or truncated partial file must never be
@@ -265,10 +331,10 @@ async fn download_chunked(
         .await
         .map(|metadata| metadata.len())
         .unwrap_or(0);
-    let resumable = existing_len == total;
-
-    // Pre-size the partial file so every chunk can seek to its own offset.
-    if existing_len != total {
+    let completed = if existing_len == total {
+        read_meta(&meta_file, &key, total, options.chunk_bytes, count)
+    } else {
+        // Pre-size the partial file so every chunk can seek to its own offset.
         let file = tokio::fs::OpenOptions::new()
             .write(true)
             .create(true)
@@ -276,41 +342,33 @@ async fn download_chunked(
             .open(&part)
             .await?;
         file.set_len(total).await?;
-    }
-
-    let completed = if resumable {
-        read_meta(&meta_file, url, total, options.chunk_bytes, count)
-    } else {
         Vec::new()
     };
-    let completed_set = Arc::new(std::sync::Mutex::new(
-        completed
-            .iter()
-            .copied()
-            .collect::<std::collections::HashSet<u64>>(),
-    ));
 
     let already_downloaded: u64 = completed
         .iter()
         .map(|index| chunk_length(*index, total, options.chunk_bytes))
         .sum();
+    let ledger = Arc::new(ChunkLedger {
+        completed: std::sync::Mutex::new(completed.into_iter().collect()),
+        meta_file: meta_file.clone(),
+        key,
+        total,
+        chunk_bytes: options.chunk_bytes,
+        count,
+    });
     let downloaded = Arc::new(AtomicU64::new(already_downloaded));
     if already_downloaded > 0 {
         progress(already_downloaded, total);
     }
 
     // Ask for chunk 0 first. If the server answers `200` it ignored the range
-    // and sent the whole file, so fall back to writing it as one stream rather
-    // than fanning out requests that would each return the full body.
-    if !completed_set
-        .lock()
-        .expect("chunk set poisoned")
-        .contains(&0)
-    {
+    // and sent the whole file, so write it as one body rather than fanning out
+    // requests that would each return the full file.
+    if !ledger.contains(0) {
         let end = options.chunk_bytes.min(total) - 1;
-        let (bytes, ranged, remote_total) =
-            fetch_range_checked(client, url, 0, end, options.retries).await?;
-        if let Some(remote_total) = remote_total {
+        let first = fetch_range(client, url, 0, end, options.retries).await?;
+        if let Some(remote_total) = first.remote_total {
             // The manifest size is what the *version* should weigh. If the CDN
             // serves something else, the bytes on disk would not match the
             // remote, so stop before writing an unusable file.
@@ -322,108 +380,57 @@ async fn download_chunked(
                 )));
             }
         }
-        if !ranged {
-            if bytes.len() as u64 != total {
+        if !first.ranged {
+            if first.bytes.len() as u64 != total {
                 return Err(CoreError::Network(format!(
                     "server ignored range and returned {} bytes, expected {total}",
-                    bytes.len()
+                    first.bytes.len()
                 )));
             }
             let _ = tokio::fs::remove_file(&meta_file).await;
-            tokio::fs::write(&part, &bytes).await?;
+            write_chunk_at(&part, 0, &first.bytes).await?;
             progress(total, total);
             return Ok(());
         }
-        if bytes.len() as u64 != end + 1 {
+        if first.bytes.len() as u64 != end + 1 {
             return Err(CoreError::Network(format!(
                 "short read at 0-{end}: got {}, expected {}",
-                bytes.len(),
+                first.bytes.len(),
                 end + 1
             )));
         }
-        {
-            use tokio::io::{AsyncSeekExt, AsyncWriteExt};
-            let mut file = tokio::fs::OpenOptions::new()
-                .write(true)
-                .open(&part)
-                .await?;
-            file.seek(std::io::SeekFrom::Start(0)).await?;
-            file.write_all(&bytes).await?;
-            // See the note in the chunk loop: an unflushed write is lost when
-            // another handle syncs the same path afterwards.
-            file.flush().await?;
-            file.sync_all().await?;
-        }
-        let current =
-            downloaded.fetch_add(bytes.len() as u64, Ordering::SeqCst) + bytes.len() as u64;
-        progress(current, total);
-        let done = {
-            let mut set = completed_set.lock().expect("chunk set poisoned");
-            set.insert(0);
-            let mut done: Vec<u64> = set.iter().copied().collect();
-            done.sort_unstable();
-            done
-        };
-        write_meta(&meta_file, url, total, options.chunk_bytes, count, &done);
+        write_chunk_at(&part, 0, &first.bytes).await?;
+        let length = first.bytes.len() as u64;
+        progress(
+            downloaded.fetch_add(length, Ordering::SeqCst) + length,
+            total,
+        );
+        ledger.complete(0);
     }
 
     let results: Vec<CoreResult<()>> = futures::stream::iter(1..count)
+        .filter(|index| futures::future::ready(!ledger.contains(*index)))
         .map(|index| {
-            let client = client.clone();
-            let url = url.to_string();
             let part = part.clone();
-            let meta_file = meta_file.clone();
             let downloaded = downloaded.clone();
-            let progress = progress.clone();
-            let options = options.clone();
-            let completed_set = completed_set.clone();
+            let ledger = ledger.clone();
             async move {
-                {
-                    let set = completed_set.lock().expect("chunk set poisoned");
-                    if set.contains(&index) {
-                        return Ok(());
-                    }
-                }
-
                 let start = index * options.chunk_bytes;
                 let end = (start + options.chunk_bytes).min(total) - 1;
-                let expected = (end - start + 1) as usize;
-                let bytes = fetch_range(&client, &url, start, end, options.retries).await?;
-                if bytes.len() != expected {
+                let expected = end - start + 1;
+                let chunk = fetch_range(client, url, start, end, options.retries).await?;
+                if chunk.bytes.len() as u64 != expected {
                     return Err(CoreError::Network(format!(
                         "short read at {start}-{end}: got {}, expected {expected}",
-                        bytes.len()
+                        chunk.bytes.len()
                     )));
                 }
-
-                {
-                    use tokio::io::{AsyncSeekExt, AsyncWriteExt};
-                    let mut file = tokio::fs::OpenOptions::new()
-                        .write(true)
-                        .open(&part)
-                        .await?;
-                    file.seek(std::io::SeekFrom::Start(start)).await?;
-                    file.write_all(&bytes).await?;
-                    // Dropping a tokio file handle without a flush loses the
-                    // write: only the buffered copy is queued and a later
-                    // `sync_all` on another handle truncates it, leaving a
-                    // file of zeros with the right size. That silently
-                    // corrupted downloads, so flush *and* sync here.
-                    file.flush().await?;
-                    file.sync_all().await?;
-                }
-                let current =
-                    downloaded.fetch_add(bytes.len() as u64, Ordering::SeqCst) + bytes.len() as u64;
-                progress(current, total);
-
-                let done = {
-                    let mut set = completed_set.lock().expect("chunk set poisoned");
-                    set.insert(index);
-                    let mut done: Vec<u64> = set.iter().copied().collect();
-                    done.sort_unstable();
-                    done
-                };
-                write_meta(&meta_file, &url, total, options.chunk_bytes, count, &done);
+                write_chunk_at(&part, start, &chunk.bytes).await?;
+                progress(
+                    downloaded.fetch_add(expected, Ordering::SeqCst) + expected,
+                    total,
+                );
+                ledger.complete(index);
                 Ok(())
             }
         })
@@ -434,14 +441,6 @@ async fn download_chunked(
     for result in results {
         result?;
     }
-
-    let mut output = tokio::fs::OpenOptions::new()
-        .write(true)
-        .open(&part)
-        .await?;
-    output.flush().await?;
-    output.sync_all().await?;
-    drop(output);
 
     let _ = tokio::fs::remove_file(&meta_file).await;
     // Older builds kept one file per chunk in `<dest>.parts`; clean it up.
@@ -516,7 +515,8 @@ async fn download_single(
         downloaded += chunk.len() as u64;
         progress(downloaded, total.unwrap_or(downloaded));
     }
-    file.sync_all().await?;
+    file.flush().await?;
+    file.sync_data().await?;
     Ok(())
 }
 
@@ -621,8 +621,12 @@ pub async fn download_file(
         }
     }
 
-    let _ = tokio::fs::remove_file(dest).await;
-    tokio::fs::rename(&part, dest).await?;
+    // Replace atomically: removing `dest` first would leave a window in which
+    // a crash loses the previous version of the photo.
+    let (from, to) = (part.clone(), dest.to_path_buf());
+    tokio::task::spawn_blocking(move || crate::atomic::replace_file(&from, &to))
+        .await
+        .map_err(|err| CoreError::Other(format!("rename task failed: {err}")))??;
     let _ = tokio::fs::remove_file(meta_path(dest)).await;
 
     Ok(DownloadResult {

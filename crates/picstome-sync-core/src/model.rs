@@ -336,6 +336,10 @@ pub struct SyncWarningItem {
 pub struct DownloadedItem {
     pub id: String,
     pub filename: String,
+    /// Path relative to the gallery root, when the file was written to a
+    /// subfolder (a new version replacing a local file where it lives).
+    #[serde(default)]
+    pub relative_path: Option<String>,
     pub size: u64,
     pub skipped: bool,
     #[serde(default)]
@@ -344,6 +348,15 @@ pub struct DownloadedItem {
     pub hash: Option<String>,
     #[serde(default)]
     pub mtime: Option<i64>,
+}
+
+impl DownloadedItem {
+    /// Path of the written file relative to the gallery root.
+    pub fn local_relative_path(&self) -> String {
+        self.relative_path
+            .clone()
+            .unwrap_or_else(|| self.filename.clone())
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -525,6 +538,14 @@ pub struct Progress {
     pub file_done: Option<u64>,
     #[serde(default)]
     pub file_total: Option<u64>,
+    /// Bytes transferred so far across the whole phase (all concurrent files).
+    /// Drives a smooth progress bar: per-file counters jump between files
+    /// when several transfers run in parallel.
+    #[serde(default)]
+    pub bytes_done: Option<u64>,
+    /// Total bytes the phase will transfer, when every size is known.
+    #[serde(default)]
+    pub bytes_total: Option<u64>,
 }
 
 #[derive(Debug, Clone, Serialize)]

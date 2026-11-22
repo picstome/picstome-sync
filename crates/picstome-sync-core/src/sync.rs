@@ -261,7 +261,7 @@ fn build_snapshot(
                 &key,
                 photo.id.clone(),
                 item.filename.clone(),
-                Some(item.filename.clone()),
+                Some(item.local_relative_path()),
                 item.hash
                     .clone()
                     .or_else(|| photo.content_hash().map(str::to_string)),
@@ -1305,6 +1305,134 @@ where
     ))
 }
 
+/// Where a remote photo is written locally.
+enum DownloadTarget {
+    Path {
+        dest: PathBuf,
+        /// `dest` relative to the gallery root, with `/` separators.
+        relative_path: String,
+    },
+    /// The manifest filename cannot be written safely (traversal, controls).
+    Unsafe,
+}
+
+/// Choose the local path for a download.
+///
+/// A new version of a photo that already exists locally replaces it *where it
+/// is*: writing it to the gallery root would leave the old copy in its
+/// subfolder and turn one photo into two local duplicates. When the existing
+/// file has the same name (ignoring case) it is overwritten; otherwise the
+/// remote file is placed next to it. New photos go to the gallery root.
+fn download_target(
+    root: &Path,
+    photo: &Photo,
+    existing: Option<&crate::model::LocalFile>,
+) -> DownloadTarget {
+    let Some(remote_name) = sanitize_file_name(&photo.filename) else {
+        return DownloadTarget::Unsafe;
+    };
+    let relative_path = match existing {
+        Some(local) if local.filename.eq_ignore_ascii_case(&remote_name) => {
+            local.relative_path.clone()
+        }
+        Some(local) => match local.relative_path.rsplit_once('/') {
+            Some((folder, _)) => format!("{folder}/{remote_name}"),
+            None => remote_name,
+        },
+        None => remote_name,
+    };
+    let dest = root.join(&relative_path);
+    if is_inside(root, &dest) {
+        DownloadTarget::Path {
+            dest,
+            relative_path,
+        }
+    } else {
+        DownloadTarget::Unsafe
+    }
+}
+
+/// Progress of one transfer phase (downloads or uploads) with several files
+/// in flight at once.
+///
+/// Every file reports its own `(done, total)` bytes; the phase folds those
+/// into one counter so the UI shows a single, monotonic bar instead of one
+/// that jumps between whichever concurrent file reported last.
+#[derive(Clone)]
+struct TransferPhase {
+    progress: SyncProgressFn,
+    gallery_id: String,
+    phase: &'static str,
+    files_total: u64,
+    files_done: Arc<AtomicU64>,
+    bytes_total: Option<u64>,
+    bytes_done: Arc<AtomicU64>,
+}
+
+/// Minimum bytes between two progress events of the same file. Keeps the IPC
+/// channel quiet on fast connections while still moving the bar smoothly.
+const PROGRESS_STEP_BYTES: u64 = 512 * 1024;
+
+impl TransferPhase {
+    fn new(
+        progress: SyncProgressFn,
+        gallery_id: &str,
+        phase: &'static str,
+        files_total: u64,
+        bytes_total: Option<u64>,
+    ) -> Self {
+        Self {
+            progress,
+            gallery_id: gallery_id.to_string(),
+            phase,
+            files_total,
+            files_done: Arc::new(AtomicU64::new(0)),
+            bytes_total: bytes_total.filter(|total| *total > 0),
+            bytes_done: Arc::new(AtomicU64::new(0)),
+        }
+    }
+
+    fn emit(&self, file: &str, file_done: Option<u64>, file_total: Option<u64>) {
+        (self.progress)(Progress {
+            gallery_id: self.gallery_id.clone(),
+            phase: self.phase.into(),
+            file: Some(file.to_string()),
+            done: self.files_done.load(Ordering::SeqCst),
+            total: self.files_total,
+            file_done,
+            file_total,
+            bytes_done: Some(self.bytes_done.load(Ordering::SeqCst)),
+            bytes_total: self.bytes_total,
+        });
+    }
+
+    /// Byte callback for one file. Converts its cumulative counter into
+    /// deltas for the phase total and throttles the events it emits.
+    fn file_progress(&self, file: &str) -> ProgressFn {
+        let phase = self.clone();
+        let file = file.to_string();
+        let seen = AtomicU64::new(0);
+        let last_emit = AtomicU64::new(0);
+        Arc::new(move |done, total| {
+            let previous = seen.swap(done, Ordering::SeqCst);
+            phase
+                .bytes_done
+                .fetch_add(done.saturating_sub(previous), Ordering::SeqCst);
+            let emitted = last_emit.load(Ordering::SeqCst);
+            if done >= total || done.saturating_sub(emitted) >= PROGRESS_STEP_BYTES {
+                last_emit.store(done, Ordering::SeqCst);
+                phase.emit(&file, Some(done), Some(total));
+            }
+        })
+    }
+
+    /// Count a finished file and report it.
+    fn finish_file(&self, file: &str) {
+        self.files_done.fetch_add(1, Ordering::SeqCst);
+        self.emit(file, None, None);
+    }
+}
+
 pub async fn run_gallery_sync(
     api: &ApiClient,
     store: &Store,
@@ -1602,8 +1730,59 @@ pub async fn run_gallery_sync(
         ..Default::default()
     });
 
+    // A file over the size limit still exists on disk; it is just not synced.
+    // Leave its photo out of the diff on *both* sides: otherwise it would look
+    // locally deleted, and the next sync would propose deleting the remote
+    // copy or download the remote version over the large local file.
+    let oversized_keys: HashSet<String> = scan_errors
+        .iter()
+        .filter(|error| error.is_oversized())
+        .filter_map(|error| {
+            Path::new(&error.path)
+                .file_name()
+                .and_then(|name| identity_key(&name.to_string_lossy()))
+        })
+        .collect();
+    let mut active_photos = active_photos;
+    if !oversized_keys.is_empty() {
+        active_photos.retain(|photo| {
+            photo
+                .identity()
+                .is_none_or(|key| !oversized_keys.contains(&key))
+        });
+    }
+    let previous_files: Vec<SnapshotFile> = previous_files
+        .into_iter()
+        .filter(|file| {
+            file.identity()
+                .is_none_or(|key| !oversized_keys.contains(&key))
+        })
+        .collect();
+
     let diff = compute_diff(&previous_files, &active_photos, &local_files);
 
+    // A file over the size limit is a known, deliberate skip: report it as a
+    // warning. Only real read failures count as scan errors, because those
+    // make local deletions unprovable and suppress the delete proposals.
+    let (oversized, scan_errors): (Vec<_>, Vec<_>) = scan_errors
+        .into_iter()
+        .partition(|error| error.is_oversized());
+    let oversized_warnings = oversized.into_iter().map(|error| {
+        let filename = Path::new(&error.path)
+            .file_name()
+            .map(|name| name.to_string_lossy().to_string());
+        SyncWarningItem {
+            kind: "file_too_large".into(),
+            message: format!(
+                "{} is larger than {} MB and was not synced",
+                filename.as_deref().unwrap_or(&error.path),
+                MAX_PHOTO_BYTES / (1024 * 1024)
+            ),
+            filename,
+            preferred: None,
+            path: Some(error.path),
+        }
+    });
     let scan_error_items: Vec<SyncErrorItem> = scan_errors
         .into_iter()
         .map(|error| SyncErrorItem {
@@ -1636,7 +1815,10 @@ pub async fn run_gallery_sync(
         favorites: Vec::new(),
         rating_plan: RatingSyncPlan::default(),
         errors: report_errors,
-        warnings: duplicate_local_warnings(&local_files),
+        warnings: duplicate_local_warnings(&local_files)
+            .into_iter()
+            .chain(oversized_warnings)
+            .collect(),
         ignored_local: ignored_local_files
             .iter()
             .map(|file| file.filename.clone())
@@ -1662,54 +1844,56 @@ pub async fn run_gallery_sync(
         });
     }
 
-    let to_download: Vec<Photo> = diff
+    // Downloads: new remote photos land in the gallery root; a new version of
+    // a photo that already exists locally replaces it in its own folder.
+    let local_by_key = preferred_local_files(&local_files);
+    let to_download: Vec<(Photo, DownloadTarget)> = diff
         .remote_new
         .iter()
         .chain(diff.remote_modified.iter())
-        .cloned()
+        .map(|photo| {
+            let existing = photo
+                .identity()
+                .and_then(|key| local_by_key.get(&key).copied());
+            let target = download_target(Path::new(&gallery.local_path), photo, existing);
+            (photo.clone(), target)
+        })
         .collect();
-    let total_downloads = to_download.len() as u64;
-    let downloaded_count = Arc::new(AtomicU64::new(0));
+    let download_phase = TransferPhase::new(
+        progress.clone(),
+        &gallery.gallery_id,
+        "download",
+        to_download.len() as u64,
+        to_download
+            .iter()
+            .map(|(photo, _)| photo.size)
+            .sum::<Option<u64>>(),
+    );
     let download_started = std::time::Instant::now();
 
     let download_results: Vec<Result<DownloadedItem, SyncErrorItem>> =
         futures::stream::iter(to_download)
-            .map(|photo| {
-                let api = api.clone();
-                let gallery_id = gallery.gallery_id.clone();
-                let local_path = gallery.local_path.clone();
-                let progress = progress.clone();
-                let downloaded_count = downloaded_count.clone();
+            .map(|(photo, target)| {
+                let http = api.http();
+                let phase = download_phase.clone();
                 let chunk_bytes = options.chunk_bytes;
                 let parallel = options.parallel;
                 async move {
-                    let Some(dest) = safe_join(Path::new(&local_path), &photo.filename) else {
-                        return Err(SyncErrorItem {
-                            phase: "download".into(),
-                            filename: Some(photo.filename.clone()),
-                            path: None,
-                            message: "unsafe filename in manifest".into(),
-                        });
+                    let transfer_error = |message: String| SyncErrorItem {
+                        phase: "download".into(),
+                        filename: Some(photo.filename.clone()),
+                        path: None,
+                        message,
                     };
-
-                    let file_name = photo.filename.clone();
-                    let gallery_for_progress = gallery_id.clone();
-                    let progress_for_file = progress.clone();
-                    let downloaded_count_for_progress = downloaded_count.clone();
-                    let inner: ProgressFn = Arc::new(move |done, total| {
-                        progress_for_file(Progress {
-                            gallery_id: gallery_for_progress.clone(),
-                            phase: "download".into(),
-                            file: Some(file_name.clone()),
-                            done: downloaded_count_for_progress.load(Ordering::SeqCst),
-                            total: total_downloads,
-                            file_done: Some(done),
-                            file_total: Some(total),
-                        });
-                    });
-
-                    match download_file(
-                        &api.http(),
+                    let DownloadTarget::Path {
+                        dest,
+                        relative_path,
+                    } = target
+                    else {
+                        return Err(transfer_error("unsafe filename in manifest".into()));
+                    };
+                    let result = download_file(
+                        &http,
                         &photo.url,
                         &dest,
                         DownloadOptions {
@@ -1719,39 +1903,21 @@ pub async fn run_gallery_sync(
                             parallel,
                             ..Default::default()
                         },
-                        inner,
+                        phase.file_progress(&photo.filename),
                     )
                     .await
-                    {
-                        Ok(result) => {
-                            let done = downloaded_count.fetch_add(1, Ordering::SeqCst) + 1;
-                            progress(Progress {
-                                gallery_id,
-                                phase: "download".into(),
-                                file: Some(photo.filename.clone()),
-                                done,
-                                total: total_downloads,
-                                ..Default::default()
-                            });
-                            let identity_key = photo.identity();
-                            let mtime = file_mtime_ms(&dest).await;
-                            Ok(DownloadedItem {
-                                id: photo.id,
-                                filename: photo.filename,
-                                size: result.size,
-                                skipped: result.skipped,
-                                identity_key,
-                                hash: Some(result.hash),
-                                mtime,
-                            })
-                        }
-                        Err(err) => Err(SyncErrorItem {
-                            phase: "download".into(),
-                            filename: Some(photo.filename),
-                            path: None,
-                            message: err.to_string(),
-                        }),
-                    }
+                    .map_err(|err| transfer_error(err.to_string()))?;
+                    phase.finish_file(&photo.filename);
+                    Ok(DownloadedItem {
+                        identity_key: photo.identity(),
+                        mtime: file_mtime_ms(&dest).await,
+                        id: photo.id,
+                        filename: photo.filename,
+                        relative_path: Some(relative_path),
+                        size: result.size,
+                        skipped: result.skipped,
+                        hash: Some(result.hash),
+                    })
                 }
             })
             .buffer_unordered(options.download_concurrency.max(1))
@@ -1766,6 +1932,9 @@ pub async fn run_gallery_sync(
     }
     timings.download_ms = download_started.elapsed().as_millis() as u64;
 
+    // `String` rather than `&'static str`: a borrowed tuple element inside the
+    // stream closure trips a rustc higher-ranked lifetime limitation when the
+    // future is later required to be `Send` (Tauri commands).
     let to_upload: Vec<(crate::model::LocalFile, String)> = diff
         .local_new
         .iter()
@@ -1776,67 +1945,57 @@ pub async fn run_gallery_sync(
                 .map(|file| (file.clone(), "modified".to_string())),
         )
         .collect();
-    let total_uploads = to_upload.len() as u64;
-    let uploaded_count = Arc::new(AtomicU64::new(0));
+    let upload_phase = TransferPhase::new(
+        progress.clone(),
+        &gallery.gallery_id,
+        "upload",
+        to_upload.len() as u64,
+        Some(to_upload.iter().map(|(file, _)| file.size).sum()),
+    );
     let upload_started = std::time::Instant::now();
 
     let upload_results: Vec<Result<UploadedItem, SyncErrorItem>> = futures::stream::iter(to_upload)
         .map(|(entry, reason)| {
             let api = api.clone();
             let gallery_id = gallery.gallery_id.clone();
-            let progress = progress.clone();
-            let uploaded_count = uploaded_count.clone();
+            let phase = upload_phase.clone();
             async move {
-                match api
-                    .upload_photo(
+                let transfer_error = |message: String| SyncErrorItem {
+                    phase: "upload".into(),
+                    filename: Some(entry.filename.clone()),
+                    path: None,
+                    message,
+                };
+                let response = api
+                    .upload_photo_with_progress(
                         &gallery_id,
                         &entry.filename,
                         &entry.path,
                         entry.size,
                         entry.hash.as_deref(),
+                        Some(phase.file_progress(&entry.filename)),
                     )
                     .await
+                    .map_err(|err| transfer_error(err.to_string()))?;
+                if let (Some(server_hash), Some(local_hash)) =
+                    (response.hash.as_deref(), entry.hash.as_deref())
                 {
-                    Ok(response) => {
-                        if let (Some(server_hash), Some(local_hash)) =
-                            (response.hash.as_deref(), entry.hash.as_deref())
-                        {
-                            if local_hash != server_hash {
-                                return Err(SyncErrorItem {
-                                    phase: "upload".into(),
-                                    filename: Some(entry.filename),
-                                    path: None,
-                                    message: "the server stored different bytes; sync again".into(),
-                                });
-                            }
-                        }
-                        let done = uploaded_count.fetch_add(1, Ordering::SeqCst) + 1;
-                        progress(Progress {
-                            gallery_id,
-                            phase: "upload".into(),
-                            file: Some(entry.filename.clone()),
-                            done,
-                            total: total_uploads,
-                            ..Default::default()
-                        });
-                        let filename = response.filename.unwrap_or_else(|| entry.filename.clone());
-                        Ok(UploadedItem {
-                            id: response.id,
-                            filename,
-                            reason: Some(reason),
-                            size: Some(entry.size),
-                            version_count: response.version_count,
-                            version_number: response.version_number,
-                            identity_key: Some(entry.identity_key.clone()),
-                        })
+                    if local_hash != server_hash {
+                        return Err(transfer_error(
+                            "the server stored different bytes; sync again".into(),
+                        ));
                     }
-                    Err(err) => Err(SyncErrorItem {
-                        phase: "upload".into(),
-                        filename: Some(entry.filename),
-                        path: None,
-                        message: err.to_string(),
-                    }),
                 }
+                phase.finish_file(&entry.filename);
+                Ok(UploadedItem {
+                    id: response.id,
+                    filename: response.filename.unwrap_or_else(|| entry.filename.clone()),
+                    reason: Some(reason),
+                    size: Some(entry.size),
+                    version_count: response.version_count,
+                    version_number: response.version_number,
+                    identity_key: Some(entry.identity_key.clone()),
+                })
             }
         })
         .buffer_unordered(options.upload_concurrency.max(1))
@@ -1883,7 +2042,14 @@ pub async fn run_gallery_sync(
     // fingerprint cache can describe them too without another read.
     for item in &report.downloaded {
         if let (Some(hash), Some(mtime)) = (item.hash.as_deref(), item.mtime) {
-            fingerprints.insert(item.filename.clone(), item.size, mtime, None, None, hash);
+            fingerprints.insert(
+                item.local_relative_path(),
+                item.size,
+                mtime,
+                None,
+                None,
+                hash,
+            );
         }
     }
     let _ = store.save_fingerprints(&fingerprints);
@@ -1940,10 +2106,19 @@ pub async fn apply_remote_deletions(
 
     let result = api.delete_photos(gallery_id, photo_ids).await?;
     if let Some(mut snapshot) = store.load_snapshot(gallery_id) {
-        let removed: std::collections::HashSet<&String> = if result.deleted.is_empty() {
+        // Forget the photos the server confirmed as gone (deleted now, or
+        // already missing). An older server that reports neither list is
+        // trusted for the whole request, as before. Anything else stays in the
+        // snapshot so a partial failure is proposed again on the next sync.
+        let removed: HashSet<&String> = if result.deleted.is_empty() && result.not_found.is_empty()
+        {
             photo_ids.iter().collect()
         } else {
-            result.deleted.iter().collect()
+            result
+                .deleted
+                .iter()
+                .chain(result.not_found.iter())
+                .collect()
         };
         snapshot.files.retain(|file| !removed.contains(&file.id));
         snapshot.last_sync_at = now_millis();
@@ -2052,6 +2227,7 @@ mod tests {
         DownloadedItem {
             id: "p1".into(),
             filename: "a.jpg".into(),
+            relative_path: None,
             size: 10,
             skipped: false,
             identity_key: Some("image:a".into()),

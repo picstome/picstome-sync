@@ -387,7 +387,7 @@ async fn remote_only_snapshot_entries_are_downloaded_not_deleted_remotely() {
 }
 
 #[tokio::test]
-async fn scan_errors_do_not_generate_remote_deletion_proposals() {
+async fn oversized_files_are_skipped_never_deleted_or_overwritten() {
     let (mock, api, _dir, store, gallery) = setup_sync().await;
     run_gallery_sync(&api, &store, &gallery, SyncOptions::default(), silence())
         .await
@@ -399,22 +399,77 @@ async fn scan_errors_do_not_generate_remote_deletion_proposals() {
         .map(|entry| entry.path())
         .collect();
     files.sort();
-    let file = std::fs::OpenOptions::new()
-        .write(true)
-        .open(&files[0])
-        .unwrap();
-    file.set_len(501 * 1024 * 1024).unwrap();
+    let big = files[0].clone();
+    let big_size = 501 * 1024 * 1024;
+    let file = std::fs::OpenOptions::new().write(true).open(&big).unwrap();
+    file.set_len(big_size).unwrap();
     drop(file);
+
+    // Two syncs: the second one proves the skip is stable (no re-download of
+    // the remote version over the large local file).
+    for _ in 0..2 {
+        let report = run_gallery_sync(&api, &store, &gallery, SyncOptions::default(), silence())
+            .await
+            .unwrap();
+        assert_eq!(report.counts.local_deleted, 0);
+        assert_eq!(report.counts.remote_new, 0);
+        assert!(report.proposals.delete_remote.is_empty());
+        assert!(report.errors.is_empty(), "{:?}", report.errors);
+        assert!(report
+            .warnings
+            .iter()
+            .any(|warning| warning.kind == "file_too_large"));
+        assert_eq!(std::fs::metadata(&big).unwrap().len(), big_size);
+    }
+    mock.close().await;
+}
+
+#[tokio::test]
+async fn remote_new_version_replaces_the_file_in_its_subfolder() {
+    let (mock, api, _dir, store, gallery) = setup_sync().await;
+    run_gallery_sync(&api, &store, &gallery, SyncOptions::default(), silence())
+        .await
+        .unwrap();
+
+    reqwest::Client::new()
+        .post(format!("{}/api/v1/dev/bump", mock.url))
+        .bearer_auth(&mock.token)
+        .json(&serde_json::json!({"gallery_id": "G123"}))
+        .send()
+        .await
+        .unwrap();
+    let bumped = api
+        .manifest("G123")
+        .await
+        .unwrap()
+        .photos
+        .into_iter()
+        .find(|photo| photo.version_count == Some(2))
+        .expect("bumped photo");
+
+    // The photographer organised the photo into a subfolder after the first
+    // sync. The new version must replace it there, not appear in the root.
+    let root = std::path::Path::new(&gallery.local_path);
+    let folder = root.join("selects");
+    std::fs::create_dir_all(&folder).unwrap();
+    std::fs::rename(root.join(&bumped.filename), folder.join(&bumped.filename)).unwrap();
 
     let report = run_gallery_sync(&api, &store, &gallery, SyncOptions::default(), silence())
         .await
         .unwrap();
-    assert!(report.counts.local_deleted > 0);
-    assert!(report.proposals.delete_remote.is_empty());
-    assert!(report
-        .errors
-        .iter()
-        .any(|error| error.message.contains("not proposed")));
+    assert!(report.errors.is_empty(), "{:?}", report.errors);
+    assert_eq!(report.downloaded.len(), 1);
+    assert!(!root.join(&bumped.filename).exists());
+    let replaced = std::fs::read(folder.join(&bumped.filename)).unwrap();
+    assert_eq!(
+        Some(picstome_sync_core::localfiles::hash_bytes(&replaced)),
+        bumped.content_hash().map(str::to_string)
+    );
+
+    let again = run_gallery_sync(&api, &store, &gallery, SyncOptions::default(), silence())
+        .await
+        .unwrap();
+    assert!(again.skipped, "{:?}", again.counts);
     mock.close().await;
 }
 

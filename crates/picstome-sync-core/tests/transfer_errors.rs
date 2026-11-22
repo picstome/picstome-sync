@@ -212,3 +212,119 @@ async fn retries_transient_probe_failures() {
     assert_eq!(result.size, 4);
     assert_eq!(std::fs::read(&dest).unwrap(), vec![1, 2, 3, 4]);
 }
+
+#[tokio::test]
+async fn does_not_retry_permanent_http_errors() {
+    #[derive(Clone)]
+    struct Counter(Arc<AtomicUsize>);
+
+    async fn forbidden(State(counter): State<Counter>) -> Response {
+        counter.0.fetch_add(1, Ordering::SeqCst);
+        StatusCode::FORBIDDEN.into_response()
+    }
+
+    let counter = Counter(Arc::new(AtomicUsize::new(0)));
+    let hits = counter.0.clone();
+    let base = serve(
+        Router::new()
+            .route("/expired", get(forbidden))
+            .with_state(counter),
+    )
+    .await;
+    let dir = tempfile::tempdir().unwrap();
+    let err = download_file(
+        &reqwest::Client::new(),
+        &format!("{base}/expired"),
+        &dir.path().join("x.jpg"),
+        DownloadOptions {
+            expected_size: Some(8),
+            retries: 3,
+            ..Default::default()
+        },
+        Arc::new(|_, _| {}),
+    )
+    .await
+    .unwrap_err();
+    assert!(err.to_string().contains("HTTP 403"), "{err}");
+    // An expired signed URL fails the same way every time: one request only.
+    assert_eq!(hits.load(Ordering::SeqCst), 1);
+}
+
+#[tokio::test]
+async fn resumes_a_partial_download_when_the_signed_url_changes() {
+    #[derive(Clone)]
+    struct Requests(Arc<std::sync::Mutex<Vec<String>>>);
+
+    const DATA: [u8; 8] = [1, 2, 3, 4, 5, 6, 7, 8];
+
+    async fn ranged(State(requests): State<Requests>, headers: HeaderMap) -> Response {
+        let range = headers
+            .get(header::RANGE)
+            .and_then(|value| value.to_str().ok())
+            .unwrap_or_default()
+            .to_string();
+        requests.0.lock().unwrap().push(range.clone());
+        let (start, end) = range
+            .trim_start_matches("bytes=")
+            .split_once('-')
+            .map(|(start, end)| {
+                (
+                    start.parse::<usize>().unwrap(),
+                    end.parse::<usize>().unwrap(),
+                )
+            })
+            .unwrap();
+        Response::builder()
+            .status(StatusCode::PARTIAL_CONTENT)
+            .header(header::CONTENT_RANGE, format!("bytes {start}-{end}/8"))
+            .body(Body::from(DATA[start..=end].to_vec()))
+            .unwrap()
+    }
+
+    let requests = Requests(Arc::new(std::sync::Mutex::new(Vec::new())));
+    let seen = requests.0.clone();
+    let base = serve(
+        Router::new()
+            .route("/photo.jpg", get(ranged))
+            .with_state(requests),
+    )
+    .await;
+
+    // A previous attempt finished chunk 0 with an older signature.
+    let dir = tempfile::tempdir().unwrap();
+    let dest = dir.path().join("photo.jpg");
+    let mut partial = DATA[..4].to_vec();
+    partial.extend_from_slice(&[0; 4]);
+    std::fs::write(dir.path().join("photo.jpg.part"), &partial).unwrap();
+    std::fs::write(
+        dir.path().join("photo.jpg.part.json"),
+        serde_json::to_vec(&serde_json::json!({
+            "url": format!("{base}/photo.jpg?signature=old"),
+            "total": 8,
+            "chunk_bytes": 4,
+            "count": 2,
+            "completed": [0],
+        }))
+        .unwrap(),
+    )
+    .unwrap();
+
+    let result = download_file(
+        &reqwest::Client::new(),
+        &format!("{base}/photo.jpg?signature=new"),
+        &dest,
+        DownloadOptions {
+            expected_size: Some(8),
+            expected_hash: None,
+            chunk_bytes: 4,
+            ..Default::default()
+        },
+        Arc::new(|_, _| {}),
+    )
+    .await
+    .unwrap();
+
+    assert_eq!(std::fs::read(&dest).unwrap(), DATA);
+    assert_eq!(result.hash, hash_bytes(&DATA));
+    assert_eq!(*seen.lock().unwrap(), vec!["bytes=4-7".to_string()]);
+}
