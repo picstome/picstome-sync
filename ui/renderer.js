@@ -91,6 +91,7 @@ const state = {
         title: "",
         message: "",
         confirmLabel: "",
+        altLabel: "",
         danger: true,
         resolve: null,
     },
@@ -134,6 +135,12 @@ const els = {
     accountName: document.getElementById("accountName"),
     accountEmail: document.getElementById("accountEmail"),
     btnConnect: document.getElementById("btnConnect"),
+    accountMenu: document.getElementById("accountMenu"),
+    accountCaret: document.getElementById("accountCaret"),
+    btnOpenProfile: document.getElementById("btnOpenProfile"),
+    btnCheckUpdates: document.getElementById("btnCheckUpdates"),
+    updateStatus: document.getElementById("updateStatus"),
+    btnConfirmAlt: document.getElementById("btnConfirmAlt"),
     btnLogout: document.getElementById("btnLogout"),
     btnInfo: document.getElementById("btnInfo"),
 
@@ -202,13 +209,13 @@ const els = {
     infoModal: document.getElementById("infoModal"),
     infoTitle: document.getElementById("infoTitle"),
     infoVersionLabel: document.getElementById("infoVersionLabel"),
-    infoProfileLabel: document.getElementById("infoProfileLabel"),
     infoAccountLabel: document.getElementById("infoAccountLabel"),
     infoVersion: document.getElementById("infoVersion"),
-    infoProfile: document.getElementById("infoProfile"),
     infoAccount: document.getElementById("infoAccount"),
     btnInfoClose: document.getElementById("btnInfoClose"),
     btnTestMode: document.getElementById("btnTestMode"),
+    testModeBox: document.getElementById("testModeBox"),
+    menuLogoutSeparator: document.getElementById("menuLogoutSeparator"),
     testModeHint: document.getElementById("testModeHint"),
 
     ratingModal: document.getElementById("ratingModal"),
@@ -479,8 +486,10 @@ function applyStrings() {
     els.btnConnect.textContent = s.connect;
     els.btnConnectWelcome.textContent = s.connect;
     els.btnDemoWelcome.textContent = s.syncDemo;
-    setTooltip(els.btnLogout, s.logout);
-    setTooltip(els.btnInfo, s.info);
+    setLabel(els.btnLogout, s.logout);
+    setLabel(els.btnOpenProfile, s.myProfile);
+    setLabel(els.btnCheckUpdates, s.checkUpdates);
+    setLabel(els.btnInfo, s.info);
     renderSyncButton(s);
     setLabel(els.btnChangeFolder, s.changeFolder);
     els.btnChangeFolder.title = s.changeFolder;
@@ -494,10 +503,8 @@ function applyStrings() {
 
     els.infoTitle.textContent = s.infoTitle;
     els.infoVersionLabel.textContent = s.infoVersion;
-    els.infoProfileLabel.textContent = s.infoProfile;
     els.infoAccountLabel.textContent = s.infoAccount;
     els.btnInfoClose.textContent = s.infoClose;
-    els.btnTestMode.textContent = s.testMode;
 
     setLabel(els.btnFavoritesList, s.favoritesList);
     els.favoritesTitle.textContent = s.favoritesListTitle;
@@ -549,7 +556,10 @@ function renderAccount() {
         els.accountInitial.appendChild(img);
     }
     els.accountInitial.classList.toggle("hidden", !(connected && state.avatar));
-    els.accountChip.title = connected ? s.openProfile : s.connect;
+    // The menu is always available (Info lives there); profile and log out
+    // only make sense with a session.
+    els.btnOpenProfile.classList.toggle("hidden", !connected);
+    els.menuLogoutSeparator.classList.toggle("hidden", !connected);
 
     els.btnConnect.classList.toggle("hidden", connected);
     els.btnLogout.classList.toggle("hidden", !connected);
@@ -579,14 +589,20 @@ function renderRuntimeInfo() {
     els.envBadge.classList.toggle("hidden", !showBadge);
     els.envBadge.title = showBadge ? `${badge} API` : "";
 
-    els.infoVersion.textContent = `${config.appVersion || "?"} (${config.buildProfile || "?"})`;
-    els.infoProfile.textContent = config.buildProfile || "?";
+    // The build profile only matters when it is not a normal release.
+    const profile = config.buildProfile && config.buildProfile !== "release"
+        ? ` (${config.buildProfile})`
+        : "";
+    els.infoVersion.textContent = `${config.appVersion || "?"}${profile}`;
     els.infoAccount.textContent = state.auth.connected
         ? [state.auth.name, state.auth.email].filter(Boolean).join(" · ")
         : "—";
     const testMode = kind === "development";
-    els.btnTestMode.textContent = testMode ? s.testModeActive : s.testMode;
-    els.testModeHint.textContent = testMode ? s.testModeActiveHint : s.testModeHint;
+    // Test mode is hidden: it is entered with three quick clicks on the
+    // version number and only shows up here while it is active.
+    els.testModeBox.classList.toggle("hidden", !testMode);
+    els.btnTestMode.textContent = s.testModeActive;
+    els.testModeHint.textContent = s.testModeActiveHint;
 }
 
 function filteredGalleries() {
@@ -1914,35 +1930,41 @@ function renderConfirm() {
     els.confirmMessage.textContent = modal.message;
     els.btnConfirmOk.textContent = modal.confirmLabel;
     els.btnConfirmOk.className = modal.danger ? "danger" : "primary";
+    els.btnConfirmAlt.textContent = modal.altLabel;
+    els.btnConfirmAlt.classList.toggle("hidden", !modal.altLabel);
 }
 
-function settleConfirm(value) {
+/** Close the dialog and answer `"confirm"`, `"alt"` or `null` (cancelled). */
+function settleConfirm(choice) {
     const resolve = state.confirm.resolve;
     state.confirm = {
         open: false,
         title: "",
         message: "",
         confirmLabel: "",
+        altLabel: "",
         danger: true,
         resolve: null,
     };
     renderConfirm();
-    if (resolve) resolve(Boolean(value));
+    if (resolve) resolve(choice || null);
 }
 
-function askConfirm({ title, message, confirmLabel, danger = true }) {
-    if (state.confirm.resolve) settleConfirm(false);
+/**
+ * Ask the photographer to choose. Resolves `"confirm"` for the main button,
+ * `"alt"` for the optional second action and `null` when cancelled.
+ */
+function askChoice({ title, message, confirmLabel, altLabel = "", danger = true }) {
+    if (state.confirm.resolve) settleConfirm(null);
     return new Promise((resolve) => {
-        state.confirm = {
-            open: true,
-            title,
-            message,
-            confirmLabel,
-            danger,
-            resolve,
-        };
+        state.confirm = { open: true, title, message, confirmLabel, altLabel, danger, resolve };
         renderConfirm();
     });
+}
+
+/** Yes/no confirmation. */
+async function askConfirm(options) {
+    return (await askChoice(options)) === "confirm";
 }
 
 function renderAll() {
@@ -2467,26 +2489,119 @@ async function openPicstome() {
 
 /* Events */
 
-async function checkForUpdates() {
+/**
+ * Look for a newer release on GitHub.
+ *
+ * At startup it runs quietly and at most every 15 days (the backend keeps
+ * the throttle). From the Info dialog (`manual`) it always asks GitHub and
+ * reports the outcome there, including "you are up to date" and errors.
+ */
+async function checkForUpdates({ manual = false } = {}) {
+    const s = state.strings;
+    const status = (text) => {
+        if (manual) els.updateStatus.textContent = text;
+    };
+    if (manual) {
+        els.btnCheckUpdates.disabled = true;
+        els.btnCheckUpdates.classList.add("busy");
+        setLabel(els.btnCheckUpdates, s.checkingUpdates);
+        status("");
+    }
     try {
-        const update = await invoke("check_updates");
-        if (!update?.available || !update.url) return;
-        const s = state.strings;
+        const update = await invoke("check_updates", { force: manual });
+        const current = update?.currentVersion || state.config.appVersion || "?";
+        if (update?.error) {
+            status(fmt(s.updateCheckFailed, { error: update.error }));
+            return;
+        }
+        if (!update?.available || !update.url) {
+            status(fmt(s.upToDate, { current }));
+            return;
+        }
+        status("");
+        hide(els.infoModal);
         const download = await askConfirm({
             title: s.updateAvailableTitle,
             message: fmt(s.updateAvailableMessage, {
-                current: update.currentVersion || state.config.appVersion || "?",
+                current,
                 latest: update.latestVersion || "?",
             }),
             confirmLabel: s.updateDownload,
             danger: false,
         });
-        if (download) {
-            await invoke("open_update_page", { url: update.url });
+        if (download) await invoke("open_update_page", { url: update.url });
+    } catch (err) {
+        // The automatic check is best-effort and must never block startup.
+        status(fmt(s.updateCheckFailed, { error: err?.message || String(err) }));
+    } finally {
+        if (manual) {
+            els.btnCheckUpdates.disabled = false;
+            els.btnCheckUpdates.classList.remove("busy");
+            setLabel(els.btnCheckUpdates, s.checkUpdates);
         }
-    } catch {
-        // Update checks are best-effort and must never block startup.
     }
+}
+
+/* Gallery selection */
+
+/**
+ * Show a linked gallery and check, with a single `stat`, that its folder is
+ * still there. The folder may have been moved, renamed, deleted or be on an
+ * unplugged drive since the app started; the photographer then chooses to
+ * locate it or unlink the gallery.
+ */
+async function openGallery(galleryId) {
+    state.currentGalleryId = galleryId;
+    state.report = null;
+    renderAll();
+    refreshLog();
+
+    let exists;
+    try {
+        exists = await invoke("check_gallery_folder", { galleryId });
+    } catch {
+        return;
+    }
+    const gallery = state.galleries.find((item) => item.galleryId === galleryId);
+    if (!gallery || state.currentGalleryId !== galleryId) return;
+    if (gallery.exists !== exists) {
+        gallery.exists = exists;
+        renderAll();
+    }
+    if (exists) return;
+
+    const s = state.strings;
+    const choice = await askChoice({
+        title: s.folderGoneTitle,
+        message: fmt(s.folderGoneMessage, { name: gallery.name, path: gallery.localPath }),
+        confirmLabel: s.folderGoneLocate,
+        altLabel: s.folderGoneUnlink,
+        danger: false,
+    });
+    if (choice === "confirm") await locateCurrent();
+    if (choice === "alt") await unlinkGallery(galleryId);
+}
+
+/** Remove the link to a gallery (its local files stay where they are). */
+async function unlinkGallery(galleryId) {
+    await invoke("unlink_gallery", { galleryId });
+    if (state.currentGalleryId === galleryId) state.currentGalleryId = null;
+    state.report = null;
+    state.coversKey = null;
+    await refreshState();
+}
+
+/* Account menu */
+
+function closeAccountMenu() {
+    hide(els.accountMenu);
+    els.accountChip.setAttribute("aria-expanded", "false");
+}
+
+function toggleAccountMenu() {
+    const open = els.accountMenu.classList.contains("hidden");
+    els.accountMenu.classList.toggle("hidden", !open);
+    els.accountChip.setAttribute("aria-expanded", String(open));
 }
 
 async function init() {
@@ -2554,10 +2669,7 @@ els.galleryList.addEventListener("click", (event) => {
         startSync(row.dataset.galleryId, row.dataset.galleryName);
         return;
     }
-    state.currentGalleryId = row.dataset.galleryId;
-    state.report = null;
-    renderAll();
-    refreshLog();
+    openGallery(row.dataset.galleryId);
 });
 
 els.btnHome.addEventListener("click", goHome);
@@ -2568,10 +2680,7 @@ els.home.addEventListener("click", (event) => {
         startSync(card.dataset.galleryId, card.dataset.galleryName);
         return;
     }
-    state.currentGalleryId = card.dataset.galleryId;
-    state.report = null;
-    renderAll();
-    refreshLog();
+    openGallery(card.dataset.galleryId);
 });
 
 els.galleryList.addEventListener("dblclick", (event) => {
@@ -2623,18 +2732,35 @@ els.btnConnectWelcome.addEventListener("click", openPicstome);
 els.btnDemo.addEventListener("click", () => startSync("G123", "MiBoda"));
 els.btnDemoWelcome.addEventListener("click", () => startSync("G123", "MiBoda"));
 
+els.accountChip.addEventListener("click", (event) => {
+    event.stopPropagation();
+    toggleAccountMenu();
+});
+
+els.btnOpenProfile.addEventListener("click", async () => {
+    closeAccountMenu();
+    await invoke("open_account_profile");
+});
+
 els.btnLogout.addEventListener("click", async () => {
+    closeAccountMenu();
+    const s = state.strings;
+    const confirmed = await askConfirm({
+        title: s.confirmLogoutTitle,
+        message: s.confirmLogoutMessage,
+        confirmLabel: s.logout,
+    });
+    if (!confirmed) return;
     await invoke("logout");
     await refreshState();
 });
 
-els.accountChip.addEventListener("click", async () => {
-    if (state.auth.connected) {
-        await invoke("open_account_profile");
-    } else {
-        await connect();
-    }
+// Any click outside the account menu closes it.
+document.addEventListener("click", (event) => {
+    if (!event.target.closest(".account-wrap")) closeAccountMenu();
 });
+
+els.btnCheckUpdates.addEventListener("click", () => checkForUpdates({ manual: true }));
 
 async function toggleTestMode() {
     const testMode = state.config.apiKind === "development";
@@ -2655,7 +2781,23 @@ async function toggleTestMode() {
     }
 }
 
-els.btnInfo.addEventListener("click", () => show(els.infoModal));
+els.btnInfo.addEventListener("click", () => {
+    closeAccountMenu();
+    els.updateStatus.textContent = "";
+    show(els.infoModal);
+});
+
+/* Hidden test mode: three clicks on the version within a second. */
+const TEST_MODE_CLICKS = 3;
+const TEST_MODE_WINDOW_MS = 1000;
+let versionClicks = [];
+els.infoVersion.addEventListener("click", () => {
+    const now = Date.now();
+    versionClicks = [...versionClicks, now].filter((at) => now - at < TEST_MODE_WINDOW_MS);
+    if (versionClicks.length < TEST_MODE_CLICKS) return;
+    versionClicks = [];
+    toggleTestMode();
+});
 els.btnTestMode.addEventListener("click", toggleTestMode);
 
 els.btnChangeFolder.addEventListener("click", async () => {
@@ -2710,10 +2852,7 @@ els.btnUnlink.addEventListener("click", async () => {
         confirmLabel: s.confirmUnlinkAction,
     });
     if (!confirmed) return;
-    await invoke("unlink_gallery", { galleryId: state.currentGalleryId });
-    state.currentGalleryId = null;
-    state.report = null;
-    await refreshState();
+    await unlinkGallery(state.currentGalleryId);
 });
 
 els.btnDeleteRemote.addEventListener("click", async () => {
@@ -2827,7 +2966,8 @@ els.btnIncludeIgnored.addEventListener("click", async () => {
 });
 
 
-els.btnConfirmOk.addEventListener("click", () => settleConfirm(true));
+els.btnConfirmOk.addEventListener("click", () => settleConfirm("confirm"));
+els.btnConfirmAlt.addEventListener("click", () => settleConfirm("alt"));
 
 els.gallerySearch.addEventListener("input", () => {
     state.galleryQuery = els.gallerySearch.value;
@@ -2869,7 +3009,7 @@ const MODALS = [
         backdrop: els.confirmModal,
         buttons: [els.btnConfirmCancel],
         isOpen: () => state.confirm.open,
-        close: () => settleConfirm(false),
+        close: () => settleConfirm(null),
     },
     {
         backdrop: els.firstSyncModal,
@@ -2934,6 +3074,10 @@ document.addEventListener("keydown", (event) => {
         return;
     }
     if (event.key !== "Escape") return;
+    if (!els.accountMenu.classList.contains("hidden")) {
+        closeAccountMenu();
+        return;
+    }
     // Close only the topmost dialog, like every desktop app does.
     const top = MODALS.find((modal) => modal.isOpen());
     if (top) {

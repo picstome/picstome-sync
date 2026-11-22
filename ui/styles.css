@@ -2101,3 +2101,111 @@ input[type="radio"]:focus-visible {
     background: var(--surface-muted);
     transform: none;
 }
+
+/* Account menu: opens upwards from the account button in the app bar. */
+
+.account-wrap {
+    position: relative;
+}
+
+.account-caret {
+    font-size: 13px;
+    color: var(--muted);
+    transform: rotate(-90deg);
+    transition: transform 120ms ease;
+}
+
+.account-button[aria-expanded="true"] .account-caret {
+    transform: rotate(90deg);
+}
+
+.account-menu {
+    position: absolute;
+    bottom: calc(100% + 8px);
+    left: 0;
+    z-index: 40;
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    min-width: 230px;
+    padding: 6px;
+    border: 1px solid var(--line);
+    border-radius: var(--radius-md);
+    background: #ffffff;
+    box-shadow: var(--shadow-md);
+    animation: lift-in 120ms ease both;
+}
+
+.account-menu button {
+    justify-content: flex-start;
+    gap: 10px;
+    min-height: 36px;
+    padding: 0 10px;
+    border-radius: 8px;
+    background: transparent;
+    color: var(--graphite);
+    box-shadow: none;
+    font-size: 13px;
+    font-weight: 600;
+}
+
+.account-menu button:hover {
+    background: var(--surface-muted);
+    transform: none;
+}
+
+.account-menu .icon {
+    font-size: 15px;
+    color: var(--muted);
+}
+
+.account-menu .menu-danger,
+.account-menu .menu-danger .icon {
+    color: var(--coral);
+}
+
+.account-menu .menu-danger:hover {
+    background: var(--update-bg);
+}
+
+
+
+
+
+/* Confirmation dialogs: breathing room between the message and the buttons. */
+#confirmModal .btn-row {
+    margin-top: 20px;
+}
+
+/* Info dialog: version with the update check beside it. */
+.info-version-row dd {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    flex: 1;
+}
+
+.info-version {
+    font-variant-numeric: tabular-nums;
+    cursor: default;
+    user-select: none;
+}
+
+.info-update-status {
+    margin: 8px 2px 0;
+}
+
+.info-update-status:empty {
+    display: none;
+}
+
+#btnCheckUpdates.busy .icon {
+    animation: sync-spin 1.1s linear infinite;
+}
+
+.menu-separator {
+    height: 1px;
+    margin: 4px 6px;
+    background: var(--line);
+}

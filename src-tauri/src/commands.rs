@@ -1128,6 +1128,23 @@ pub async fn change_folder(
     patch_linked_folder(&app, &state, &gallery_id, true).await
 }
 
+/// Quick check, run when a gallery is opened, that its linked folder is still
+/// there (it may have been moved, renamed, deleted or be on an unplugged
+/// drive since the app started). Only a `stat`; nothing is scanned.
+#[tauri::command]
+pub fn check_gallery_folder(
+    state: State<'_, AppState>,
+    gallery_id: String,
+) -> Result<bool, ErrorPayload> {
+    let Some(id) = sanitize_gallery_id(&gallery_id) else {
+        return Err(invalid_gallery());
+    };
+    let Some(gallery) = state.store.get_gallery(&id) else {
+        return Err(not_linked());
+    };
+    Ok(folder_exists(&gallery.local_path))
+}
+
 #[tauri::command]
 pub fn unlink_gallery(
     state: State<'_, AppState>,
@@ -1666,7 +1683,13 @@ pub fn install_update() -> Value {
 }
 
 #[tauri::command]
-pub async fn check_updates(state: State<'_, AppState>) -> Result<UpdateCheck, ErrorPayload> {
+pub async fn check_updates(
+    state: State<'_, AppState>,
+    force: Option<bool>,
+) -> Result<UpdateCheck, ErrorPayload> {
+    // `force` comes from the "Check for updates" button: the photographer
+    // asked, so the 15-day throttle of the automatic check does not apply.
+    let force = force.unwrap_or(false);
     let current_version = state.app_version.clone();
     let now = now_millis() / 1000;
     let config = state.store.load_config();
@@ -1678,7 +1701,7 @@ pub async fn check_updates(state: State<'_, AppState>) -> Result<UpdateCheck, Er
         || std::env::var("PICSTOME_DISABLE_UPDATE_CHECK")
             .map(|value| value == "1")
             .unwrap_or(false);
-    if disabled || !due {
+    if disabled || (!due && !force) {
         return Ok(no_update(current_version, None));
     }
 

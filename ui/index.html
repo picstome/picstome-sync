@@ -330,40 +330,49 @@
                         <svg class="icon" aria-hidden="true"><use href="#i-home" /></svg>
                     </button>
                     <span class="bar-divider" aria-hidden="true"></span>
-                    <button
-                        type="button"
-                        class="account-button"
-                        id="accountChip"
-                        title="Open account profile"
-                    >
-                        <span class="account-avatar" id="accountInitial">?</span>
-                        <span class="account-text">
-                            <span class="account-name" id="accountName"
-                                >Not connected</span
+                    <!-- The account opens a small menu: profile, info and log out. -->
+                    <div class="account-wrap">
+                        <button
+                            type="button"
+                            class="account-button"
+                            id="accountChip"
+                            aria-haspopup="menu"
+                            aria-expanded="false"
+                        >
+                            <span class="account-avatar" id="accountInitial"></span>
+                            <span class="account-text">
+                                <span class="account-name" id="accountName"
+                                    >Not connected</span
+                                >
+                                <span class="account-email" id="accountEmail"></span>
+                            </span>
+                            <svg class="icon account-caret" id="accountCaret" aria-hidden="true">
+                                <use href="#i-chevron" />
+                            </svg>
+                        </button>
+                        <div class="account-menu hidden" id="accountMenu" role="menu">
+                            <button type="button" role="menuitem" id="btnOpenProfile">
+                                <svg class="icon" aria-hidden="true"><use href="#i-external" /></svg>
+                                <span class="label">Open profile in Picstome</span>
+                            </button>
+                            <button type="button" role="menuitem" id="btnInfo">
+                                <svg class="icon" aria-hidden="true"><use href="#i-info" /></svg>
+                                <span class="label">Info</span>
+                            </button>
+                            <span class="menu-separator" id="menuLogoutSeparator"></span>
+                            <button
+                                type="button"
+                                role="menuitem"
+                                class="menu-danger"
+                                id="btnLogout"
                             >
-                            <span class="account-email" id="accountEmail"></span>
-                        </span>
-                    </button>
+                                <svg class="icon" aria-hidden="true"><use href="#i-logout" /></svg>
+                                <span class="label">Log out</span>
+                            </button>
+                        </div>
+                    </div>
                     <button type="button" class="primary small" id="btnConnect">
                         Open Picstome
-                    </button>
-                    <button
-                        type="button"
-                        class="bar-icon hidden"
-                        id="btnLogout"
-                        title="Log out"
-                        aria-label="Log out"
-                    >
-                        <svg class="icon" aria-hidden="true"><use href="#i-logout" /></svg>
-                    </button>
-                    <button
-                        type="button"
-                        class="bar-icon"
-                        id="btnInfo"
-                        title="Info"
-                        aria-label="Info"
-                    >
-                        <svg class="icon" aria-hidden="true"><use href="#i-info" /></svg>
                     </button>
                     <span class="env-badge hidden" id="envBadge"></span>
                 </div>
@@ -389,28 +398,38 @@
                     </button>
                 </div>
                 <dl class="info-list">
-                    <div>
+                    <div class="info-version-row">
                         <dt id="infoVersionLabel">Version</dt>
-                        <dd id="infoVersion"></dd>
-                    </div>
-                    <div>
-                        <dt id="infoProfileLabel">Build</dt>
-                        <dd id="infoProfile"></dd>
+                        <dd>
+                            <!-- Three quick clicks on the version open the
+                                 hidden test mode (devel.picstome.com). -->
+                            <span class="info-version" id="infoVersion"></span>
+                            <button
+                                type="button"
+                                class="secondary small"
+                                id="btnCheckUpdates"
+                            >
+                                <svg class="icon" aria-hidden="true"><use href="#i-sync" /></svg>
+                                <span class="label">Check for updates</span>
+                            </button>
+                        </dd>
                     </div>
                     <div>
                         <dt id="infoAccountLabel">Account</dt>
                         <dd id="infoAccount"></dd>
                     </div>
                 </dl>
-                <div class="info-mode-action">
+                <p class="hint info-update-status" id="updateStatus"></p>
+                <!-- Only shown while test mode is active. -->
+                <div class="info-mode-action hidden" id="testModeBox">
+                    <p class="hint" id="testModeHint"></p>
                     <button
                         type="button"
                         class="secondary small"
                         id="btnTestMode"
                     >
-                        Test mode
+                        Exit test mode
                     </button>
-                    <p class="hint" id="testModeHint"></p>
                 </div>
             </div>
         </div>
@@ -617,6 +636,11 @@
                     <button type="button" class="danger" id="btnConfirmOk">
                         Confirm
                     </button>
+                    <button
+                        type="button"
+                        class="secondary hidden"
+                        id="btnConfirmAlt"
+                    ></button>
                     <button type="button" class="ghost" id="btnConfirmCancel">
                         Cancel
                     </button>
