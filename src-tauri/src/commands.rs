@@ -706,6 +706,54 @@ pub async fn list_remote_galleries(
     Ok(state.api().await.galleries().await?)
 }
 
+/// Cover thumbnails of the linked galleries, as `data:` URLs keyed by
+/// gallery id. Galleries without a cover (no photos yet, or Picstome
+/// unreachable on first use) are simply absent; the UI then shows the
+/// gallery initial.
+#[tauri::command]
+pub async fn get_gallery_covers(
+    state: State<'_, AppState>,
+) -> Result<std::collections::HashMap<String, String>, ErrorPayload> {
+    use base64::Engine;
+    use futures::StreamExt;
+    use picstome_sync_core::covers::{resolve_cover, CoverCache};
+
+    let api = state.api().await;
+    let cache = CoverCache::new(state.store.root());
+    let now = now_millis();
+    let covers: Vec<(String, Option<String>)> = futures::stream::iter(state.store.load_index())
+        .map(|gallery| {
+            let api = api.clone();
+            let cache = cache.clone();
+            async move {
+                let cover = resolve_cover(
+                    &api,
+                    &cache,
+                    &gallery.gallery_id,
+                    &gallery.name,
+                    Path::new(&gallery.local_path),
+                    now,
+                )
+                .await;
+                let url = cover.map(|cover| {
+                    format!(
+                        "data:{};base64,{}",
+                        cover.mime,
+                        base64::engine::general_purpose::STANDARD.encode(&cover.bytes)
+                    )
+                });
+                (gallery.gallery_id, url)
+            }
+        })
+        .buffer_unordered(4)
+        .collect()
+        .await;
+    Ok(covers
+        .into_iter()
+        .filter_map(|(id, url)| url.map(|url| (id, url)))
+        .collect())
+}
+
 #[tauri::command]
 pub async fn search_remote_galleries(
     state: State<'_, AppState>,
@@ -1060,6 +1108,7 @@ pub fn unlink_gallery(
     let _ops = state.try_gallery_ops()?;
     let local_path = state.store.get_gallery(&id).map(|entry| entry.local_path);
     state.store.remove_gallery(&id)?;
+    picstome_sync_core::covers::CoverCache::new(state.store.root()).remove(&id);
     let _ = state.store.delete_snapshot(&id);
     if let Some(local_path) = local_path {
         let _ = GalleryIgnores::clear(Path::new(&local_path));

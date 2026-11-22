@@ -258,10 +258,15 @@ fn escape_html(value: &str) -> String {
         .replace('"', "&quot;")
 }
 
-fn gallery_summary(gallery: &GalleryRecord) -> Value {
+fn gallery_summary(gallery: &GalleryRecord, base: &str) -> Value {
+    // Like Picstome: the cover (here, a generated SVG) only exists for
+    // galleries with photos.
+    let cover_url = (!gallery.photos.is_empty())
+        .then(|| format!("{base}/covers/{}.svg?sig={}", gallery.id, unix_now()));
     json!({
         "id": gallery.id,
         "name": gallery.name,
+        "cover_url": cover_url,
         "photo_count": gallery.photos.len(),
         "rev": gallery.rev,
         "updated_at": gallery.photos.iter().map(|photo| photo.updated_at.clone()).max(),
@@ -445,7 +450,7 @@ async fn galleries(
     let mut items: Vec<Value> = galleries
         .values()
         .filter(|gallery| search.is_empty() || gallery.name.to_lowercase().contains(&search))
-        .map(gallery_summary)
+        .map(|gallery| gallery_summary(gallery, &host_base(&headers)))
         .collect();
     items.sort_by(|a, b| {
         b.get("updated_at")
@@ -473,6 +478,35 @@ async fn galleries(
             }
         }),
     )
+}
+
+/// A deterministic SVG cover: a colour band derived from the gallery id with
+/// the gallery initial, so demo galleries are recognisable at a glance.
+async fn cover(
+    State(state): State<Arc<MockState>>,
+    axum::extract::Path(cover): axum::extract::Path<String>,
+) -> Response {
+    let gallery_id = cover.trim_end_matches(".svg").to_string();
+    let galleries = state.galleries.read().await;
+    let Some(gallery) = galleries.get(&gallery_id) else {
+        return StatusCode::NOT_FOUND.into_response();
+    };
+    let hue = sha256_hex(gallery.id.as_bytes())
+        .bytes()
+        .fold(0u32, |acc, byte| (acc * 31 + byte as u32) % 360);
+    let initial = escape_html(&gallery.name.chars().next().unwrap_or('?').to_string());
+    let svg = format!(
+        "<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 120 120'>\
+         <rect width='120' height='120' fill='hsl({hue},38%,52%)'/>\
+         <circle cx='88' cy='34' r='16' fill='hsl({hue},60%,85%)'/>\
+         <path d='M0 96 L38 58 L66 84 L84 68 L120 100 L120 120 L0 120Z' fill='hsl({hue},35%,30%)'/>\
+         <text x='14' y='34' font-family='sans-serif' font-size='22' font-weight='700' fill='white'>{initial}</text></svg>"
+    );
+    Response::builder()
+        .status(StatusCode::OK)
+        .header(axum::http::header::CONTENT_TYPE, "image/svg+xml")
+        .body(axum::body::Body::from(svg))
+        .unwrap()
 }
 
 async fn manifest(
@@ -918,6 +952,7 @@ pub async fn start_mock_server(options: MockServerOptions) -> std::io::Result<Mo
         .route("/api/v1/manifest", get(manifest))
         .route("/api/v1/photos", post(upload_photo).delete(delete_photos))
         .route("/files/:gallery/:photo", get(file))
+        .route("/covers/:cover", get(cover))
         .with_state(state.clone());
 
     let listener = tokio::net::TcpListener::bind((options.host.as_str(), options.port)).await?;

@@ -155,6 +155,7 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             commands::get_state,
+            commands::get_gallery_covers,
             commands::get_config,
             commands::choose_folder,
             commands::connect,

@@ -41,6 +41,10 @@ const state = {
         error: null,
     },
     currentGalleryId: null,
+    /** Cover thumbnails of linked galleries: galleryId -> data: URL. */
+    covers: {},
+    /** Linked gallery ids the covers were last loaded for. */
+    coversKey: null,
     syncBusy: false,
     syncTarget: null,
     progress: null,
@@ -98,6 +102,22 @@ const els = {
     galleriesLabel: document.getElementById("galleriesLabel"),
     btnAddGallery: document.getElementById("btnAddGallery"),
     galleryList: document.getElementById("galleryList"),
+    btnHome: document.getElementById("btnHome"),
+    brandHome: document.getElementById("brandHome"),
+    mainActions: document.getElementById("mainActions"),
+    home: document.getElementById("home"),
+    homeSyncedSection: document.getElementById("homeSyncedSection"),
+    homeSyncedTitle: document.getElementById("homeSyncedTitle"),
+    homeSyncedHint: document.getElementById("homeSyncedHint"),
+    homeSynced: document.getElementById("homeSynced"),
+    homeRemoteSection: document.getElementById("homeRemoteSection"),
+    homeRemoteTitle: document.getElementById("homeRemoteTitle"),
+    homeRemoteHint: document.getElementById("homeRemoteHint"),
+    homeRemote: document.getElementById("homeRemote"),
+    homeRemoteStatus: document.getElementById("homeRemoteStatus"),
+    homeEmpty: document.getElementById("homeEmpty"),
+    homeEmptyTitle: document.getElementById("homeEmptyTitle"),
+    homeEmptyHint: document.getElementById("homeEmptyHint"),
     gallerySearch: document.getElementById("gallerySearch"),
     searchEmpty: document.getElementById("searchEmpty"),
     syncEmpty: document.getElementById("syncEmpty"),
@@ -438,6 +458,7 @@ function applyStrings() {
     if (!s) return;
 
     els.galleriesLabel.textContent = s.galleries;
+    setLabel(els.btnHome, s.home);
     els.gallerySearch.placeholder = s.searchGalleries;
     els.btnAddGallery.title = s.createGallery;
     els.btnAddGallery.setAttribute("aria-label", s.createGallery);
@@ -559,7 +580,49 @@ function filteredGalleries() {
     );
 }
 
-function recentGalleryItems() {
+/* Ordering
+ *
+ * Linked galleries: most recently synced first, never-synced ones last. Picstome galleries: newest created first.
+ * Picstome sorts its list by *last modification*, which put old galleries
+ * that were touched recently above new ones; gallery ids are ULIDs, whose
+ * first ten characters encode the creation time, so the order is derived
+ * from the id and needs no server change.
+ */
+
+const ULID_ALPHABET = "0123456789ABCDEFGHJKMNPQRSTVWXYZ";
+
+/** Creation time (ms) encoded in a ULID, or null for other ids. */
+function ulidTime(id) {
+    const value = String(id || "").toUpperCase();
+    if (!/^[0-9A-HJKMNP-TV-Z]{26}$/.test(value)) return null;
+    let time = 0;
+    for (const char of value.slice(0, 10)) {
+        time = time * 32 + ULID_ALPHABET.indexOf(char);
+    }
+    return time;
+}
+
+/** Best available creation time of a Picstome gallery summary. */
+function createdAt(gallery) {
+    return ulidTime(gallery.id) ?? (Date.parse(gallery.updatedAt || gallery.updated_at) || 0);
+}
+
+function byNewestCreated(a, b) {
+    return createdAt(b) - createdAt(a);
+}
+
+/** Most recently synced first; never-synced galleries last. */
+function byLastSync(a, b) {
+    return (b.lastSyncAt || 0) - (a.lastSyncAt || 0);
+}
+
+/** Linked galleries in sidebar/home order. */
+function sortedGalleries(galleries = state.galleries) {
+    return [...galleries].sort(byLastSync);
+}
+
+/** Unlinked Picstome galleries, newest first. */
+function recentGalleryItems(limit = 5) {
     const linked = new Set(state.galleries.map((gallery) => gallery.galleryId));
     const seen = new Set();
     return state.recentGalleries.items
@@ -568,7 +631,55 @@ function recentGalleryItems() {
             seen.add(gallery.id);
             return true;
         })
-        .slice(0, 5);
+        .sort(byNewestCreated)
+        .slice(0, limit);
+}
+
+/* Covers */
+
+/** Thumbnail tile for a gallery: its cover when known, else its initial. */
+function galleryAvatar(gallery, className = "gallery-avatar") {
+    const avatar = el("span", className);
+    const cover = state.covers[gallery.galleryId];
+    if (cover) {
+        const img = el("img", "gallery-cover");
+        img.src = cover;
+        img.alt = "";
+        img.decoding = "async";
+        avatar.classList.add("has-cover");
+        avatar.appendChild(img);
+    } else {
+        avatar.textContent = initial(gallery.name);
+    }
+    return avatar;
+}
+
+/** Tile for a Picstome gallery that is not on this computer. */
+function remoteAvatar(className = "gallery-avatar") {
+    const avatar = el("span", `${className} remote-gallery-avatar`);
+    avatar.appendChild(icon("cloud-off"));
+    return avatar;
+}
+
+/**
+ * Load cover thumbnails for the linked galleries. Runs when the set of
+ * linked galleries changes or after a sync (`force`); covers are cached on
+ * disk by the backend, so this is cheap after the first time.
+ */
+async function loadCovers(force = false) {
+    const key = state.galleries
+        .map((gallery) => gallery.galleryId)
+        .sort()
+        .join(",");
+    if (!key || (!force && key === state.coversKey)) return;
+    state.coversKey = key;
+    try {
+        state.covers = (await invoke("get_gallery_covers")) || {};
+        renderGalleryList();
+        renderHome();
+    } catch {
+        // Covers are decoration; initials remain when they cannot load.
+    }
 }
 
 function resetRecentGalleries() {
@@ -590,7 +701,9 @@ async function loadRecentGalleries() {
         const result = await invoke("search_remote_galleries", {
             search: "",
             page: 1,
-            perPage: 10,
+            // Picstome orders by last modification; fetch a wider window so
+            // the newest *created* galleries are in it once sorted locally.
+            perPage: 50,
         });
         if (!state.auth.connected || key !== state.config.apiBase) return;
         recent.items = Array.isArray(result.data) ? result.data : [];
@@ -601,6 +714,7 @@ async function loadRecentGalleries() {
     } finally {
         recent.loading = false;
         renderGalleryList();
+        renderHome();
     }
 }
 
@@ -620,12 +734,11 @@ function remoteGalleryRow(gallery, s) {
     row.dataset.galleryName = gallery.name || "Gallery";
     row.title = s.remoteGalleryHint;
 
-    const avatar = el("span", "gallery-avatar remote-gallery-avatar");
-    avatar.appendChild(icon("cloud"));
+    const avatar = remoteAvatar();
     const info = el("span", "gallery-info");
     info.append(
         el("span", "gallery-name", gallery.name || "Gallery"),
-        el("span", "gallery-meta", s.remoteGalleryHint),
+        el("span", "gallery-meta", remoteGalleryMeta(gallery, s)),
     );
     row.append(avatar, info);
     return row;
@@ -649,6 +762,14 @@ function renderRecentGallerySection(s) {
     const status = remoteStatus(recent, s);
     if (status) section.appendChild(status);
     els.galleryList.appendChild(section);
+}
+
+/** "Not synced · Created 12 Nov" for a Picstome gallery row. */
+function remoteGalleryMeta(gallery, s) {
+    const created = createdAt(gallery);
+    return created
+        ? `${s.notSynced} · ${fmt(s.createdOn, { date: formatDateShort(created) })}`
+        : s.notSynced;
 }
 
 /** A sidebar section listing Picstome galleries that are not linked yet. */
@@ -820,9 +941,17 @@ function renderGalleryList() {
             remoteHasResults,
     );
 
-    renderRecentGallerySection(s);
+    els.btnHome.classList.toggle("selected", !state.currentGalleryId);
+    if (galleries.length > 0) {
+        const head = el("div", "remote-gallery-head local-gallery-head");
+        head.append(
+            el("span", "", s.onThisComputer),
+            el("span", "remote-gallery-count", String(galleries.length)),
+        );
+        els.galleryList.appendChild(head);
+    }
 
-    for (const gallery of galleries) {
+    for (const gallery of sortedGalleries(galleries)) {
         const row = el("button", "gallery-row");
         row.type = "button";
         row.dataset.galleryId = gallery.galleryId;
@@ -845,11 +974,92 @@ function renderGalleryList() {
                   )
                 : el("span", "gallery-meta warn", s.folderMissing),
         );
-        row.append(el("span", "gallery-avatar", initial(gallery.name)), info);
+        row.append(galleryAvatar(gallery), info);
         els.galleryList.appendChild(row);
     }
 
+    renderRecentGallerySection(s);
     renderRemoteGallerySection(s);
+}
+
+/** One card on the home page. */
+function homeCard({ avatar, title, lines, dataset }) {
+    const card = el("button", "home-card");
+    card.type = "button";
+    Object.assign(card.dataset, dataset);
+    const info = el("span", "home-card-info");
+    info.appendChild(el("span", "home-card-title", title));
+    for (const [text, cls] of lines) info.appendChild(el("span", cls, text));
+    card.append(avatar, info);
+    return card;
+}
+
+/**
+ * Home page: recently synced galleries with their covers, then the newest
+ * Picstome galleries that are not on this computer yet.
+ */
+function renderHome() {
+    const s = state.strings;
+    if (!s || els.home.classList.contains("hidden")) return;
+
+    els.homeSyncedTitle.textContent = s.homeSyncedTitle;
+    els.homeSyncedHint.textContent = s.homeSyncedHint;
+    els.homeRemoteTitle.textContent = s.homeRemoteTitle;
+    els.homeRemoteHint.textContent = s.homeRemoteHint;
+    els.homeEmptyTitle.textContent = s.homeEmptyTitle;
+    els.homeEmptyHint.textContent = s.homeEmptyHint;
+
+    const synced = sortedGalleries().slice(0, 6);
+    els.homeSynced.replaceChildren(
+        ...synced.map((gallery) =>
+            homeCard({
+                avatar: galleryAvatar(gallery, "home-card-cover"),
+                title: gallery.name,
+                lines: [
+                    [galleryStatsText(gallery), "home-card-meta"],
+                    gallery.exists
+                        ? [`${s.lastSync}: ${formatDateShort(gallery.lastSyncAt)}`, "home-card-meta"]
+                        : [s.folderMissing, "home-card-meta warn"],
+                ],
+                dataset: { galleryId: gallery.galleryId },
+            }),
+        ),
+    );
+    els.homeSyncedSection.classList.toggle("hidden", synced.length === 0);
+
+    const recent = state.recentGalleries;
+    const remote = state.auth.connected ? recentGalleryItems(6) : [];
+    els.homeRemote.replaceChildren(
+        ...remote.map((gallery) =>
+            homeCard({
+                avatar: remoteAvatar("home-card-cover"),
+                title: gallery.name || "Gallery",
+                lines: [
+                    [remoteGalleryMeta(gallery, s), "home-card-meta"],
+                    [s.syncGalleryAction, "home-card-action"],
+                ],
+                dataset: {
+                    remote: "1",
+                    galleryId: gallery.id,
+                    galleryName: gallery.name || "Gallery",
+                },
+            }),
+        ),
+    );
+    const status = remoteStatus(recent, s);
+    els.homeRemoteStatus.textContent = status ? status.textContent : "";
+    els.homeRemoteStatus.classList.toggle("hidden", !status);
+    const remoteVisible = state.auth.connected && (remote.length > 0 || Boolean(status));
+    els.homeRemoteSection.classList.toggle("hidden", !remoteVisible);
+    els.homeEmpty.classList.toggle("hidden", synced.length > 0 || remoteVisible);
+}
+
+/** Leave the selected gallery and show the home page. */
+function goHome() {
+    state.currentGalleryId = null;
+    state.report = null;
+    renderAll();
+    refreshLog();
 }
 
 function renderMain() {
@@ -857,13 +1067,17 @@ function renderMain() {
     if (!s) return;
     const gallery = currentGallery();
 
+    els.mainActions.classList.toggle("hidden", !gallery);
     if (!gallery) {
         state.currentGalleryId = null;
         hide(els.progressWrap);
         hide(els.report);
         hide(els.idleState);
-        show(els.welcome);
-        els.detailName.textContent = s.appTitle;
+        const homeVisible = state.auth.connected || state.galleries.length > 0;
+        els.welcome.classList.toggle("hidden", homeVisible);
+        els.home.classList.toggle("hidden", !homeVisible);
+        renderHome();
+        els.detailName.textContent = homeVisible ? s.home : s.appTitle;
         els.btnOpenWebGallery.classList.add("hidden");
         els.detailPathText.textContent = s.syncHint;
         els.detailPath.disabled = true;
@@ -883,6 +1097,7 @@ function renderMain() {
     }
 
     hide(els.welcome);
+    hide(els.home);
     const showIdle =
         !state.syncBusy &&
         !state.report &&
@@ -1708,9 +1923,8 @@ function setState(next) {
     ) {
         state.currentGalleryId = null;
     }
-    if (!state.currentGalleryId && state.galleries.length > 0) {
-        state.currentGalleryId = state.galleries[0].galleryId;
-    }
+    // No gallery is auto-selected: the app opens on the home page.
+    if (state.auth.connected) loadCovers();
     if (
         state.rating.open &&
         state.rating.galleryId &&
@@ -1982,7 +2196,15 @@ async function runSync(galleryId, name, choice = null) {
         if (!missing) await refreshState();
         renderAll();
     }
-    if (!missing) handlePostSync(state.report);
+    if (!missing) {
+        refreshCoverAfterSync(galleryId);
+        handlePostSync(state.report);
+    }
+}
+
+/** A first sync is when a gallery gets its photos, and so its cover. */
+function refreshCoverAfterSync(galleryId) {
+    if (!state.covers[galleryId]) loadCovers(true);
 }
 
 /** Sync the selected gallery, asking first when this is its first sync. */
@@ -2043,6 +2265,7 @@ async function startSync(galleryId, name) {
         const choice = await askFirstSync(result.preview);
         if (choice) await runSync(galleryId, label, choice);
     } else if (result.report) {
+        refreshCoverAfterSync(galleryId);
         handlePostSync(result.report);
     }
 }
@@ -2265,6 +2488,24 @@ els.galleryList.addEventListener("click", (event) => {
         return;
     }
     state.currentGalleryId = row.dataset.galleryId;
+    state.report = null;
+    renderAll();
+    refreshLog();
+});
+
+els.btnHome.addEventListener("click", goHome);
+els.brandHome.addEventListener("click", goHome);
+els.brandHome.addEventListener("keydown", (event) => {
+    if (event.key === "Enter" || event.key === " ") goHome();
+});
+els.home.addEventListener("click", (event) => {
+    const card = event.target.closest(".home-card");
+    if (!card) return;
+    if (card.dataset.remote === "1") {
+        startSync(card.dataset.galleryId, card.dataset.galleryName);
+        return;
+    }
+    state.currentGalleryId = card.dataset.galleryId;
     state.report = null;
     renderAll();
     refreshLog();

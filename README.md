@@ -25,7 +25,15 @@ and star-rating workflow.
 - Detects local deletions and proposes deleting the remote copy.
 - Detects remote deletions and asks whether to trash the local copy, keep it,
   or upload it again.
-- Shows up to five recent unlinked galleries from Picstome on startup.
+- Opens on a home page: recently synced galleries with their cover, and the
+  newest Picstome galleries that are not on this computer yet. The sidebar
+  lists **On this computer** (most recently synced first) and **Recent in
+  Picstome** (newest created first, ordered by the creation time encoded in
+  the gallery ULID; Picstome itself sorts by last modification).
+- Shows a cover thumbnail for synced galleries: the Picstome `cover_url`
+  (cover, or first photo), cached in `cache/covers/` so it works offline. When
+  Picstome has no image, the first local JPEG/PNG is used as a thumbnail.
+  Galleries not on this computer show a crossed-out cloud instead.
 - Searches synced and remote Picstome galleries with pagination; choosing a
   remote result asks for the local folder and links it.
 - The `+` button opens the gallery-creation page on the current API target.

@@ -31,3 +31,5 @@ hex.workspace = true
 tempfile = "3"
 rand.workspace = true
 url.workspace = true
+base64 = "0.22"
+futures.workspace = true

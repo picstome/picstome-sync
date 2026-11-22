@@ -53,6 +53,15 @@
             <symbol id="i-cloud" viewBox="0 0 24 24">
                 <path d="M17.5 19H9a7 7 0 1 1 6.7-9h1.8a4.5 4.5 0 1 1 0 9Z" />
             </symbol>
+            <symbol id="i-home" viewBox="0 0 24 24">
+                <path d="M3 10.5 12 3l9 7.5" />
+                <path d="M5 9.5V20a1 1 0 0 0 1 1h4v-6h4v6h4a1 1 0 0 0 1-1V9.5" />
+            </symbol>
+            <symbol id="i-cloud-off" viewBox="0 0 24 24">
+                <path d="m2 2 20 20" />
+                <path d="M5.8 5.8A7 7 0 0 0 9 19h8.5a4.5 4.5 0 0 0 1.3-.2" />
+                <path d="M21.5 16.6A4.5 4.5 0 0 0 17.5 10h-1.8a7 7 0 0 0-5.3-4.9" />
+            </symbol>
             <symbol id="i-chevron" viewBox="0 0 24 24">
                 <path d="m9 18 6-6-6-6" />
             </symbol>
@@ -72,7 +81,7 @@
 
         <div class="app-shell">
             <aside class="sidebar">
-                <div class="sidebar-brand">
+                <div class="sidebar-brand" id="brandHome" role="button" tabindex="0">
                     <img
                         class="brand-logo"
                         src="./assets/picstome-sync-logo.png"
@@ -105,6 +114,11 @@
                         spellcheck="false"
                     />
                 </div>
+
+                <button type="button" class="nav-row" id="btnHome">
+                    <svg class="icon" aria-hidden="true"><use href="#i-home" /></svg>
+                    <span class="label">Home</span>
+                </button>
 
                 <div class="gallery-list" id="galleryList"></div>
                 <div class="search-empty hidden" id="searchEmpty"></div>
@@ -189,7 +203,7 @@
                             <span class="meta-pill" id="detailLastSync"></span>
                         </div>
                     </div>
-                    <div class="main-actions">
+                    <div class="main-actions" id="mainActions">
                         <button
                             type="button"
                             class="favorites-action"
@@ -215,6 +229,28 @@
                         <button type="button" class="primary" id="btnIdleSync">
                             Sync
                         </button>
+                    </div>
+
+                    <div class="home hidden" id="home">
+                        <section class="home-section" id="homeSyncedSection">
+                            <div class="home-section-head">
+                                <h2 id="homeSyncedTitle">Recently synced</h2>
+                                <p class="hint" id="homeSyncedHint"></p>
+                            </div>
+                            <div class="home-grid" id="homeSynced"></div>
+                        </section>
+                        <section class="home-section" id="homeRemoteSection">
+                            <div class="home-section-head">
+                                <h2 id="homeRemoteTitle">New in Picstome</h2>
+                                <p class="hint" id="homeRemoteHint"></p>
+                            </div>
+                            <div class="home-grid" id="homeRemote"></div>
+                            <p class="hint home-status" id="homeRemoteStatus"></p>
+                        </section>
+                        <section class="home-empty hidden" id="homeEmpty">
+                            <h2 id="homeEmptyTitle">Nothing to sync yet</h2>
+                            <p class="hint" id="homeEmptyHint"></p>
+                        </section>
                     </div>
 
                     <div class="welcome" id="welcome">

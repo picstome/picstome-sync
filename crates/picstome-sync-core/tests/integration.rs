@@ -1305,3 +1305,31 @@ async fn downloads_with_known_size_skip_the_probe_request() {
         "unexpected request count (probe?)"
     );
 }
+
+#[tokio::test]
+async fn resolves_and_caches_gallery_covers() {
+    use picstome_sync_core::covers::{resolve_cover, CoverCache};
+
+    let mock = mock().await;
+    let api = login(&mock.url).await;
+    let dir = tempfile::tempdir().unwrap();
+    let cache = CoverCache::new(dir.path());
+
+    let cover = resolve_cover(&api, &cache, "G123", "MiBoda", dir.path(), 1_000)
+        .await
+        .expect("cover");
+    assert_eq!(cover.mime, "image/svg+xml");
+    assert!(String::from_utf8_lossy(&cover.bytes).contains("<svg"));
+
+    // Fresh cache: served without asking Picstome, even when it is gone.
+    mock.close().await;
+    let cached = resolve_cover(&api, &cache, "G123", "MiBoda", dir.path(), 2_000)
+        .await
+        .expect("cached cover");
+    assert_eq!(cached, cover);
+
+    // Stale cache and Picstome unreachable: the old cover is still shown.
+    let later = 2_000 + picstome_sync_core::covers::COVER_REFRESH_MS + 1;
+    let stale = resolve_cover(&api, &cache, "G123", "MiBoda", dir.path(), later).await;
+    assert_eq!(stale, Some(cover));
+}

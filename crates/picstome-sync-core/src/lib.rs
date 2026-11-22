@@ -8,6 +8,7 @@ pub mod api;
 pub mod atomic;
 pub mod cache;
 pub mod config;
+pub mod covers;
 pub mod diff;
 pub mod error;
 pub mod identity;
