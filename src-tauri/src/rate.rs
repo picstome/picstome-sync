@@ -79,12 +79,7 @@ struct Invocation {
 }
 
 async fn probe(invocation: &Invocation) -> bool {
-    let Ok(output) = Command::new(&invocation.program)
-        .args(&invocation.prefix)
-        .arg("-ver")
-        .output()
-        .await
-    else {
+    let Ok(output) = exiftool_command(invocation).arg("-ver").output().await else {
         return false;
     };
     output.status.success()
@@ -124,22 +119,31 @@ async fn resolve_exiftool(path: &Path) -> Option<Invocation> {
     None
 }
 
-async fn run_exiftool(
+/// Build an exiftool command for `invocation`.
+///
+/// On Windows the app is a GUI-subsystem process, so every console child
+/// (exiftool.exe / perl.exe) would flash a terminal window unless it is
+/// started with `CREATE_NO_WINDOW`.
+fn exiftool_command(invocation: &Invocation) -> Command {
+    let mut command = Command::new(&invocation.program);
+    command.args(&invocation.prefix).kill_on_drop(true);
+    #[cfg(windows)]
+    {
+        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+        command.creation_flags(CREATE_NO_WINDOW);
+    }
+    command
+}
+
+/// Run exiftool with `tags` on `files`, mapping a failure to its message.
+async fn write_tags(
     invocation: &Invocation,
+    tags: &[String],
     files: &[PathBuf],
-    rating: &str,
 ) -> Result<(), String> {
-    let rating = normalize_rating(rating);
-    let output = Command::new(&invocation.program)
-        .args(&invocation.prefix)
-        .args([
-            "-m",
-            "-overwrite_original",
-            "-P",
-            "-quiet",
-            &format!("-Rating={rating}"),
-            &format!("-RatingPercent={}", rating_percent(rating)),
-        ])
+    let output = exiftool_command(invocation)
+        .args(["-m", "-overwrite_original", "-P", "-quiet"])
+        .args(tags)
         .args(files)
         .output()
         .await
@@ -154,31 +158,25 @@ async fn run_exiftool(
     Err(if message.is_empty() { stdout } else { message })
 }
 
+/// Write a 1-5 star rating (XMP `Rating` plus the Windows `RatingPercent`).
+async fn run_exiftool(
+    invocation: &Invocation,
+    files: &[PathBuf],
+    rating: &str,
+) -> Result<(), String> {
+    let rating = normalize_rating(rating);
+    let tags = [
+        format!("-Rating={rating}"),
+        format!("-RatingPercent={}", rating_percent(rating)),
+    ];
+    write_tags(invocation, &tags, files).await
+}
+
 /// Clear the XMP rating written by an earlier sync. Photo metadata is always
 /// rewritten as a whole, so "no rating" has to be an explicit write.
 async fn clear_exiftool_rating(invocation: &Invocation, files: &[PathBuf]) -> Result<(), String> {
-    let output = Command::new(&invocation.program)
-        .args(&invocation.prefix)
-        .args([
-            "-m",
-            "-overwrite_original",
-            "-P",
-            "-quiet",
-            "-Rating=",
-            "-RatingPercent=",
-        ])
-        .args(files)
-        .output()
-        .await
-        .map_err(|err| err.to_string())?;
-
-    if output.status.success() {
-        return Ok(());
-    }
-
-    let message = String::from_utf8_lossy(&output.stderr).trim().to_string();
-    let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
-    Err(if message.is_empty() { stdout } else { message })
+    let tags = ["-Rating=".to_string(), "-RatingPercent=".to_string()];
+    write_tags(invocation, &tags, files).await
 }
 
 /// Write one rating per file. Rating 1-5 sets the stars; `None` clears them.
@@ -451,8 +449,7 @@ mod tests {
         assert_eq!(result.rated, 1);
 
         let invocation = resolve_exiftool(&exiftool).await.expect("exiftool");
-        let output = Command::new(&invocation.program)
-            .args(&invocation.prefix)
+        let output = exiftool_command(&invocation)
             .args(["-Rating", "-s", "-s", "-s"])
             .arg(&path)
             .output()
@@ -478,8 +475,7 @@ mod tests {
         assert_eq!(result.rated, 1);
 
         let invocation = resolve_exiftool(&exiftool).await.expect("exiftool");
-        let output = Command::new(&invocation.program)
-            .args(&invocation.prefix)
+        let output = exiftool_command(&invocation)
             .args(["-Rating", "-RatingPercent", "-s", "-s", "-s"])
             .arg(&path)
             .output()

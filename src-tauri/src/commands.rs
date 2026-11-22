@@ -45,8 +45,16 @@ pub struct AppState {
     pending_link: std::sync::Mutex<Option<String>>,
     last_link: std::sync::Mutex<Option<(String, Instant)>>,
     frontend_ready: AtomicBool,
+    /// Serialises every command that rewrites gallery state (snapshot,
+    /// fingerprint cache, ignore list) or the files in a gallery folder.
+    /// Two of them interleaving, e.g. a sync started from a deep link while
+    /// another one runs, would overwrite each other's snapshot.
+    gallery_ops: tokio::sync::Mutex<()>,
     pub _mock_server: std::sync::Mutex<Option<MockServer>>,
 }
+
+/// Proof that the caller holds [`AppState::gallery_ops`].
+pub type GalleryOpsGuard<'a> = tokio::sync::MutexGuard<'a, ()>;
 
 impl AppState {
     #[allow(clippy::too_many_arguments)]
@@ -73,8 +81,22 @@ impl AppState {
             pending_link: std::sync::Mutex::new(None),
             last_link: std::sync::Mutex::new(None),
             frontend_ready: AtomicBool::new(false),
+            gallery_ops: tokio::sync::Mutex::new(()),
             _mock_server: std::sync::Mutex::new(mock_server),
         }
+    }
+
+    /// Start an operation that must not overlap a sync. Fails immediately
+    /// instead of queueing: a second sync request while one runs is a
+    /// double-click or a repeated deep link, never something to replay later.
+    pub fn try_gallery_ops(&self) -> Result<GalleryOpsGuard<'_>, ErrorPayload> {
+        self.gallery_ops.try_lock().map_err(|_| sync_in_progress())
+    }
+
+    /// Wait for the running operation (if any) and then run exclusively.
+    /// Used by short follow-up actions such as applying ratings.
+    pub async fn gallery_ops(&self) -> GalleryOpsGuard<'_> {
+        self.gallery_ops.lock().await
     }
 
     pub async fn api(&self) -> ApiClient {
@@ -275,6 +297,13 @@ fn folder_missing() -> ErrorPayload {
 
 fn not_linked() -> ErrorPayload {
     command_error("Gallery is not linked", "not_linked")
+}
+
+fn sync_in_progress() -> ErrorPayload {
+    command_error(
+        "A sync is already running; wait for it to finish",
+        "sync_in_progress",
+    )
 }
 
 const LOG_MAX_BYTES: u64 = 512 * 1024;
@@ -498,9 +527,13 @@ pub fn migrate_legacy_log(store: &Store) {
     let _ = std::fs::remove_file(legacy);
 }
 
+/// Run a sync for a linked gallery, log the outcome and broadcast the new
+/// state. Taking the [`GalleryOpsGuard`] makes it impossible to start a sync
+/// without holding the gallery operation lock.
 async fn sync_linked(
     app: &AppHandle,
     state: &AppState,
+    _ops: &GalleryOpsGuard<'_>,
     gallery_id: &str,
     options: SyncOptions,
 ) -> Result<SyncReport, ErrorPayload> {
@@ -546,6 +579,7 @@ async fn patch_linked_folder(
     let Some(id) = sanitize_gallery_id(gallery_id) else {
         return Err(invalid_gallery());
     };
+    let _ops = state.try_gallery_ops()?;
     let Some(folder) = pick_folder(app).await else {
         return Ok(json!({"ok": false, "canceled": true}));
     };
@@ -715,6 +749,7 @@ pub async fn apply_rating_plan(
     let Some(id) = sanitize_gallery_id(&gallery_id) else {
         return Err(invalid_gallery());
     };
+    let _ops = state.gallery_ops().await;
     let Some(gallery) = state.store.get_gallery(&id) else {
         return Err(not_linked());
     };
@@ -840,6 +875,7 @@ pub async fn start_sync(
     let Some(id) = sanitize_gallery_id(&gallery_id) else {
         return Err(invalid_gallery());
     };
+    let ops = state.try_gallery_ops()?;
 
     if state.store.get_gallery(&id).is_none() {
         let Some(folder) = pick_folder(&app).await else {
@@ -894,6 +930,7 @@ pub async fn start_sync(
             sync_linked(
                 &app,
                 &state,
+                &ops,
                 &id,
                 SyncOptions {
                     prepared_scan,
@@ -933,6 +970,7 @@ pub async fn sync_gallery(
     let Some(id) = sanitize_gallery_id(&gallery_id) else {
         return Err(invalid_gallery());
     };
+    let ops = state.try_gallery_ops()?;
     if ignore_local.is_some() || ignore_remote.is_some() {
         let Some(gallery) = state.store.get_gallery(&id) else {
             return Err(not_linked());
@@ -974,7 +1012,7 @@ pub async fn sync_gallery(
         trash_local: trash_local.unwrap_or_default(),
         ..Default::default()
     };
-    sync_linked(&app, &state, &id, options).await
+    sync_linked(&app, &state, &ops, &id, options).await
 }
 
 #[tauri::command]
@@ -985,6 +1023,7 @@ pub fn clear_sync_ignores(
     let Some(id) = sanitize_gallery_id(&gallery_id) else {
         return Err(invalid_gallery());
     };
+    let _ops = state.try_gallery_ops()?;
     let Some(gallery) = state.store.get_gallery(&id) else {
         return Err(not_linked());
     };
@@ -1018,6 +1057,7 @@ pub fn unlink_gallery(
     let Some(id) = sanitize_gallery_id(&gallery_id) else {
         return Err(invalid_gallery());
     };
+    let _ops = state.try_gallery_ops()?;
     let local_path = state.store.get_gallery(&id).map(|entry| entry.local_path);
     state.store.remove_gallery(&id)?;
     let _ = state.store.delete_snapshot(&id);
@@ -1059,6 +1099,7 @@ pub async fn resolve_remote_deletions(
     let Some(id) = sanitize_gallery_id(&gallery_id) else {
         return Err(invalid_gallery());
     };
+    let _ops = state.gallery_ops().await;
     let Some(gallery) = state.store.get_gallery(&id) else {
         return Err(not_linked());
     };
@@ -1147,6 +1188,7 @@ pub async fn apply_deletions(
     let Some(id) = sanitize_gallery_id(&gallery_id) else {
         return Err(invalid_gallery());
     };
+    let _ops = state.gallery_ops().await;
     let snapshot = state.store.load_snapshot(&id);
     let api = state.api().await;
     let result = match apply_remote_deletions(&api, &state.store, &id, &photo_ids).await {
@@ -1215,6 +1257,7 @@ pub async fn rate_files(
     gallery_id: Option<String>,
     favorites: Option<Vec<FavoritePhoto>>,
 ) -> Result<RateResult, ErrorPayload> {
+    let _ops = state.gallery_ops().await;
     let config = state.store.load_config();
     let has_gallery = gallery_id.is_some();
     let gallery_for_marks = gallery_id.clone();
