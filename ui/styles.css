@@ -62,6 +62,26 @@ body {
     display: none !important;
 }
 
+/* Icons: one stroke style everywhere, sized by the surrounding font. */
+
+.icon-sprite {
+    position: absolute;
+    width: 0;
+    height: 0;
+    overflow: hidden;
+}
+
+.icon {
+    width: 1.15em;
+    height: 1.15em;
+    flex: 0 0 auto;
+    fill: none;
+    stroke: currentColor;
+    stroke-width: 2;
+    stroke-linecap: round;
+    stroke-linejoin: round;
+}
+
 /* Application shell: fixed desktop panes, no page scroll */
 
 .app-shell {
@@ -146,8 +166,12 @@ body {
     background: transparent;
     color: var(--pine);
     box-shadow: none;
-    font-size: 18px;
+    font-size: 16px;
     line-height: 1;
+}
+
+.icon-button .icon {
+    stroke-width: 2.4;
 }
 
 .icon-button:hover {
@@ -173,6 +197,7 @@ body {
 
 .gallery-row {
     display: flex;
+    justify-content: flex-start;
     align-items: center;
     gap: 10px;
     width: 100%;
@@ -293,7 +318,7 @@ body {
     text-transform: uppercase;
 }
 
-.remote-gallery-head span:last-child:not(:empty) {
+.remote-gallery-count:not(:empty) {
     min-width: 18px;
     padding: 1px 5px;
     border-radius: 999px;
@@ -315,6 +340,7 @@ body {
 .remote-gallery-avatar {
     background: rgba(198, 216, 175, 0.32);
     color: var(--pine);
+    font-size: 16px;
 }
 
 .remote-gallery-status {
@@ -372,6 +398,7 @@ body {
 
 .account-button {
     display: flex;
+    justify-content: flex-start;
     align-items: center;
     gap: 9px;
     width: 100%;
@@ -467,6 +494,7 @@ body {
 
 .path-link {
     display: inline-flex;
+    justify-content: flex-start;
     flex: 0 1 auto;
     align-items: flex-start;
     gap: 7px;
@@ -498,6 +526,7 @@ body {
 }
 
 .path-link:disabled {
+    opacity: 1;
     color: var(--muted) !important;
     background: transparent !important;
     cursor: default;
@@ -509,8 +538,8 @@ body {
 }
 
 .path-icon {
-    flex: 0 0 auto;
-    line-height: 1.4;
+    margin-top: 0.15em;
+    font-size: 13px;
 }
 
 .path-text {
@@ -568,7 +597,7 @@ h2 {
     background: transparent;
     color: var(--pine);
     box-shadow: none;
-    font-size: 17px;
+    font-size: 16px;
     line-height: 1;
 }
 
@@ -623,6 +652,16 @@ h2 {
     color: #71470d;
 }
 
+.favorites-action .icon {
+    fill: currentColor;
+    stroke-width: 1.5;
+}
+
+/* While a sync runs, the button icon spins instead of swapping glyphs. */
+.sync-action.busy .icon {
+    animation: sync-spin 1.1s linear infinite;
+}
+
 .sync-action {
     background: var(--pine);
 }
@@ -643,6 +682,11 @@ h2 {
     padding: 10px 30px 14px;
     border-top: 1px solid var(--line);
     background: rgba(255, 253, 248, 0.6);
+}
+
+.footer-action .icon,
+.unlink-button .icon {
+    font-size: 13px;
 }
 
 .footer-action {
@@ -684,6 +728,10 @@ h2 {
 /* Buttons */
 
 button {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 7px;
     min-height: 38px;
     padding: 0 15px;
     border: 0;
@@ -714,12 +762,23 @@ button:focus-visible {
     outline-offset: 2px;
 }
 
+/* Disabled buttons keep their own style and simply fade. The old grey fill
+   turned ghost and secondary buttons into solid grey blocks. */
 button:disabled {
-    background: #d9d5ce !important;
-    color: #ffffff !important;
+    opacity: 0.45;
     cursor: not-allowed;
-    transform: none;
+    transform: none !important;
     box-shadow: none;
+}
+
+button:disabled:hover {
+    transform: none;
+}
+
+button.primary:disabled,
+button.danger:disabled {
+    background: #b9b4ac;
+    color: #ffffff;
 }
 
 button.small {
@@ -869,17 +928,24 @@ button.danger:hover {
     margin-bottom: 12px;
 }
 
-.report-head span:first-child {
+.report-title {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
     font-size: 17px;
     font-weight: 700;
 }
 
-.report-head span:first-child.ok {
+.report-title.ok {
     color: var(--pine);
 }
 
-.report-head span:first-child.error {
+.report-title.error {
     color: #b64538;
+}
+
+.report-icon {
+    font-size: 18px;
 }
 
 .counts {
@@ -903,6 +969,11 @@ button.danger:hover {
 .count-chip.warn {
     background: var(--update-bg);
     color: var(--update-text);
+}
+
+.count-chip.muted {
+    color: var(--muted);
+    background: rgba(198, 216, 175, 0.12);
 }
 
 .report-errors {
@@ -1156,8 +1227,13 @@ button.danger:hover {
     margin: 0 auto 12px;
     border-radius: 14px;
     background: var(--surface-muted);
+    color: var(--pine);
     font-size: 22px;
-    animation: sync-spin 1.2s linear infinite;
+}
+
+/* Spin the glyph, not its rounded tile: a rotating square looked broken. */
+.sync-modal-icon .icon {
+    animation: sync-spin 1.1s linear infinite;
 }
 
 .sync-modal h2 {
@@ -1430,6 +1506,14 @@ button.danger:hover {
     color: var(--graphite);
 }
 
+.star-btn .icon {
+    width: 30px;
+    height: 30px;
+    fill: currentColor;
+    stroke: currentColor;
+    stroke-width: 1;
+}
+
 .star-btn {
     min-height: auto;
     min-width: auto;
@@ -1609,8 +1693,13 @@ button.danger:hover {
     border-radius: 12px;
     background: var(--surface-muted);
     color: var(--pine);
-    font-size: 22px;
+    font-size: 20px;
     font-weight: 700;
+}
+
+.idle-card.warn .idle-icon {
+    background: var(--update-bg);
+    color: var(--coral);
 }
 
 .idle-card h2 {
@@ -1626,14 +1715,24 @@ button.danger:hover {
 }
 
 .search-row {
+    position: relative;
     flex: 0 0 auto;
     padding: 0 4px 8px;
+}
+
+.search-icon {
+    position: absolute;
+    top: 9px;
+    left: 14px;
+    font-size: 13px;
+    color: #a9a3a0;
+    pointer-events: none;
 }
 
 .search-row input {
     width: 100%;
     height: 32px;
-    padding: 0 10px;
+    padding: 0 10px 0 30px;
     border: 1px solid var(--line);
     border-radius: 8px;
     background: rgba(255, 255, 255, 0.72);
@@ -1707,14 +1806,17 @@ button.danger:hover {
     display: none;
 }
 
-.log-card summary::before {
-    content: "▸";
+.log-chevron {
     color: var(--pine);
-    font-size: 12px;
+    font-size: 13px;
     transition: transform 120ms ease;
 }
 
-.log-card[open] summary::before {
+.log-card summary {
+    justify-content: flex-start;
+}
+
+.log-card[open] .log-chevron {
     transform: rotate(90deg);
 }
 
@@ -1769,4 +1871,26 @@ button.danger:hover {
     padding: 10px 0;
     color: var(--muted);
     font-size: 12px;
+}
+
+/* Keyboard focus for text fields matches the buttons. */
+input:focus-visible,
+textarea:focus-visible {
+    outline: none;
+}
+
+input[type="checkbox"]:focus-visible,
+input[type="radio"]:focus-visible {
+    outline: 3px solid rgba(49, 109, 97, 0.28);
+    outline-offset: 2px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+    *,
+    *::before,
+    *::after {
+        animation-duration: 1ms !important;
+        animation-iteration-count: 1 !important;
+        transition-duration: 1ms !important;
+    }
 }

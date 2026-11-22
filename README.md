@@ -72,7 +72,22 @@ and star-rating workflow.
   ignored again** in the report to clear them.
 - **Downloads:** signed URLs with parallel range requests and resume support.
   Chunks are written directly at their offsets (no concatenation pass) and the
-  manifest `download_hash` is verified when available.
+  manifest `download_hash` is verified when available. Resume state is keyed by
+  that hash (or the URL without its query string), so an interrupted download
+  resumes even though every manifest signs the URL again. The finished file
+  replaces the old one with an atomic rename. A new version of a photo that
+  lives in a subfolder replaces it there instead of landing in the root.
+- **Network:** JSON API calls time out after 60 s; transfers have no total
+  limit (a large video on a slow uplink can take minutes) and fail only when
+  no bytes move for 60 s. Transient failures (`5xx`, `408`, `429`, dropped
+  connections) are retried with exponential backoff; other `4xx` answers fail
+  at once.
+- **Progress:** uploads and downloads report bytes across all concurrent
+  files, so the bar moves smoothly during a large RAW or video transfer.
+- **One operation at a time:** syncs, deletions, rating writes and folder
+  changes take a shared lock in the backend. A second sync request while one
+  runs (double click, repeated deep link) is refused instead of interleaving
+  snapshot writes.
 - **Performance:** the manifest request overlaps the local walk, the first-sync
   preview reuses its walk instead of scanning twice, and every sync reports
   `timings` and `scanStats` (`hashed`, `cached`, `bytesRead`) in the activity
@@ -86,7 +101,11 @@ and star-rating workflow.
   what was written, so re-syncs do not ask or rewrite again. The manual Rate tab
   (deep link or manual pick) is separate and only changes local metadata.
 - **Safety:** writes stay inside the linked folder, filenames are sanitized,
-  and destructive actions require explicit confirmation. Local deletions go to
+  and destructive actions require explicit confirmation. Files over 500 MB are
+  reported as a warning and left out of the diff on both sides: they are never
+  proposed for deletion and never overwritten by the remote copy. When the
+  linked folder disappears (renamed, drive unplugged), the gallery offers
+  **Locate…**, which keeps the sync history. Local deletions go to
   the OS trash or a `.picstome-trash` folder inside the gallery.
 - **Logs:** per-gallery JSONL logs at `logs/<gallery-id>.log`, rotated at
   512 KB. Uploads, downloads, ratings, deletions, trash locations, errors,

@@ -12,6 +12,64 @@
         <link rel="stylesheet" href="./styles.css" />
     </head>
     <body>
+        <!--
+            Icon sprite. Every icon is a 24x24 stroke drawing referenced with
+            <svg class="icon"><use href="#i-NAME"/></svg>, so icons inherit the
+            text colour and size of their button and look identical on macOS,
+            Windows and Linux (emoji glyphs did not).
+        -->
+        <svg class="icon-sprite" aria-hidden="true" focusable="false">
+            <symbol id="i-sync" viewBox="0 0 24 24">
+                <path d="M21 12a9 9 0 0 0-15.4-6.4L3 8" />
+                <path d="M3 3v5h5" />
+                <path d="M3 12a9 9 0 0 0 15.4 6.4L21 16" />
+                <path d="M16 16h5v5" />
+            </symbol>
+            <symbol id="i-plus" viewBox="0 0 24 24">
+                <path d="M12 5v14M5 12h14" />
+            </symbol>
+            <symbol id="i-external" viewBox="0 0 24 24">
+                <path d="M15 3h6v6" />
+                <path d="M10 14 21 3" />
+                <path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6" />
+            </symbol>
+            <symbol id="i-folder" viewBox="0 0 24 24">
+                <path d="M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.7-.9l-.8-1.2A2 2 0 0 0 7.9 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z" />
+            </symbol>
+            <symbol id="i-folder-open" viewBox="0 0 24 24">
+                <path d="m6 14 1.5-2.9A2 2 0 0 1 9.2 10H20a2 2 0 0 1 1.9 2.5l-1.5 6a2 2 0 0 1-2 1.5H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h3.9a2 2 0 0 1 1.7.9l.8 1.2a2 2 0 0 0 1.7.9H18a2 2 0 0 1 2 2v2" />
+            </symbol>
+            <symbol id="i-unlink" viewBox="0 0 24 24">
+                <path d="m18.8 12.3 1.7-1.7a5 5 0 0 0-7.1-7.1l-1.7 1.7" />
+                <path d="m5.2 11.7-1.7 1.7a5 5 0 0 0 7.1 7.1l1.7-1.7" />
+                <path d="M8 2v3M2 8h3M16 22v-3M22 16h-3" />
+            </symbol>
+            <symbol id="i-heart" viewBox="0 0 24 24">
+                <path d="M19 14c1.5-1.5 3-3.2 3-5.5A5.5 5.5 0 0 0 16.5 3c-1.8 0-3 .5-4.5 2-1.5-1.5-2.7-2-4.5-2A5.5 5.5 0 0 0 2 8.5c0 2.3 1.5 4 3 5.5l7 7Z" />
+            </symbol>
+            <symbol id="i-star" viewBox="0 0 24 24">
+                <path d="M11.5 2.3a.5.5 0 0 1 1 0l2.5 5.2 5.7.8a.5.5 0 0 1 .3.9l-4.1 4 1 5.7a.5.5 0 0 1-.8.5L12 16.8l-5.1 2.7a.5.5 0 0 1-.8-.5l1-5.7-4.1-4a.5.5 0 0 1 .3-.9l5.7-.8Z" />
+            </symbol>
+            <symbol id="i-cloud" viewBox="0 0 24 24">
+                <path d="M17.5 19H9a7 7 0 1 1 6.7-9h1.8a4.5 4.5 0 1 1 0 9Z" />
+            </symbol>
+            <symbol id="i-chevron" viewBox="0 0 24 24">
+                <path d="m9 18 6-6-6-6" />
+            </symbol>
+            <symbol id="i-search" viewBox="0 0 24 24">
+                <circle cx="11" cy="11" r="7" />
+                <path d="m20 20-3.5-3.5" />
+            </symbol>
+            <symbol id="i-check" viewBox="0 0 24 24">
+                <circle cx="12" cy="12" r="10" />
+                <path d="m8.5 12 2.5 2.5 4.5-5" />
+            </symbol>
+            <symbol id="i-alert" viewBox="0 0 24 24">
+                <circle cx="12" cy="12" r="10" />
+                <path d="M12 7.5v5M12 16.5h.01" />
+            </symbol>
+        </svg>
+
         <div class="app-shell">
             <aside class="sidebar">
                 <div class="sidebar-brand">
@@ -34,11 +92,12 @@
                         id="btnAddGallery"
                         title="Open Picstome"
                     >
-                        +
+                        <svg class="icon" aria-hidden="true"><use href="#i-plus" /></svg>
                     </button>
                 </div>
 
                 <div class="search-row">
+                    <svg class="icon search-icon" aria-hidden="true"><use href="#i-search" /></svg>
                     <input
                         id="gallerySearch"
                         type="search"
@@ -111,7 +170,7 @@
                                 title="Open gallery in Picstome"
                                 aria-label="Open gallery in Picstome"
                             >
-                                ↗
+                                <svg class="icon" aria-hidden="true"><use href="#i-external" /></svg>
                             </button>
                         </div>
                         <div class="path-row" id="pathRow">
@@ -121,7 +180,7 @@
                                 id="detailPath"
                                 title="Open folder"
                             >
-                                <span class="path-icon" aria-hidden="true">📁</span>
+                                <svg class="icon path-icon" aria-hidden="true"><use href="#i-folder" /></svg>
                                 <span class="path-text" id="detailPathText"></span>
                             </button>
                         </div>
@@ -136,17 +195,21 @@
                             class="favorites-action"
                             id="btnFavoritesList"
                         >
-                            ♥ Favorites
+                            <svg class="icon" aria-hidden="true"><use href="#i-heart" /></svg>
+                            <span class="label">Favorites</span>
                         </button>
                         <button type="button" class="primary sync-action" id="btnSync">
-                            🔄 Sync
+                            <svg class="icon" aria-hidden="true"><use href="#i-sync" /></svg>
+                            <span class="label">Sync</span>
                         </button>
                     </div>
                 </header>
 
                 <section class="main-content">
                     <div class="idle-card hidden" id="idleState">
-                        <div class="idle-icon">⟳</div>
+                        <div class="idle-icon" aria-hidden="true">
+                            <svg class="icon"><use href="#i-sync" /></svg>
+                        </div>
                         <h2 id="idleTitle">Ready to sync</h2>
                         <p class="hint" id="idleHint"></p>
                         <button type="button" class="primary" id="btnIdleSync">
@@ -190,7 +253,12 @@
 
                     <div class="report hidden" id="report">
                         <div class="report-head">
-                            <span id="reportSummary"></span>
+                            <span class="report-title">
+                                <svg class="icon report-icon" id="reportIcon" aria-hidden="true">
+                                    <use id="reportIconUse" href="#i-check" />
+                                </svg>
+                                <span id="reportSummary"></span>
+                            </span>
                             <span class="subtle" id="reportTime"></span>
                         </div>
                         <div class="counts" id="reportCounts"></div>
@@ -233,6 +301,7 @@
 
                     <details class="log-card hidden" id="syncLog">
                         <summary>
+                            <svg class="icon log-chevron" aria-hidden="true"><use href="#i-chevron" /></svg>
                             <span id="syncLogTitle">Activity log</span>
                             <span class="log-count" id="syncLogCount"></span>
                         </summary>
@@ -251,10 +320,12 @@
                         class="footer-action"
                         id="btnChangeFolder"
                     >
-                        Change folder…
+                        <svg class="icon" aria-hidden="true"><use href="#i-folder-open" /></svg>
+                        <span class="label">Change folder…</span>
                     </button>
                     <button type="button" class="unlink-button" id="btnUnlink">
-                        Unlink
+                        <svg class="icon" aria-hidden="true"><use href="#i-unlink" /></svg>
+                        <span class="label">Unlink</span>
                     </button>
                 </footer>
             </main>
@@ -319,21 +390,21 @@
 
                 <div class="rating-plan hidden" id="ratingPlan"></div>
 
-                <div class="rating-stars" id="ratingStars">
-                    <button type="button" class="star-btn" data-rating="1">
-                        ★
+                <div class="rating-stars" id="ratingStars" role="group">
+                    <button type="button" class="star-btn" data-rating="1" aria-label="1">
+                        <svg class="icon" aria-hidden="true"><use href="#i-star" /></svg>
                     </button>
-                    <button type="button" class="star-btn" data-rating="2">
-                        ★
+                    <button type="button" class="star-btn" data-rating="2" aria-label="2">
+                        <svg class="icon" aria-hidden="true"><use href="#i-star" /></svg>
                     </button>
-                    <button type="button" class="star-btn" data-rating="3">
-                        ★
+                    <button type="button" class="star-btn" data-rating="3" aria-label="3">
+                        <svg class="icon" aria-hidden="true"><use href="#i-star" /></svg>
                     </button>
-                    <button type="button" class="star-btn" data-rating="4">
-                        ★
+                    <button type="button" class="star-btn" data-rating="4" aria-label="4">
+                        <svg class="icon" aria-hidden="true"><use href="#i-star" /></svg>
                     </button>
-                    <button type="button" class="star-btn" data-rating="5">
-                        ★
+                    <button type="button" class="star-btn" data-rating="5" aria-label="5">
+                        <svg class="icon" aria-hidden="true"><use href="#i-star" /></svg>
                     </button>
                     <strong id="ratingValue">5</strong>
                 </div>
@@ -473,7 +544,9 @@
 
         <div class="modal-backdrop sync-backdrop hidden" id="syncModal">
             <div class="modal sync-modal" role="status" aria-live="polite">
-                <div class="sync-modal-icon" aria-hidden="true">🔄</div>
+                <div class="sync-modal-icon" aria-hidden="true">
+                    <svg class="icon"><use href="#i-sync" /></svg>
+                </div>
                 <h2 id="syncModalTitle">Syncing…</h2>
                 <p class="hint" id="syncModalPhase"></p>
                 <div class="sync-modal-bar"><span id="syncModalFill"></span></div>

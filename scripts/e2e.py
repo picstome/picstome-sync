@@ -307,7 +307,9 @@ def main():
                   path: document.getElementById('detailPathText').textContent,
                   pathTag: document.getElementById('detailPath').tagName,
                   sync: document.getElementById('btnSync').textContent,
+                  syncIcon: document.querySelector('#btnSync svg use')?.getAttribute('href') || '',
                   favorites: document.getElementById('btnFavoritesList').textContent,
+                  favoritesIcon: document.querySelector('#btnFavoritesList svg use')?.getAttribute('href') || '',
                   unlinkParent: document.getElementById('btnUnlink').closest('.main-footer')?.id || '',
                   changeTitle: document.getElementById('btnChangeFolder').title,
                   changeText: document.getElementById('btnChangeFolder').textContent,
@@ -321,8 +323,9 @@ def main():
         log("layout:", layout)
         assert layout["pathTag"] == "BUTTON", layout
         assert layout["path"].startswith("/"), layout
-        assert "🔄" in layout["sync"], layout
-        assert "♥" in layout["favorites"], layout
+        assert layout["syncIcon"] == "#i-sync", layout
+        assert layout["favoritesIcon"] == "#i-heart", layout
+        assert layout["sync"].strip() in ("Sync", "Sincronizar"), layout
         assert layout["unlinkParent"] == "mainFooter", layout
         assert layout["footerVisible"], layout
         assert "Change folder" in layout["changeTitle"] or "Cambiar carpeta" in layout["changeTitle"], layout
