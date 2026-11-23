@@ -17,6 +17,7 @@ pub mod links;
 pub mod localfiles;
 pub mod mock;
 pub mod model;
+pub mod plan;
 pub mod sanitize;
 pub mod sync;
 pub mod transfer;

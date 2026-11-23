@@ -257,6 +257,15 @@
                         <div class="progress-text" id="progressText"></div>
                     </div>
 
+                    <!-- Review: everything a sync would do, nothing applied yet. -->
+                    <section class="review hidden" id="review">
+                        <div class="review-head">
+                            <h2 id="reviewTitle">Changes to review</h2>
+                            <p class="hint" id="reviewHint"></p>
+                        </div>
+                        <div class="review-groups" id="reviewGroups"></div>
+                    </section>
+
                     <div class="report hidden" id="report">
                         <div class="report-head">
                             <span class="report-title">
@@ -283,28 +292,7 @@
                             </button>
                         </div>
 
-                        <div class="delete-box hidden" id="deleteBox">
-                            <div class="delete-title" id="deleteTitle"></div>
-                            <p class="hint" id="deleteHint"></p>
-                            <div class="delete-list" id="deleteList"></div>
-                            <div class="btn-row">
-                                <button
-                                    type="button"
-                                    class="danger"
-                                    id="btnDeleteRemote"
-                                >
-                                    Delete in Picstome
-                                </button>
-                                <button
-                                    type="button"
-                                    class="ghost"
-                                    id="btnCancelDelete"
-                                >
-                                    Cancel
-                                </button>
-                            </div>
-                        </div>
-                    </div>
+</div>
 
                     <details class="log-card hidden" id="syncLog">
                         <summary>
@@ -321,6 +309,13 @@
                     </details>
                 </section>
 
+                <div class="review-bar hidden" id="reviewBar">
+                    <span class="review-summary" id="reviewSummary"></span>
+                    <div class="btn-row">
+                        <button type="button" class="ghost" id="btnReviewDiscard">Discard</button>
+                        <button type="button" class="primary" id="btnReviewApply">Apply</button>
+                    </div>
+                </div>
             </main>
             </div>
 
@@ -462,9 +457,7 @@
                     Choose folder…
                 </button>
 
-                <div class="rating-plan hidden" id="ratingPlan"></div>
-
-                <div class="rating-stars" id="ratingStars" role="group">
+<div class="rating-stars" id="ratingStars" role="group">
                     <button type="button" class="star-btn" data-rating="1" aria-label="1">
                         <svg class="icon" aria-hidden="true"><use href="#i-star" /></svg>
                     </button>
@@ -496,143 +489,7 @@
             </div>
         </div>
 
-        <div class="modal-backdrop hidden" id="remoteDeletedModal">
-            <div class="modal remote-deleted-modal" role="dialog" aria-modal="true">
-                <div class="modal-head">
-                    <h2 id="remoteDeletedTitle">Deleted in Picstome</h2>
-                    <button
-                        type="button"
-                        class="ghost small"
-                        id="btnRemoteClose"
-                    >
-                        Close
-                    </button>
-                </div>
-                <p class="hint" id="remoteDeletedHint"></p>
-                <div class="delete-list" id="remoteDeletedList"></div>
-                <div class="btn-row">
-                    <button
-                        type="button"
-                        class="danger"
-                        id="btnRemoteDeleteLocal"
-                    >
-                        Delete locally
-                    </button>
-                    <button
-                        type="button"
-                        class="secondary"
-                        id="btnRemoteKeepLocal"
-                    >
-                        Keep local
-                    </button>
-                    <button
-                        type="button"
-                        class="primary"
-                        id="btnRemoteUploadAgain"
-                    >
-                        Upload again
-                    </button>
-                </div>
-                <div
-                    class="rating-result hidden"
-                    id="remoteDeletedResult"
-                ></div>
-            </div>
-        </div>
-
-        <div class="modal-backdrop hidden" id="firstSyncModal">
-            <div class="modal first-sync-modal" role="dialog" aria-modal="true">
-                <div class="modal-head">
-                    <h2 id="firstSyncTitle">First sync</h2>
-                    <button
-                        type="button"
-                        class="ghost small"
-                        id="btnFirstSyncClose"
-                    >
-                        Close
-                    </button>
-                </div>
-                <p class="hint" id="firstSyncHint"></p>
-                <p class="hint raw-note hidden" id="firstSyncRawOnly"></p>
-
-                <!-- Only when local-only photos have RAW files and the gallery
-                     has no RAW choice yet. -->
-                <div class="first-sync-section hidden" id="firstSyncRawSection">
-                    <div class="first-sync-choice-title" id="firstSyncRawTitle"></div>
-                    <label class="first-sync-option">
-                        <input type="radio" name="firstSyncRaw" id="firstSyncRawJpeg" value="jpeg_only" checked />
-                        <span id="firstSyncRawJpegLabel"></span>
-                    </label>
-                    <label class="first-sync-option">
-                        <input type="radio" name="firstSyncRaw" id="firstSyncRawBoth" value="jpeg_and_raw" />
-                        <span id="firstSyncRawBothLabel"></span>
-                    </label>
-                    <p class="hint" id="firstSyncRawHint"></p>
-                </div>
-
-                <div class="first-sync-section" id="firstSyncUploadSection">
-                    <div class="first-sync-choice-title" id="firstSyncUploadLabel"></div>
-                    <label class="first-sync-option">
-                        <input
-                            type="radio"
-                            name="firstSyncLocal"
-                            id="firstSyncLocalUpload"
-                            value="upload"
-                            checked
-                        />
-                        <span id="firstSyncLocalUploadLabel"></span>
-                    </label>
-                    <label class="first-sync-option">
-                        <input
-                            type="radio"
-                            name="firstSyncLocal"
-                            id="firstSyncLocalKeep"
-                            value="keep"
-                        />
-                        <span id="firstSyncLocalKeepLabel"></span>
-                    </label>
-                    <label class="first-sync-option">
-                        <input
-                            type="radio"
-                            name="firstSyncLocal"
-                            id="firstSyncLocalTrash"
-                            value="trash"
-                        />
-                        <span id="firstSyncLocalTrashLabel"></span>
-                    </label>
-                    <p class="hint" id="firstSyncUploadHint"></p>
-                    <div class="first-sync-list" id="firstSyncUploadList"></div>
-                </div>
-
-                <div class="first-sync-section" id="firstSyncDownloadSection">
-                    <label class="first-sync-choice">
-                        <input type="checkbox" id="firstSyncDownload" checked />
-                        <span id="firstSyncDownloadLabel"></span>
-                    </label>
-                    <p class="hint" id="firstSyncDownloadHint"></p>
-                    <div class="first-sync-list" id="firstSyncDownloadList"></div>
-                </div>
-
-                <div class="btn-row">
-                    <button
-                        type="button"
-                        class="primary"
-                        id="btnFirstSyncConfirm"
-                    >
-                        Sync selected
-                    </button>
-                    <button
-                        type="button"
-                        class="ghost"
-                        id="btnFirstSyncCancel"
-                    >
-                        Cancel
-                    </button>
-                </div>
-            </div>
-        </div>
-
-        <div class="modal-backdrop sync-backdrop hidden" id="syncModal">
+<div class="modal-backdrop sync-backdrop hidden" id="syncModal">
             <div class="modal sync-modal" role="status" aria-live="polite">
                 <div class="sync-modal-icon" aria-hidden="true">
                     <svg class="icon"><use href="#i-sync" /></svg>

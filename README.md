@@ -14,6 +14,18 @@ and star-rating workflow.
 
 ## What it does
 
+**Review, then apply.** Nothing is transferred, deleted or rated until you
+press **Apply**. «Review changes» scans the folder and the Picstome gallery
+and lists every change grouped by direction: from Picstome to this computer,
+from this computer to Picstome, deleted in Picstome, deleted on this
+computer, Picstome stars, and conflicts (shown, never touched). Each row has a
+choice (do it, later, never propose again, trash…); deletions default to
+«Later». Apply re-checks every file and photo first and skips anything that
+changed after the review. Deleting 10+ photos that are over a fifth of the
+gallery (or more than 50) in Picstome needs the number typed to confirm.
+There is no folder watcher or background sync: the app only acts when asked.
+A `picstome://sync` link from the web opens the review, never applies it.
+
 - Syncs one local folder with one Picstome gallery.
 - On the first sync of a folder that already contains photos, previews what
   exists only on disk and what exists only in Picstome. You choose whether to

@@ -1009,176 +1009,6 @@ button.danger:hover {
     word-break: break-word;
 }
 
-.delete-box {
-    display: flex;
-    flex-direction: column;
-    gap: 9px;
-    margin-top: 14px;
-    padding: 14px;
-    border: 1px solid var(--update-border);
-    border-radius: var(--radius-sm);
-    background: var(--update-bg);
-}
-
-.delete-title {
-    font-size: 14px;
-    font-weight: 700;
-    color: var(--update-text);
-}
-
-.delete-list {
-    display: flex;
-    flex-direction: column;
-    gap: 4px;
-    max-height: 160px;
-    overflow-y: auto;
-    font-size: 12.5px;
-}
-
-.delete-item {
-    display: flex;
-    align-items: center;
-    gap: 8px;
-    color: var(--graphite);
-}
-
-.delete-item input {
-    accent-color: var(--pine);
-}
-
-/* Remote deletion resolution */
-
-.remote-deleted-modal {
-    width: min(620px, 100%);
-    padding: 26px;
-}
-
-.remote-deleted-modal .modal-head {
-    margin-bottom: 12px;
-}
-
-.remote-deleted-modal .hint {
-    max-width: 56ch;
-    margin-top: 0;
-    line-height: 1.55;
-}
-
-.remote-deleted-modal .delete-list {
-    margin-top: 14px;
-    padding: 10px;
-    border: 1px solid var(--line);
-    border-radius: var(--radius-md);
-    background: rgba(255, 255, 255, 0.62);
-    max-height: 220px;
-}
-
-.remote-deleted-modal .delete-item {
-    padding: 8px 9px;
-    border-radius: 8px;
-    font-size: 13px;
-    line-height: 1.4;
-}
-
-.remote-deleted-modal .delete-item:hover {
-    background: var(--surface-muted);
-}
-
-.remote-deleted-modal .btn-row {
-    display: grid;
-    grid-template-columns: repeat(3, minmax(0, 1fr));
-    gap: 10px;
-    margin-top: 18px;
-}
-
-.remote-deleted-modal .btn-row button {
-    width: 100%;
-    min-width: 0;
-    padding: 0 10px;
-    white-space: nowrap;
-}
-
-.remote-deleted-modal .rating-result {
-    margin-top: 14px;
-}
-
-@media (max-width: 620px) {
-    .remote-deleted-modal {
-        padding: 20px;
-    }
-
-    .remote-deleted-modal .btn-row {
-        grid-template-columns: 1fr;
-    }
-
-    .remote-deleted-modal .btn-row button {
-        white-space: normal;
-    }
-}
-
-.first-sync-modal {
-    width: min(620px, 100%);
-    padding: 26px;
-}
-
-.first-sync-modal .modal-head {
-    margin-bottom: 8px;
-}
-
-.first-sync-section {
-    margin-top: 16px;
-    padding-top: 14px;
-    border-top: 1px solid var(--line);
-}
-
-.first-sync-choice {
-    display: flex;
-    align-items: flex-start;
-    gap: 9px;
-    font-size: 13.5px;
-    font-weight: 600;
-    line-height: 1.4;
-    cursor: pointer;
-}
-
-.first-sync-choice-title {
-    font-size: 13.5px;
-    font-weight: 600;
-    line-height: 1.4;
-}
-
-.first-sync-option {
-    display: flex;
-    align-items: flex-start;
-    gap: 9px;
-    margin-top: 8px;
-    font-size: 13px;
-    line-height: 1.4;
-    cursor: pointer;
-}
-
-.first-sync-option input {
-    margin: 3px 0 0;
-    accent-color: var(--pine);
-}
-
-.first-sync-choice input {
-    margin: 2px 0 0;
-    accent-color: var(--pine);
-}
-
-.first-sync-list {
-    max-height: 128px;
-    margin-top: 8px;
-    overflow: auto;
-    color: var(--muted);
-    font-size: 12px;
-    line-height: 1.55;
-}
-
-.first-sync-list div {
-    overflow-wrap: anywhere;
-}
-
 .report-ignored {
     display: flex;
     align-items: center;
@@ -1471,24 +1301,6 @@ button.danger:hover {
     margin: 14px 0 16px;
 }
 
-.rating-plan {
-    margin: 10px 0 4px;
-    padding: 10px 12px;
-    border-radius: var(--radius-sm);
-    background: rgba(255, 255, 255, 0.72);
-    max-height: 180px;
-    overflow-y: auto;
-    font-size: 12px;
-    line-height: 1.55;
-    color: var(--graphite);
-}
-
-.rating-plan-item {
-    white-space: nowrap;
-    overflow: hidden;
-    text-overflow: ellipsis;
-}
-
 .rating-stars strong {
     margin-left: 8px;
     font-size: 18px;
@@ -1555,7 +1367,6 @@ button.danger:hover {
 .gallery-list::-webkit-scrollbar,
 .main-content::-webkit-scrollbar,
 .report-errors::-webkit-scrollbar,
-.delete-list::-webkit-scrollbar,
 .modal::-webkit-scrollbar,
 .rating-result::-webkit-scrollbar {
     width: 8px;
@@ -1565,7 +1376,6 @@ button.danger:hover {
 .gallery-list::-webkit-scrollbar-thumb,
 .main-content::-webkit-scrollbar-thumb,
 .report-errors::-webkit-scrollbar-thumb,
-.delete-list::-webkit-scrollbar-thumb,
 .modal::-webkit-scrollbar-thumb,
 .rating-result::-webkit-scrollbar-thumb {
     border: 2px solid transparent;
@@ -2210,32 +2020,12 @@ input[type="radio"]:focus-visible {
     background: var(--line);
 }
 
-/* RAW notes in the report and the first-sync preview. */
+/* RAW note in the sync report. */
 .raw-note {
     margin-top: 10px;
     padding: 8px 10px;
     border-radius: 8px;
     background: var(--surface-muted);
-}
-
-/* "+ IMG_1.CR3" beside a photo deleted in Picstome. */
-.delete-companions {
-    margin-left: auto;
-    color: var(--muted);
-    font-size: 11.5px;
-    white-space: nowrap;
-    overflow: hidden;
-    text-overflow: ellipsis;
-}
-
-.first-sync-tag {
-    margin-left: 8px;
-    padding: 1px 7px;
-    border-radius: 999px;
-    background: var(--surface-muted);
-    color: var(--muted);
-    font-size: 10.5px;
-    font-weight: 600;
 }
 
 /* RAW choice pill in the gallery header: clickable to change it. */
@@ -2252,4 +2042,224 @@ input[type="radio"]:focus-visible {
     background: #ffffff;
     color: var(--pine);
     transform: none;
+}
+
+/* Review: everything a sync would do, chosen row by row. */
+
+.review {
+    display: flex;
+    flex-direction: column;
+    gap: 16px;
+    max-width: 980px;
+    padding-bottom: 12px;
+}
+
+.review-head h2 {
+    font-size: 20px;
+}
+
+.review-groups {
+    display: flex;
+    flex-direction: column;
+    gap: 14px;
+}
+
+.review-group {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    padding: 14px 16px;
+    border: 1px solid var(--line);
+    border-radius: var(--radius-md);
+    background: #ffffff;
+    box-shadow: var(--shadow-sm);
+}
+
+/* Groups that can lose data get a warm edge. */
+.review-group.warn {
+    border-color: var(--update-border);
+}
+
+.review-group.notes {
+    background: rgba(255, 255, 255, 0.6);
+}
+
+.review-group-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+}
+
+.review-group-head h3 {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-size: 14.5px;
+    color: var(--graphite);
+}
+
+.review-count {
+    padding: 1px 8px;
+    border-radius: 999px;
+    background: var(--surface-muted);
+    color: var(--pine);
+    font-size: 11px;
+}
+
+.review-rows {
+    display: flex;
+    flex-direction: column;
+}
+
+.review-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 14px;
+    padding: 7px 0;
+    border-top: 1px solid rgba(49, 109, 97, 0.08);
+}
+
+.review-rows .review-row:first-child {
+    border-top: 0;
+}
+
+.review-row-text {
+    display: flex;
+    flex-direction: column;
+    gap: 1px;
+    min-width: 0;
+}
+
+.review-row-name {
+    overflow: hidden;
+    color: var(--graphite);
+    font-size: 13px;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.review-row-meta {
+    color: var(--muted);
+    font-size: 11px;
+}
+
+/* Rows left for later fade; destructive choices stand out. */
+.review-row.choice-later .review-row-name,
+.review-row.choice-ignore .review-row-name {
+    color: var(--muted);
+}
+
+.review-row.choice-ignore .review-row-name {
+    text-decoration: line-through;
+}
+
+.review-row.choice-trash .review-select,
+.review-row.choice-trash_raw .review-select,
+.review-row.choice-delete .review-select {
+    border-color: var(--update-border);
+    color: var(--update-text);
+}
+
+.review-select {
+    flex: 0 0 auto;
+    max-width: 220px;
+    height: 30px;
+    padding: 0 8px;
+    border: 1px solid var(--line);
+    border-radius: 8px;
+    background: rgba(255, 255, 255, 0.9);
+    color: var(--graphite);
+    font-family: inherit;
+    font-size: 12px;
+    font-weight: 600;
+}
+
+.review-select:focus-visible,
+.mass-delete-input:focus-visible {
+    outline: 3px solid rgba(49, 109, 97, 0.28);
+    outline-offset: 1px;
+}
+
+.review-all {
+    color: var(--muted);
+}
+
+.review-note {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 8px;
+    margin: 0;
+    padding: 9px 11px;
+    border-radius: 8px;
+    background: var(--surface-muted);
+}
+
+.raw-choice {
+    font-size: 13px;
+    font-weight: 600;
+}
+
+.review-note .hint {
+    flex-basis: 100%;
+    margin: 0;
+}
+
+.review-note-line {
+    color: var(--graphite);
+    font-size: 12px;
+    line-height: 1.5;
+}
+
+.mass-delete {
+    background: var(--update-bg);
+    color: var(--update-text);
+    font-size: 12.5px;
+}
+
+.mass-delete p {
+    flex-basis: 100%;
+    line-height: 1.45;
+}
+
+.mass-delete-input {
+    width: 120px;
+    height: 32px;
+    padding: 0 10px;
+    border: 1px solid var(--update-border);
+    border-radius: 8px;
+    font-family: inherit;
+}
+
+.review-check {
+    display: flex;
+    align-items: center;
+    gap: 9px;
+    font-size: 13px;
+    cursor: pointer;
+}
+
+.review-check input {
+    accent-color: var(--pine);
+}
+
+/* Apply / Discard stay in view at the bottom of the gallery pane. */
+.review-bar {
+    flex: 0 0 auto;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 16px;
+    padding: 10px 26px;
+    border-top: 1px solid var(--line);
+    background: #ffffff;
+    box-shadow: 0 -8px 24px rgba(50, 47, 48, 0.06);
+}
+
+.review-summary {
+    color: var(--muted);
+    font-size: 12.5px;
+    font-weight: 600;
 }

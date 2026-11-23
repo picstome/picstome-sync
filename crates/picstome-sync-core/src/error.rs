@@ -23,6 +23,10 @@ pub enum CoreError {
         actual: String,
         size: u64,
     },
+    /// The state changed after a review was computed (another sync ran, or
+    /// the review was discarded); the photographer must review again.
+    #[error("{0}")]
+    Outdated(String),
     #[error("{0}")]
     Other(String),
 }
@@ -36,6 +40,7 @@ impl CoreError {
             CoreError::Api { code, .. } => code,
             CoreError::HashMismatch(_) => "hash_mismatch",
             CoreError::HashMismatchDetail { .. } => "hash_mismatch",
+            CoreError::Outdated(_) => "plan_outdated",
             CoreError::Other(_) => "error",
         }
     }

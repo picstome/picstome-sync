@@ -8,10 +8,10 @@ use picstome_sync_core::ignored::{GalleryIgnores, IgnoredLocal, IgnoredRemote};
 use picstome_sync_core::localfiles::hash_file;
 use picstome_sync_core::mock::{start_mock_server, MockServerOptions};
 use picstome_sync_core::model::{GalleryEntry, Snapshot, SnapshotFile, SNAPSHOT_SCHEMA};
+use picstome_sync_core::plan::{apply_sync, plan_sync, PlanSelection};
 use picstome_sync_core::sync::{
-    apply_remote_deletions, mark_favorites_rated, mark_ratings_applied, preview_first_sync,
-    rating_plan_from_snapshot, resolve_remote_deletions, run_gallery_sync, FirstSyncItem,
-    RemoteDeleteAction, SyncOptions,
+    apply_remote_deletions, mark_favorites_rated, mark_ratings_applied, rating_plan_from_snapshot,
+    resolve_remote_deletions, run_gallery_sync, RemoteDeleteAction, SyncOptions,
 };
 use picstome_sync_core::transfer::{download_file, DownloadOptions};
 
@@ -871,7 +871,7 @@ async fn legacy_favourite_uses_the_chosen_stars_from_the_snapshot() {
 }
 
 #[tokio::test]
-async fn first_sync_preview_lists_both_sides() {
+async fn first_sync_plan_lists_both_sides_and_moves_nothing() {
     let (mock, api, _dir, store, gallery) = setup_sync().await;
     let manifest = api.manifest("G123").await.unwrap();
     for photo in manifest.photos.iter().take(2) {
@@ -884,17 +884,19 @@ async fn first_sync_preview_lists_both_sides() {
     )
     .unwrap();
 
-    let preview = preview_first_sync(&api, &store, &gallery, None)
+    let planned = plan_sync(&api, &store, &gallery, &SyncOptions::default(), silence())
         .await
         .unwrap();
-    assert!(preview.needed);
-    assert_eq!(preview.local_total, 3);
-    assert_eq!(preview.remote_total, 50);
-    assert_eq!(preview.in_sync, 2);
-    assert_eq!(preview.local_only.len(), 1);
-    assert_eq!(preview.local_only[0].filename, "LOCAL_ONLY.jpg");
-    assert_eq!(preview.remote_only.len(), 48);
+    let plan = &planned.plan;
+    assert!(plan.first_sync);
+    assert_eq!(plan.remote_total, 50);
+    assert_eq!(plan.uploads.len(), 1);
+    assert_eq!(plan.uploads[0].filename, "LOCAL_ONLY.jpg");
+    assert_eq!(plan.downloads.len(), 48);
+    // A review changes nothing: no snapshot, no download, no upload.
     assert!(store.load_snapshot("G123").is_none());
+    assert_eq!(std::fs::read_dir(&gallery.local_path).unwrap().count(), 3);
+    assert_eq!(api.manifest("G123").await.unwrap().photos.len(), 50);
     mock.close().await;
 }
 
@@ -1011,29 +1013,14 @@ async fn ignored_remote_photo_is_not_downloaded_until_it_changes() {
 async fn first_sync_can_trash_local_only_files() {
     let (mock, api, _dir, store, gallery) = setup_sync().await;
     let path = std::path::Path::new(&gallery.local_path).join("TRASH_ME.jpg");
-    let bytes = jpeg_bytes(640, 6);
-    std::fs::write(&path, &bytes).unwrap();
-    let metadata = std::fs::metadata(&path).unwrap();
-    let mtime_ms = metadata
-        .modified()
-        .unwrap()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap()
-        .as_millis() as i64;
+    std::fs::write(&path, jpeg_bytes(640, 6)).unwrap();
 
     let report = run_gallery_sync(
         &api,
         &store,
         &gallery,
         SyncOptions {
-            trash_local: vec![FirstSyncItem {
-                filename: "TRASH_ME.jpg".into(),
-                relative_path: "TRASH_ME.jpg".into(),
-                size: bytes.len() as u64,
-                mtime_ms,
-                id: None,
-                version_count: None,
-            }],
+            trash_local: vec!["TRASH_ME.jpg".into()],
             ..Default::default()
         },
         silence(),
@@ -1061,23 +1048,13 @@ async fn first_sync_trashes_every_local_representation() {
     dng_bytes.resize(640, 0);
     std::fs::write(&dng, &dng_bytes).unwrap();
 
-    let preview = preview_first_sync(&api, &store, &gallery, None)
-        .await
-        .unwrap();
-    let names: Vec<&str> = preview
-        .local_only
-        .iter()
-        .map(|item| item.filename.as_str())
-        .collect();
-    assert!(names.contains(&"PAIR.JPG"), "{names:?}");
-    assert!(names.contains(&"PAIR.DNG"), "{names:?}");
-
+    // Trashing the photo takes every file of it (JPEG and RAW) to the trash.
     let report = run_gallery_sync(
         &api,
         &store,
         &gallery,
         SyncOptions {
-            trash_local: preview.local_only,
+            trash_local: vec!["PAIR.JPG".into()],
             ..Default::default()
         },
         silence(),
@@ -1500,7 +1477,7 @@ async fn jpeg_and_raw_uploads_the_raw_first_so_clients_see_the_jpeg() {
 }
 
 #[tokio::test]
-async fn first_sync_preview_counts_photos_with_raw() {
+async fn plan_asks_for_the_raw_choice_and_keeps_raw_only_photos_local() {
     let (mock, api, _dir, store, gallery) = setup_sync().await;
     let root = std::path::Path::new(&gallery.local_path);
     std::fs::write(root.join("ONLY_RAW.CR3"), raw_bytes(3)).unwrap();
@@ -1508,22 +1485,298 @@ async fn first_sync_preview_counts_photos_with_raw() {
     std::fs::write(root.join("PAIR.NEF"), raw_bytes(2)).unwrap();
     std::fs::write(root.join("LOCAL.jpg"), jpeg_bytes(600, 9)).unwrap();
 
-    let ask = preview_first_sync(&api, &store, &gallery, None)
+    let ask = plan_sync(&api, &store, &gallery, &sync_with(None), silence())
         .await
         .unwrap();
-    assert_eq!(ask.raw_photos, 2);
-    assert_eq!(ask.local_only.len(), 4);
-
-    let jpeg_only = preview_first_sync(&api, &store, &gallery, Some(RawMode::JpegOnly))
-        .await
-        .unwrap();
-    let names: Vec<&str> = jpeg_only
-        .local_only
+    assert_eq!(ask.plan.raw_decision_needed, 2);
+    let names: Vec<&str> = ask
+        .plan
+        .uploads
         .iter()
         .map(|item| item.filename.as_str())
         .collect();
-    assert!(!names.contains(&"ONLY_RAW.CR3"), "{names:?}");
-    assert_eq!(jpeg_only.raw_only_local, 1);
+    assert_eq!(names, vec!["LOCAL.jpg"]);
+
+    let jpeg_only = plan_sync(
+        &api,
+        &store,
+        &gallery,
+        &sync_with(Some(RawMode::JpegOnly)),
+        silence(),
+    )
+    .await
+    .unwrap();
+    assert_eq!(
+        jpeg_only.plan.raw_kept_local,
+        vec!["ONLY_RAW.CR3".to_string()]
+    );
+    let mut names: Vec<&str> = jpeg_only
+        .plan
+        .uploads
+        .iter()
+        .map(|item| item.filename.as_str())
+        .collect();
+    names.sort();
+    assert_eq!(names, vec!["LOCAL.jpg", "PAIR.jpg"]);
+
+    let both = plan_sync(
+        &api,
+        &store,
+        &gallery,
+        &sync_with(Some(RawMode::JpegAndRaw)),
+        silence(),
+    )
+    .await
+    .unwrap();
+    let pair = both
+        .plan
+        .uploads
+        .iter()
+        .find(|item| item.filename == "PAIR.jpg")
+        .unwrap();
+    assert_eq!(pair.raw_first, vec!["PAIR.NEF".to_string()]);
+    mock.close().await;
+}
+
+/// Review, then apply only part of it: nothing outside the selection moves.
+#[tokio::test]
+async fn apply_runs_only_the_ticked_actions() {
+    let (mock, api, _dir, store, gallery) = setup_sync().await;
+    run_gallery_sync(&api, &store, &gallery, SyncOptions::default(), silence())
+        .await
+        .unwrap();
+    let root = std::path::Path::new(&gallery.local_path);
+    std::fs::write(root.join("UP_A.jpg"), jpeg_bytes(500, 1)).unwrap();
+    std::fs::write(root.join("UP_B.jpg"), jpeg_bytes(500, 2)).unwrap();
+    for name in ["DOWN_A.jpg", "DOWN_B.jpg"] {
+        reqwest::Client::new()
+            .post(format!("{}/api/v1/dev/add", mock.url))
+            .bearer_auth(&mock.token)
+            .json(&serde_json::json!({"gallery_id": "G123", "filename": name}))
+            .send()
+            .await
+            .unwrap();
+    }
+
+    let planned = plan_sync(&api, &store, &gallery, &SyncOptions::default(), silence())
+        .await
+        .unwrap();
+    assert_eq!(planned.plan.uploads.len(), 2);
+    assert_eq!(planned.plan.downloads.len(), 2);
+    let down_a = planned
+        .plan
+        .downloads
+        .iter()
+        .find(|item| item.filename == "DOWN_A.jpg")
+        .unwrap()
+        .id
+        .clone();
+    let selection = PlanSelection {
+        uploads: vec!["UP_A.jpg".into()],
+        downloads: vec![down_a],
+        ..Default::default()
+    };
+    let report = apply_sync(
+        &api,
+        &store,
+        planned,
+        &selection,
+        &SyncOptions::default(),
+        silence(),
+    )
+    .await
+    .unwrap();
+    assert!(report.errors.is_empty(), "{:?}", report.errors);
+    assert_eq!(report.uploaded.len(), 1);
+    assert_eq!(report.downloaded.len(), 1);
+    assert!(root.join("DOWN_A.jpg").exists());
+    assert!(!root.join("DOWN_B.jpg").exists());
+    let names: Vec<String> = api
+        .manifest("G123")
+        .await
+        .unwrap()
+        .photos
+        .into_iter()
+        .map(|p| p.filename)
+        .collect();
+    assert!(names.contains(&"UP_A.jpg".to_string()));
+    assert!(!names.contains(&"UP_B.jpg".to_string()));
+
+    // What was not ticked is proposed again by the next review.
+    let next = plan_sync(&api, &store, &gallery, &SyncOptions::default(), silence())
+        .await
+        .unwrap();
+    let up: Vec<&str> = next
+        .plan
+        .uploads
+        .iter()
+        .map(|item| item.filename.as_str())
+        .collect();
+    let down: Vec<&str> = next
+        .plan
+        .downloads
+        .iter()
+        .map(|item| item.filename.as_str())
+        .collect();
+    assert_eq!(up, vec!["UP_B.jpg"]);
+    assert_eq!(down, vec!["DOWN_B.jpg"]);
+    mock.close().await;
+}
+
+/// A file edited between the review and Apply is left alone and reported.
+#[tokio::test]
+async fn apply_skips_files_changed_after_the_review() {
+    let (mock, api, _dir, store, gallery) = setup_sync().await;
+    run_gallery_sync(&api, &store, &gallery, SyncOptions::default(), silence())
+        .await
+        .unwrap();
+    let root = std::path::Path::new(&gallery.local_path);
+    let path = root.join("EDITED.jpg");
+    std::fs::write(&path, jpeg_bytes(500, 1)).unwrap();
+
+    let planned = plan_sync(&api, &store, &gallery, &SyncOptions::default(), silence())
+        .await
+        .unwrap();
+    let selection = PlanSelection::transfers(&planned.plan);
+    std::thread::sleep(std::time::Duration::from_millis(20));
+    std::fs::write(&path, jpeg_bytes(777, 9)).unwrap();
+
+    let report = apply_sync(
+        &api,
+        &store,
+        planned,
+        &selection,
+        &SyncOptions::default(),
+        silence(),
+    )
+    .await
+    .unwrap();
+    assert!(report.uploaded.is_empty(), "{:?}", report.uploaded);
+    assert_eq!(report.skipped_changed, vec!["EDITED.jpg".to_string()]);
+    assert_eq!(api.manifest("G123").await.unwrap().photos.len(), 50);
+    mock.close().await;
+}
+
+/// Deleting a large share of the gallery in Picstome needs the count typed
+/// back; local deletions left undecided are proposed again, never
+/// re-downloaded behind the photographer's back.
+#[tokio::test]
+async fn mass_delete_needs_confirmation_and_undecided_deletions_stay_proposed() {
+    let (mock, api, _dir, store, gallery) = setup_sync().await;
+    run_gallery_sync(&api, &store, &gallery, SyncOptions::default(), silence())
+        .await
+        .unwrap();
+    let mut files: Vec<_> = std::fs::read_dir(&gallery.local_path)
+        .unwrap()
+        .filter_map(Result::ok)
+        .map(|entry| entry.path())
+        .collect();
+    files.sort();
+    for file in files.iter().take(20) {
+        std::fs::remove_file(file).unwrap();
+    }
+
+    let planned = plan_sync(&api, &store, &gallery, &SyncOptions::default(), silence())
+        .await
+        .unwrap();
+    assert_eq!(planned.plan.local_deleted.len(), 20);
+    assert!(planned.plan.mass_delete);
+    assert!(
+        planned.plan.downloads.is_empty(),
+        "deleted photos are not re-downloaded"
+    );
+    let ids: Vec<String> = planned
+        .plan
+        .local_deleted
+        .iter()
+        .map(|item| item.id.clone())
+        .collect();
+    let refused = apply_sync(
+        &api,
+        &store,
+        planned,
+        &PlanSelection {
+            delete_remote: ids.clone(),
+            ..Default::default()
+        },
+        &SyncOptions::default(),
+        silence(),
+    )
+    .await;
+    assert!(refused.is_err());
+    assert_eq!(api.manifest("G123").await.unwrap().photos.len(), 50);
+
+    // Undecided: applying nothing keeps them proposed.
+    let planned = plan_sync(&api, &store, &gallery, &SyncOptions::default(), silence())
+        .await
+        .unwrap();
+    apply_sync(
+        &api,
+        &store,
+        planned,
+        &PlanSelection::default(),
+        &SyncOptions::default(),
+        silence(),
+    )
+    .await
+    .unwrap();
+    let planned = plan_sync(&api, &store, &gallery, &SyncOptions::default(), silence())
+        .await
+        .unwrap();
+    assert_eq!(planned.plan.local_deleted.len(), 20);
+    assert!(planned.plan.downloads.is_empty());
+
+    let report = apply_sync(
+        &api,
+        &store,
+        planned,
+        &PlanSelection {
+            delete_remote: ids,
+            confirm_mass_delete: Some(20),
+            ..Default::default()
+        },
+        &SyncOptions::default(),
+        silence(),
+    )
+    .await
+    .unwrap();
+    assert_eq!(report.deleted_remote.len(), 20, "{:?}", report.errors);
+    assert_eq!(api.manifest("G123").await.unwrap().photos.len(), 30);
+    mock.close().await;
+}
+
+/// An outdated review (another apply happened since) is refused.
+#[tokio::test]
+async fn apply_refuses_an_outdated_review() {
+    let (mock, api, _dir, store, gallery) = setup_sync().await;
+    let first = plan_sync(&api, &store, &gallery, &SyncOptions::default(), silence())
+        .await
+        .unwrap();
+    let second = plan_sync(&api, &store, &gallery, &SyncOptions::default(), silence())
+        .await
+        .unwrap();
+    let selection = PlanSelection::transfers(&first.plan);
+    apply_sync(
+        &api,
+        &store,
+        first,
+        &selection,
+        &SyncOptions::default(),
+        silence(),
+    )
+    .await
+    .unwrap();
+    let error = apply_sync(
+        &api,
+        &store,
+        second,
+        &PlanSelection::default(),
+        &SyncOptions::default(),
+        silence(),
+    )
+    .await
+    .expect_err("outdated");
+    assert_eq!(error.code(), "plan_outdated");
     mock.close().await;
 }
 

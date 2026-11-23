@@ -13,19 +13,17 @@ use picstome_sync_core::atomic::write_bytes;
 use picstome_sync_core::config::Store;
 use picstome_sync_core::covers::CoverCache;
 use picstome_sync_core::error::ErrorPayload;
-use picstome_sync_core::ignored::{GalleryIgnores, IgnoredLocal, IgnoredRemote};
+use picstome_sync_core::ignored::GalleryIgnores;
 use picstome_sync_core::mock::MockServer;
 use picstome_sync_core::model::{
-    AppState as AppStateView, AuthState, ConfigView, DeleteResponse, FavoritePhoto, GalleryEntry,
-    GalleryPage, GallerySummary, GalleryView, Progress, RawMode, SyncReport, DEFAULT_API_BASE,
+    AppState as AppStateView, AuthState, ConfigView, FavoritePhoto, GalleryEntry, GalleryPage,
+    GallerySummary, GalleryView, Progress, RawMode, SyncReport, DEFAULT_API_BASE,
 };
-use picstome_sync_core::sanitize::{safe_join, sanitize_file_names, sanitize_gallery_id};
+use picstome_sync_core::plan::{apply_sync, plan_sync, PlanSelection, PlannedSync, SyncPlan};
+use picstome_sync_core::sanitize::{sanitize_file_names, sanitize_gallery_id};
 use picstome_sync_core::sync::{
-    adopt_local_changes, apply_remote_deletions, folder_exists, mark_favorites_rated,
-    mark_ratings_applied, preview_first_sync as preview_first_sync_core,
-    preview_first_sync_prepared, rating_plan_from_snapshot,
-    resolve_remote_deletions as resolve_remote_deletions_core, run_gallery_sync, FirstSyncItem,
-    FirstSyncPreview, RemoteDeleteAction, SyncOptions,
+    adopt_local_changes, folder_exists, mark_favorites_rated, mark_ratings_applied,
+    rating_plan_from_snapshot, SyncOptions,
 };
 use picstome_sync_core::ApiClient;
 
@@ -51,6 +49,9 @@ pub struct AppState {
     /// Two of them interleaving, e.g. a sync started from a deep link while
     /// another one runs, would overwrite each other's snapshot.
     gallery_ops: tokio::sync::Mutex<()>,
+    /// Reviews waiting for Apply, one per gallery. Applying or discarding
+    /// removes it; a new review replaces it.
+    reviews: std::sync::Mutex<std::collections::HashMap<String, PlannedSync>>,
     pub _mock_server: std::sync::Mutex<Option<MockServer>>,
 }
 
@@ -83,6 +84,7 @@ impl AppState {
             last_link: std::sync::Mutex::new(None),
             frontend_ready: AtomicBool::new(false),
             gallery_ops: tokio::sync::Mutex::new(()),
+            reviews: std::sync::Mutex::new(std::collections::HashMap::new()),
             _mock_server: std::sync::Mutex::new(mock_server),
         }
     }
@@ -422,6 +424,11 @@ fn append_sync_log(store: &Store, report: &SyncReport) {
         "ignoredRemote": report.ignored_remote,
         "timings": report.timings,
         "scanStats": report.scan_stats,
+        "planId": report.plan_id,
+        "deletedRemote": report.deleted_remote,
+        "remoteDeletedResolved": report.remote_deleted_resolved,
+        "skippedChanged": report.skipped_changed,
+        "uploadedRaw": report.uploaded_raw.iter().map(|item| item.filename.clone()).collect::<Vec<_>>(),
         "trashedLocal": report.trashed_local.iter().map(|item| json!({
             "filename": item.filename,
             "location": item.location,
@@ -442,28 +449,6 @@ fn append_sync_error_log(store: &Store, gallery_id: &str, message: &str) {
 }
 
 #[allow(clippy::too_many_arguments)]
-fn append_deletion_log(
-    store: &Store,
-    gallery_id: &str,
-    action: &str,
-    files: Vec<Value>,
-    resolved: usize,
-    trashed: Vec<Value>,
-    errors: Vec<String>,
-) {
-    let entry = json!({
-        "kind": "deletion",
-        "at": now_millis(),
-        "galleryId": gallery_id,
-        "action": action,
-        "resolved": resolved,
-        "files": files,
-        "trashed": trashed,
-        "errors": errors,
-    });
-    append_log_line(gallery_log_path(store, gallery_id), entry);
-}
-
 fn read_log_entries(path: &std::path::Path, max_lines: usize) -> Vec<serde_json::Value> {
     let Ok(text) = std::fs::read_to_string(path) else {
         return Vec::new();
@@ -528,50 +513,50 @@ pub fn migrate_legacy_log(store: &Store) {
     let _ = std::fs::remove_file(legacy);
 }
 
-/// Run a sync for a linked gallery, log the outcome and broadcast the new
-/// state. Taking the [`GalleryOpsGuard`] makes it impossible to start a sync
-/// without holding the gallery operation lock.
-async fn sync_linked(
+/// Review a linked gallery: scan, compare and keep the plan until the
+/// photographer applies or discards it. Taking the [`GalleryOpsGuard`] keeps
+/// a review from running while another gallery operation writes state.
+async fn review_linked(
     app: &AppHandle,
     state: &AppState,
     _ops: &GalleryOpsGuard<'_>,
-    gallery_id: &str,
-    mut options: SyncOptions,
-) -> Result<SyncReport, ErrorPayload> {
-    let Some(id) = sanitize_gallery_id(gallery_id) else {
-        return Err(invalid_gallery());
-    };
-    let Some(gallery) = state.store.get_gallery(&id) else {
+    id: &str,
+) -> Result<SyncPlan, ErrorPayload> {
+    let Some(gallery) = state.store.get_gallery(id) else {
         return Err(not_linked());
     };
-    // The gallery's RAW choice is read here, once, so every way of starting
-    // a sync (button, deep link, first-sync choice) honours it.
-    options.raw_mode = gallery.raw_mode;
     if !folder_exists(&gallery.local_path) {
-        append_sync_error_log(&state.store, &id, "Folder not found");
+        append_sync_error_log(&state.store, id, "Folder not found");
         return Err(folder_missing());
     }
-
     show_main(app);
     let api = state.api().await;
-    let report = match run_gallery_sync(
+    let options = SyncOptions {
+        raw_mode: gallery.raw_mode,
+        ..Default::default()
+    };
+    let planned = match plan_sync(
         &api,
         &state.store,
         &gallery,
-        options,
+        &options,
         progress_emitter(app.clone()),
     )
     .await
     {
-        Ok(report) => report,
+        Ok(planned) => planned,
         Err(error) => {
-            append_sync_error_log(&state.store, &id, &error.to_string());
+            append_sync_error_log(&state.store, id, &error.to_string());
             return Err(error.into());
         }
     };
-    append_sync_log(&state.store, &report);
-    emit_state(app, state).await;
-    Ok(report)
+    let plan = planned.plan.clone();
+    state
+        .reviews
+        .lock()
+        .unwrap()
+        .insert(id.to_string(), planned);
+    Ok(plan)
 }
 
 async fn patch_linked_folder(
@@ -816,22 +801,18 @@ pub async fn get_gallery_favorites(
     Ok(manifest.favorite_photos())
 }
 
-/// Write Picstome ratings to the local files.
+/// Write the Picstome ratings of a gallery into its local files.
 ///
 /// `favourites_without_rating` is the star value chosen for favourites that
-/// have a heart but no rating; it is applied to every one of them. The sync
-/// never writes anything on its own: the UI asks first and then calls this.
-#[tauri::command]
-pub async fn apply_rating_plan(
-    app: AppHandle,
-    state: State<'_, AppState>,
-    gallery_id: String,
+/// have a heart but no rating; it applies to all of them. Runs as part of
+/// Apply, after the downloads, so new photos get their stars too.
+async fn write_ratings(
+    state: &AppState,
+    _ops: &GalleryOpsGuard<'_>,
+    id: &str,
     favourites_without_rating: Option<u8>,
 ) -> Result<RateResult, ErrorPayload> {
-    let Some(id) = sanitize_gallery_id(&gallery_id) else {
-        return Err(invalid_gallery());
-    };
-    let _ops = state.gallery_ops().await;
+    let id = id.to_string();
     let Some(gallery) = state.store.get_gallery(&id) else {
         return Err(not_linked());
     };
@@ -928,7 +909,6 @@ pub async fn apply_rating_plan(
         _ => "mixed".to_string(),
     };
     append_rating_log(&state.store, Some(&id), &log_rating, &result, "picstome");
-    emit_state(&app, &state).await;
     Ok(result)
 }
 
@@ -936,9 +916,8 @@ pub async fn apply_rating_plan(
 #[serde(rename_all = "camelCase")]
 pub struct StartSyncResult {
     pub canceled: bool,
-    pub report: Option<SyncReport>,
     #[serde(default)]
-    pub preview: Option<FirstSyncPreview>,
+    pub plan: Option<SyncPlan>,
 }
 
 fn progress_emitter(app: AppHandle) -> Arc<dyn Fn(Progress) + Send + Sync> {
@@ -963,8 +942,7 @@ pub async fn start_sync(
         let Some(folder) = pick_folder(&app).await else {
             return Ok(StartSyncResult {
                 canceled: true,
-                report: None,
-                preview: None,
+                plan: None,
             });
         };
         let Some(_) = state.store.upsert_gallery(GalleryEntry {
@@ -979,138 +957,121 @@ pub async fn start_sync(
         else {
             return Err(invalid_gallery());
         };
-    }
-
-    let Some(gallery) = state.store.get_gallery(&id) else {
-        return Err(invalid_gallery());
-    };
-    let api = state.api().await;
-    let raw_mode = gallery.raw_mode;
-    let progress = progress_emitter(app.clone());
-    let gallery_for_scan = id.clone();
-    let (preview, prepared_scan) = preview_first_sync_prepared(
-        &api,
-        &state.store,
-        &gallery,
-        raw_mode,
-        move |seen, matched| {
-            progress(Progress {
-                gallery_id: gallery_for_scan.clone(),
-                phase: "scan".into(),
-                done: matched,
-                total: 0,
-                file_done: Some(seen),
-                ..Default::default()
-            })
-        },
-    )
-    .await?;
-    if preview.needed {
-        return Ok(StartSyncResult {
-            canceled: false,
-            report: None,
-            preview: Some(preview),
-        });
+        emit_state(&app, &state).await;
     }
 
     Ok(StartSyncResult {
         canceled: false,
-        report: Some(
-            sync_linked(
-                &app,
-                &state,
-                &ops,
-                &id,
-                SyncOptions {
-                    prepared_scan,
-                    ..Default::default()
-                },
-            )
-            .await?,
-        ),
-        preview: None,
+        plan: Some(review_linked(&app, &state, &ops, &id).await?),
     })
 }
 
+/// Review a gallery: work out every change without applying any.
 #[tauri::command]
-pub async fn preview_first_sync(
-    state: State<'_, AppState>,
-    gallery_id: String,
-) -> Result<FirstSyncPreview, ErrorPayload> {
-    let Some(id) = sanitize_gallery_id(&gallery_id) else {
-        return Err(invalid_gallery());
-    };
-    let Some(gallery) = state.store.get_gallery(&id) else {
-        return Err(not_linked());
-    };
-    let api = state.api().await;
-    Ok(preview_first_sync_core(&api, &state.store, &gallery, gallery.raw_mode).await?)
-}
-
-#[tauri::command]
-pub async fn sync_gallery(
+pub async fn review_gallery(
     app: AppHandle,
     state: State<'_, AppState>,
     gallery_id: String,
-    ignore_local: Option<Vec<FirstSyncItem>>,
-    ignore_remote: Option<Vec<FirstSyncItem>>,
-    trash_local: Option<Vec<FirstSyncItem>>,
-    raw_mode: Option<String>,
-) -> Result<SyncReport, ErrorPayload> {
+) -> Result<SyncPlan, ErrorPayload> {
     let Some(id) = sanitize_gallery_id(&gallery_id) else {
         return Err(invalid_gallery());
     };
     let ops = state.try_gallery_ops()?;
-    // An answer given in the first-sync dialog (or right after a sync that
-    // asked) is stored before syncing, so this sync already uses it.
-    if let Some(mode) = raw_mode.as_deref() {
-        let mode = parse_raw_mode(mode)?;
-        state
-            .store
-            .patch_gallery(&id, |entry| entry.raw_mode = Some(mode))?;
-    }
-    if ignore_local.is_some() || ignore_remote.is_some() {
-        let Some(gallery) = state.store.get_gallery(&id) else {
-            return Err(not_linked());
-        };
-        let root = Path::new(&gallery.local_path);
-        let mut ignores = GalleryIgnores::load(root);
-        if let Some(items) = ignore_local {
-            for item in items {
-                if safe_join(root, &item.relative_path).is_none() {
-                    continue;
-                }
-                let entry = IgnoredLocal {
-                    relative_path: item.relative_path,
-                    size: item.size,
-                    mtime_ms: item.mtime_ms,
-                };
-                if !ignores.local.contains(&entry) {
-                    ignores.local.push(entry);
-                }
-            }
-        }
-        if let Some(items) = ignore_remote {
-            for item in items {
-                let Some(remote_id) = item.id else {
-                    continue;
-                };
-                let entry = IgnoredRemote {
-                    id: remote_id,
-                    version_count: item.version_count,
-                };
-                if !ignores.remote.contains(&entry) {
-                    ignores.remote.push(entry);
-                }
-            }
-        }
-        ignores.save(root)?;
-    }
-    let options = SyncOptions {
-        trash_local: trash_local.unwrap_or_default(),
-        ..Default::default()
+    review_linked(&app, &state, &ops, &id).await
+}
+
+/// Forget a pending review without applying anything.
+#[tauri::command]
+pub fn discard_review(state: State<'_, AppState>, gallery_id: String) -> bool {
+    state.reviews.lock().unwrap().remove(&gallery_id).is_some()
+}
+
+/// Ratings part of an Apply.
+#[derive(Debug, Default, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct RatingSelection {
+    /// Write Picstome's stars into the local files.
+    pub apply: bool,
+    /// Stars for favourites that have a heart but no rating (1-5).
+    pub favourites_stars: Option<u8>,
+}
+
+/// What an Apply did: the sync report and, if requested, the ratings.
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ApplyResult {
+    pub report: SyncReport,
+    #[serde(default)]
+    pub ratings: Option<RateResult>,
+}
+
+/// Apply the ticked actions of the pending review.
+#[tauri::command]
+pub async fn apply_review(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    gallery_id: String,
+    plan_id: String,
+    selection: PlanSelection,
+    ratings: Option<RatingSelection>,
+) -> Result<ApplyResult, ErrorPayload> {
+    let Some(id) = sanitize_gallery_id(&gallery_id) else {
+        return Err(invalid_gallery());
     };
-    sync_linked(&app, &state, &ops, &id, options).await
+    let ops = state.try_gallery_ops()?;
+    let planned = {
+        let mut reviews = state.reviews.lock().unwrap();
+        match reviews.remove(&id) {
+            Some(planned) if planned.id() == plan_id => planned,
+            Some(other) => {
+                reviews.insert(id.clone(), other);
+                return Err(command_error(
+                    "This review is out of date; review the changes again",
+                    "plan_outdated",
+                ));
+            }
+            None => {
+                return Err(command_error(
+                    "This review is out of date; review the changes again",
+                    "plan_outdated",
+                ))
+            }
+        }
+    };
+    let api = state.api().await;
+    let report = match apply_sync(
+        &api,
+        &state.store,
+        planned,
+        &selection,
+        &SyncOptions::default(),
+        progress_emitter(app.clone()),
+    )
+    .await
+    {
+        Ok(report) => report,
+        Err(error) => {
+            append_sync_error_log(&state.store, &id, &error.to_string());
+            return Err(error.into());
+        }
+    };
+    append_sync_log(&state.store, &report);
+    let ratings = match ratings {
+        Some(choice) if choice.apply => Some(
+            write_ratings(
+                &state,
+                &ops,
+                &id,
+                choice
+                    .favourites_stars
+                    .filter(|stars| (1..=5).contains(stars)),
+            )
+            .await?,
+        ),
+        _ => None,
+    };
+    emit_state(&app, &state).await;
+    Ok(ApplyResult { report, ratings })
 }
 
 #[tauri::command]
@@ -1236,174 +1197,6 @@ pub fn open_folder(
         .open_path(gallery.local_path, None::<&str>)
         .map_err(|err| command_error(err.to_string(), "open_folder_failed"))?;
     Ok(json!({"ok": true}))
-}
-
-#[tauri::command]
-pub async fn resolve_remote_deletions(
-    app: AppHandle,
-    state: State<'_, AppState>,
-    gallery_id: String,
-    photo_ids: Vec<String>,
-    action: String,
-    include_companions: Option<bool>,
-) -> Result<Value, ErrorPayload> {
-    let Some(id) = sanitize_gallery_id(&gallery_id) else {
-        return Err(invalid_gallery());
-    };
-    let _ops = state.gallery_ops().await;
-    let Some(gallery) = state.store.get_gallery(&id) else {
-        return Err(not_linked());
-    };
-    let action_name = action.clone();
-    let action = match action.as_str() {
-        "delete_local" => RemoteDeleteAction::DeleteLocal,
-        "keep_local" => RemoteDeleteAction::KeepLocal,
-        "upload" => RemoteDeleteAction::Upload,
-        _ => {
-            return Err(command_error(
-                "Unknown remote delete action",
-                "invalid_action",
-            ))
-        }
-    };
-    let api = state.api().await;
-    let snapshot = state.store.load_snapshot(&id);
-    let now = now_millis();
-    let files: Vec<Value> = photo_ids
-        .iter()
-        .map(|photo_id| {
-            let file = snapshot
-                .as_ref()
-                .and_then(|snapshot| snapshot.files.iter().find(|file| &file.id == photo_id));
-            json!({
-                "id": photo_id,
-                "filename": file.map(|file| file.filename.clone()).unwrap_or_default(),
-                "path": file.and_then(|file| file.relative_path.clone()),
-            })
-        })
-        .collect();
-    let result = match resolve_remote_deletions_core(
-        &api,
-        &state.store,
-        &gallery,
-        &photo_ids,
-        action,
-        include_companions.unwrap_or(false),
-        now,
-    )
-    .await
-    {
-        Ok(result) => result,
-        Err(error) => {
-            append_deletion_log(
-                &state.store,
-                &id,
-                &action_name,
-                files,
-                0,
-                Vec::new(),
-                vec![error.to_string()],
-            );
-            return Err(error.into());
-        }
-    };
-    append_deletion_log(
-        &state.store,
-        &id,
-        &action_name,
-        files,
-        result.resolved.len(),
-        result
-            .trashed
-            .iter()
-            .map(|item| {
-                json!({
-                    "id": item.id,
-                    "filename": item.filename,
-                    "originalPath": item.original_path,
-                    "location": item.location,
-                    "trashPath": item.trash_path,
-                })
-            })
-            .collect(),
-        result
-            .errors
-            .iter()
-            .map(|error| error.message.clone())
-            .collect(),
-    );
-    emit_state(&app, &state).await;
-    serde_json::to_value(result).map_err(|err| command_error(err.to_string(), "invalid_data"))
-}
-
-#[tauri::command]
-pub async fn apply_deletions(
-    app: AppHandle,
-    state: State<'_, AppState>,
-    gallery_id: String,
-    photo_ids: Vec<String>,
-) -> Result<DeleteResponse, ErrorPayload> {
-    let Some(id) = sanitize_gallery_id(&gallery_id) else {
-        return Err(invalid_gallery());
-    };
-    let _ops = state.gallery_ops().await;
-    let snapshot = state.store.load_snapshot(&id);
-    let api = state.api().await;
-    let result = match apply_remote_deletions(&api, &state.store, &id, &photo_ids).await {
-        Ok(result) => result,
-        Err(error) => {
-            append_deletion_log(
-                &state.store,
-                &id,
-                "remote_delete",
-                photo_ids
-                    .iter()
-                    .map(|photo_id| json!({"id": photo_id, "status": "failed"}))
-                    .collect(),
-                0,
-                Vec::new(),
-                vec![error.to_string()],
-            );
-            return Err(error.into());
-        }
-    };
-    let deleted: std::collections::HashSet<&String> = result.deleted.iter().collect();
-    let not_found: std::collections::HashSet<&String> = result.not_found.iter().collect();
-    let files: Vec<Value> = photo_ids
-        .iter()
-        .map(|photo_id| {
-            let filename = snapshot.as_ref().and_then(|snapshot| {
-                snapshot
-                    .files
-                    .iter()
-                    .find(|file| &file.id == photo_id)
-                    .map(|file| file.filename.clone())
-            });
-            let status = if deleted.contains(photo_id) {
-                "deleted"
-            } else if not_found.contains(photo_id) {
-                "not_found"
-            } else {
-                "unknown"
-            };
-            json!({
-                "id": photo_id,
-                "filename": filename,
-                "status": status,
-            })
-        })
-        .collect();
-    append_deletion_log(
-        &state.store,
-        &id,
-        "remote_delete",
-        files,
-        result.deleted.len(),
-        Vec::new(),
-        Vec::new(),
-    );
-    emit_state(&app, &state).await;
-    Ok(result)
 }
 
 #[tauri::command]

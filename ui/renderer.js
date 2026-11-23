@@ -63,20 +63,10 @@ const state = {
         photosDir: null,
         source: "link",
         favorites: [],
-        plan: [],
         busy: false,
         result: null,
     },
-    pendingDeletes: new Set(),
     syncLog: [],
-    remoteDeleted: {
-        open: false,
-        galleryId: null,
-        items: [],
-        busy: false,
-        result: null,
-        pendingFavorites: null,
-    },
     favorites: {
         open: false,
         galleryId: null,
@@ -95,24 +85,12 @@ const state = {
         danger: true,
         resolve: null,
     },
-    firstSync: emptyFirstSync(),
+    /**
+     * Pending review of the selected gallery: the plan from the backend and
+     * the choice made for every row. `null` when there is none.
+     */
+    review: null,
 };
-
-/** Closed first-sync dialog state. */
-function emptyFirstSync() {
-    return {
-        open: false,
-        preview: null,
-        localAction: "upload",
-        download: true,
-        /** Ask "JPEG only / JPEG + RAW" in the dialog (no gallery choice yet). */
-        askRaw: false,
-        rawMode: "jpeg_only",
-        /** The gallery's stored RAW choice, when it has one. */
-        galleryRawMode: null,
-        resolve: null,
-    };
-}
 
 const els = {
     envBadge: document.getElementById("envBadge"),
@@ -152,14 +130,6 @@ const els = {
     updateStatus: document.getElementById("updateStatus"),
     btnConfirmAlt: document.getElementById("btnConfirmAlt"),
     detailRawMode: document.getElementById("detailRawMode"),
-    firstSyncRawSection: document.getElementById("firstSyncRawSection"),
-    firstSyncRawTitle: document.getElementById("firstSyncRawTitle"),
-    firstSyncRawJpeg: document.getElementById("firstSyncRawJpeg"),
-    firstSyncRawBoth: document.getElementById("firstSyncRawBoth"),
-    firstSyncRawJpegLabel: document.getElementById("firstSyncRawJpegLabel"),
-    firstSyncRawBothLabel: document.getElementById("firstSyncRawBothLabel"),
-    firstSyncRawHint: document.getElementById("firstSyncRawHint"),
-    firstSyncRawOnly: document.getElementById("firstSyncRawOnly"),
     reportRaw: document.getElementById("reportRaw"),
     btnLogout: document.getElementById("btnLogout"),
     btnInfo: document.getElementById("btnInfo"),
@@ -202,6 +172,14 @@ const els = {
     syncModalPercent: document.getElementById("syncModalPercent"),
     syncModalHint: document.getElementById("syncModalHint"),
 
+    review: document.getElementById("review"),
+    reviewTitle: document.getElementById("reviewTitle"),
+    reviewHint: document.getElementById("reviewHint"),
+    reviewGroups: document.getElementById("reviewGroups"),
+    reviewBar: document.getElementById("reviewBar"),
+    reviewSummary: document.getElementById("reviewSummary"),
+    btnReviewApply: document.getElementById("btnReviewApply"),
+    btnReviewDiscard: document.getElementById("btnReviewDiscard"),
     report: document.getElementById("report"),
     reportIcon: document.getElementById("reportIcon"),
     reportIconUse: document.getElementById("reportIconUse"),
@@ -219,12 +197,6 @@ const els = {
     syncLogCount: document.getElementById("syncLogCount"),
     syncLogEntries: document.getElementById("syncLogEntries"),
     btnClearLog: document.getElementById("btnClearLog"),
-    deleteBox: document.getElementById("deleteBox"),
-    deleteTitle: document.getElementById("deleteTitle"),
-    deleteHint: document.getElementById("deleteHint"),
-    deleteList: document.getElementById("deleteList"),
-    btnDeleteRemote: document.getElementById("btnDeleteRemote"),
-    btnCancelDelete: document.getElementById("btnCancelDelete"),
 
     infoModal: document.getElementById("infoModal"),
     infoTitle: document.getElementById("infoTitle"),
@@ -243,7 +215,6 @@ const els = {
     ratingSubtitle: document.getElementById("ratingSubtitle"),
     ratingTarget: document.getElementById("ratingTarget"),
     btnRatingFolder: document.getElementById("btnRatingFolder"),
-    ratingPlan: document.getElementById("ratingPlan"),
     ratingStars: document.getElementById("ratingStars"),
     ratingValue: document.getElementById("ratingValue"),
     ratingResult: document.getElementById("ratingResult"),
@@ -266,37 +237,7 @@ const els = {
         document.querySelectorAll("#favoritesTabs .favorites-tab"),
     ),
 
-    firstSyncModal: document.getElementById("firstSyncModal"),
-    firstSyncTitle: document.getElementById("firstSyncTitle"),
-    firstSyncHint: document.getElementById("firstSyncHint"),
-    firstSyncUploadSection: document.getElementById("firstSyncUploadSection"),
-    firstSyncUploadLabel: document.getElementById("firstSyncUploadLabel"),
-    firstSyncUploadHint: document.getElementById("firstSyncUploadHint"),
-    firstSyncUploadList: document.getElementById("firstSyncUploadList"),
-    firstSyncLocalUpload: document.getElementById("firstSyncLocalUpload"),
-    firstSyncLocalKeep: document.getElementById("firstSyncLocalKeep"),
-    firstSyncLocalTrash: document.getElementById("firstSyncLocalTrash"),
-    firstSyncLocalUploadLabel: document.getElementById("firstSyncLocalUploadLabel"),
-    firstSyncLocalKeepLabel: document.getElementById("firstSyncLocalKeepLabel"),
-    firstSyncLocalTrashLabel: document.getElementById("firstSyncLocalTrashLabel"),
-    firstSyncDownloadSection: document.getElementById("firstSyncDownloadSection"),
-    firstSyncDownload: document.getElementById("firstSyncDownload"),
-    firstSyncDownloadLabel: document.getElementById("firstSyncDownloadLabel"),
-    firstSyncDownloadHint: document.getElementById("firstSyncDownloadHint"),
-    firstSyncDownloadList: document.getElementById("firstSyncDownloadList"),
-    btnFirstSyncClose: document.getElementById("btnFirstSyncClose"),
-    btnFirstSyncConfirm: document.getElementById("btnFirstSyncConfirm"),
-    btnFirstSyncCancel: document.getElementById("btnFirstSyncCancel"),
 
-    remoteDeletedModal: document.getElementById("remoteDeletedModal"),
-    remoteDeletedTitle: document.getElementById("remoteDeletedTitle"),
-    remoteDeletedHint: document.getElementById("remoteDeletedHint"),
-    remoteDeletedList: document.getElementById("remoteDeletedList"),
-    remoteDeletedResult: document.getElementById("remoteDeletedResult"),
-    btnRemoteClose: document.getElementById("btnRemoteClose"),
-    btnRemoteDeleteLocal: document.getElementById("btnRemoteDeleteLocal"),
-    btnRemoteKeepLocal: document.getElementById("btnRemoteKeepLocal"),
-    btnRemoteUploadAgain: document.getElementById("btnRemoteUploadAgain"),
 
     confirmModal: document.getElementById("confirmModal"),
     confirmTitle: document.getElementById("confirmTitle"),
@@ -432,7 +373,7 @@ function syncErrorReport(err) {
 
 /** The header sync button: label plus a spinning icon while busy. */
 function renderSyncButton(s) {
-    setLabel(els.btnSync, state.syncBusy ? s.syncing : s.sync);
+    setLabel(els.btnSync, state.syncBusy ? s.reviewing : s.review);
     els.btnSync.classList.toggle("busy", state.syncBusy);
 }
 
@@ -520,9 +461,6 @@ function applyStrings() {
     setLabel(els.btnOpenProfile, s.myProfile);
     setLabel(els.btnCheckUpdates, s.checkUpdates);
     setLabel(els.btnInfo, s.info);
-    els.firstSyncRawJpegLabel.textContent = s.rawJpegOnly;
-    els.firstSyncRawBothLabel.textContent = s.rawJpegAndRaw;
-    els.firstSyncRawHint.textContent = s.firstSyncRawHint;
     renderSyncButton(s);
     setLabel(els.btnChangeFolder, s.changeFolder);
     els.btnChangeFolder.title = s.changeFolder;
@@ -530,9 +468,6 @@ function applyStrings() {
     els.detailPath.title = s.openFolder;
     els.btnOpenWebGallery.title = s.openGalleryInPicstome;
     els.btnOpenWebGallery.setAttribute("aria-label", s.openGalleryInPicstome);
-    els.btnDeleteRemote.textContent = s.confirmDelete;
-    els.btnCancelDelete.textContent = s.cancel;
-    els.deleteHint.textContent = s.deleteRemoteHint;
 
     els.infoTitle.textContent = s.infoTitle;
     els.infoVersionLabel.textContent = s.infoVersion;
@@ -557,13 +492,8 @@ function applyStrings() {
     els.btnRatingCancel.textContent = s.notNow;
     els.btnRatingClose.textContent = s.infoClose;
     els.btnRatingFolder.textContent = s.chooseFolder;
-    els.remoteDeletedTitle.textContent = s.remoteDeletedTitle;
     els.syncLogTitle.textContent = s.activityLog;
     els.btnClearLog.textContent = s.clearLog;
-    els.btnRemoteClose.textContent = s.infoClose;
-    els.btnRemoteDeleteLocal.textContent = s.deleteLocal;
-    els.btnRemoteKeepLocal.textContent = s.keepLocal;
-    els.btnRemoteUploadAgain.textContent = s.uploadAgain;
     els.btnConfirmCancel.textContent = s.cancel;
     for (const button of els.starButtons) {
         const n = Number(button.dataset.rating);
@@ -1157,6 +1087,7 @@ function renderHome() {
 
 /** Leave the selected gallery and show the home page. */
 function goHome() {
+    if (state.review) discardReview();
     state.currentGalleryId = null;
     state.report = null;
     renderAll();
@@ -1203,16 +1134,18 @@ function renderMain() {
     hide(els.welcome);
     hide(els.home);
     hide(els.titleLogo);
+    const reviewing = state.review?.galleryId === gallery.galleryId;
     const showIdle =
         !state.syncBusy &&
         !state.report &&
-        !state.progress;
+        !state.progress &&
+        !reviewing;
     els.idleState.classList.toggle("hidden", !showIdle);
     // A missing folder cannot be synced: the idle card offers to locate it
     // instead (keeps the sync history, unlike "Change folder").
-    els.idleTitle.textContent = gallery.exists ? s.readyToSync : s.folderMissing;
-    els.idleHint.textContent = gallery.exists ? s.syncHint : s.folderMissingHint;
-    els.btnIdleSync.textContent = gallery.exists ? s.sync : s.locate;
+    els.idleTitle.textContent = gallery.exists ? s.readyToReview : s.folderMissing;
+    els.idleHint.textContent = gallery.exists ? s.reviewIdleHint : s.folderMissingHint;
+    els.btnIdleSync.textContent = gallery.exists ? s.review : s.locate;
     els.idleState.classList.toggle("warn", !gallery.exists);
     els.idleState
         .querySelector(".idle-icon use")
@@ -1343,9 +1276,10 @@ function renderSyncModal() {
     const view = syncProgressView(progress, s);
     const name = state.syncTarget?.name;
     show(els.syncModal);
-    els.syncModalTitle.textContent = name
-        ? fmt(s.syncingGallery, { name })
-        : s.syncing;
+    const applying = state.syncTarget?.mode === "apply";
+    els.syncModalTitle.textContent = fmt(applying ? s.applyingGallery : s.reviewingGallery, {
+        name: name || "",
+    });
     els.syncModalPhase.textContent = view.title;
     els.syncModalFile.textContent = view.detail;
     els.syncModalHint.textContent = s.syncModalHint;
@@ -1363,16 +1297,15 @@ function renderReport() {
         return;
     }
     show(els.report);
-    const counts = report.counts || {};
-    const changes =
-        (counts.remoteNew || 0) +
-        (counts.remoteModified || 0) +
-        (counts.localNew || 0) +
-        (counts.localModified || 0) +
-        (counts.conflicts || 0);
-
     const failed = (report.errors?.length || 0) > 0;
-    const idle = changes === 0 && (report.proposals?.deleteRemote?.length || 0) === 0;
+    const moved =
+        (report.downloaded?.length || 0) +
+        (report.uploaded?.length || 0) +
+        (report.trashedLocal?.length || 0) +
+        (report.deletedRemote?.length || 0) +
+        (report.remoteDeletedResolved || 0) +
+        (report.ratingsResult?.rated || 0);
+    const idle = moved === 0;
     els.reportSummary.textContent = failed ? s.syncFailed : idle ? s.inSync : s.syncDone;
     els.reportIcon.classList.toggle("error", failed);
     els.reportIconUse.setAttribute("href", failed ? "#i-alert" : "#i-check");
@@ -1421,7 +1354,13 @@ function renderReport() {
     }
 
     els.reportWarnings.replaceChildren();
-    const warnings = report.warnings || [];
+    const skipped = report.skippedChanged || [];
+    const warnings = [
+        ...(report.warnings || []),
+        ...(skipped.length
+            ? [{ message: fmt(s.reportSkippedChanged, { n: skipped.length, files: skipped.slice(0, 5).join(", ") }) }]
+            : []),
+    ];
     if (warnings.length === 0) {
         hide(els.reportWarnings);
     } else {
@@ -1439,8 +1378,14 @@ function renderReport() {
     for (const item of report.trashedLocal || []) {
         fileLines.push(`${s.deletionLocalDelete}: ${item.filename}`);
     }
+    for (const item of report.deletedRemote || []) {
+        fileLines.push(`${s.reportDeletedRemote}: ${item}`);
+    }
+    for (const item of report.uploadedRaw || []) {
+        fileLines.push(`${s.uploadedFiles}: ${item.filename} — ${s.rawEarlierVersion}`);
+    }
     for (const item of report.uploaded || []) {
-        const version = item.version_number ? ` (v${item.version_number})` : "";
+        const version = item.versionNumber ? ` (v${item.versionNumber})` : "";
         const reason =
             item.reason === "modified" ? s.localModifiedReason : s.localNewReason;
         fileLines.push(
@@ -1449,6 +1394,9 @@ function renderReport() {
     }
     for (const item of report.downloaded || []) {
         fileLines.push(`${s.downloadedFiles}: ${item.filename}`);
+    }
+    if (report.ratingsResult?.rated) {
+        fileLines.push(fmt(s.ratingsResult, { n: report.ratingsResult.rated }));
     }
     if (fileLines.length === 0) {
         hide(els.reportFiles);
@@ -1484,28 +1432,6 @@ function renderReport() {
         els.btnIncludeIgnored.textContent = s.includeIgnored;
     }
 
-    const proposals = report.proposals?.deleteRemote || [];
-    state.pendingDeletes = new Set(proposals.map((photo) => photo.id));
-    els.deleteList.replaceChildren();
-    if (proposals.length === 0) {
-        hide(els.deleteBox);
-    } else {
-        show(els.deleteBox);
-        els.deleteTitle.textContent = `${s.pendingDeletes} (${proposals.length})`;
-        for (const photo of proposals) {
-            const label = document.createElement("label");
-            label.className = "delete-item";
-            const checkbox = document.createElement("input");
-            checkbox.type = "checkbox";
-            checkbox.checked = true;
-            checkbox.dataset.photoId = photo.id;
-            const text = document.createElement("span");
-            text.textContent = photo.filename;
-            label.appendChild(checkbox);
-            label.appendChild(text);
-            els.deleteList.appendChild(label);
-        }
-    }
 }
 
 function ratingTargetText() {
@@ -1526,55 +1452,15 @@ function renderRating() {
         return;
     }
     show(els.ratingModal);
-    const isPlan = state.rating.mode === "plan";
-    const favourites = state.rating.favorites || [];
-    els.ratingTitle.textContent = isPlan
-        ? favourites.length > 0
-            ? s.ratingTitle
-            : s.ratingPlanTitle
-        : state.rating.source === "favorites"
-          ? s.ratingTitle
-          : s.ratePhotosTitle;
-    els.ratingSubtitle.textContent = isPlan
-        ? favourites.length > 0
-            ? fmt(s.ratingPlanHintStars, {
-                  n: favourites.length,
-                  total: (state.rating.plan || []).length + favourites.length,
-              })
-            : fmt(s.ratingPlanHint, { n: (state.rating.plan || []).length })
-        : state.rating.source === "favorites"
-          ? fmt(s.favoritesFound, { n: state.rating.files.length })
-          : s.ratePhotosHint;
+    els.ratingTitle.textContent =
+        state.rating.source === "favorites" ? s.ratingTitle : s.ratePhotosTitle;
+    els.ratingSubtitle.textContent =
+        state.rating.source === "favorites"
+            ? fmt(s.favoritesFound, { n: state.rating.files.length })
+            : s.ratePhotosHint;
     const target = ratingTargetText();
     els.ratingTarget.textContent = target || s.noFolder;
-    const needsFolder = !state.rating.galleryId && !target;
-    els.btnRatingFolder.classList.toggle("hidden", !needsFolder);
-
-    // The star picker only appears when Picstome has favourites with a heart
-    // but no rating: the photographer chooses one value for all of them.
-    const askStars = isPlan ? favourites.length > 0 : true;
-    els.ratingStars.classList.toggle("hidden", !askStars);
-
-    const plan = state.rating.plan || [];
-    if (plan.length > 0) {
-        show(els.ratingPlan);
-        els.ratingPlan.replaceChildren();
-        for (const item of plan) {
-            const line = document.createElement("div");
-            line.className = "rating-plan-item";
-            line.textContent =
-                item.rating == null
-                    ? fmt(s.ratingPlanItemUnrated, { filename: item.filename })
-                    : fmt(s.ratingPlanItem, {
-                          filename: item.filename,
-                          stars: item.rating,
-                      });
-            els.ratingPlan.appendChild(line);
-        }
-    } else {
-        hide(els.ratingPlan);
-        els.ratingPlan.replaceChildren();
-    }
+    els.btnRatingFolder.classList.toggle("hidden", Boolean(state.rating.galleryId || target));
 
     const value = Number(state.rating.value);
     for (const button of els.starButtons) {
@@ -1584,8 +1470,7 @@ function renderRating() {
 
     els.btnRatingApply.disabled =
         state.rating.busy ||
-        (!isPlan && state.rating.files.length === 0) ||
-        (isPlan && plan.length === 0 && favourites.length === 0) ||
+        state.rating.files.length === 0 ||
         (!state.rating.galleryId && !target);
     els.btnRatingApply.textContent = state.rating.busy ? s.applying : s.applyRating;
 
@@ -1788,63 +1673,6 @@ async function refreshLog() {
     renderLog();
 }
 
-function renderRemoteDeleted() {
-    const s = state.strings;
-    if (!s) return;
-    const modal = state.remoteDeleted;
-    if (!modal.open) {
-        hide(els.remoteDeletedModal);
-        return;
-    }
-    show(els.remoteDeletedModal);
-    els.remoteDeletedHint.textContent = fmt(s.remoteDeletedHint, {
-        n: modal.items.length,
-    });
-    els.remoteDeletedList.replaceChildren();
-    for (const item of modal.items) {
-        const label = el("label", "delete-item");
-        const checkbox = el("input");
-        checkbox.type = "checkbox";
-        checkbox.checked = true;
-        checkbox.dataset.remoteId = item.id;
-        const text = el("span", "", item.filename);
-        label.append(checkbox, text);
-        // The RAW (or other copies) of the same photo sitting next to it.
-        if (item.companions?.length) {
-            label.appendChild(el("span", "delete-companions", `+ ${item.companions.join(", ")}`));
-        }
-        els.remoteDeletedList.appendChild(label);
-    }
-    els.btnRemoteDeleteLocal.disabled = modal.busy || modal.items.length === 0;
-    els.btnRemoteKeepLocal.disabled = modal.busy || modal.items.length === 0;
-    els.btnRemoteUploadAgain.disabled = modal.busy || modal.items.length === 0;
-
-    if (modal.result) {
-        show(els.remoteDeletedResult);
-        els.remoteDeletedResult.className = `rating-result ${
-            modal.result.errors?.length ? "error" : "ok"
-        }`;
-        const resolved = modal.result.resolved?.length || 0;
-        const errors = modal.result.errors || [];
-        if (errors.length) {
-            els.remoteDeletedResult.textContent = `${s.remoteDeletedError}: ${errors
-                .map((error) => error.message)
-                .join(" · ")}`;
-        } else {
-            const trashed = modal.result.trashed || [];
-            const details = trashed.map(
-                (item) => `${item.filename} — ${fmt(s.trashedTo, { path: trashTarget(item, s) })}`,
-            );
-            els.remoteDeletedResult.textContent = [
-                `${s.remoteDeletedDone} (${resolved})`,
-                ...details,
-            ].join("\n");
-        }
-    } else {
-        hide(els.remoteDeletedResult);
-    }
-}
-
 /**
  * Ask what to upload for photos with a RAW file. Resolves `"jpeg_only"`,
  * `"jpeg_and_raw"` or `null` (cancelled: asked again next time).
@@ -1861,156 +1689,6 @@ async function askRawMode({ title, message }) {
     if (choice === "confirm") return "jpeg_only";
     if (choice === "alt") return "jpeg_and_raw";
     return null;
-}
-
-async function handlePostSync(report) {
-    // Photos with a RAW waited for this gallery's answer: ask, then sync
-    // again so they go up straight away.
-    const waiting = Number(report?.rawDecisionNeeded) || 0;
-    if (waiting > 0) {
-        const s = state.strings;
-        const gallery = state.galleries.find((item) => item.galleryId === report.galleryId);
-        const name = gallery?.name || report.name || "";
-        const mode = await askRawMode({
-            title: s.rawQuestionTitle,
-            message: fmt(s.rawQuestionMessage, { name, n: waiting }),
-        });
-        if (mode) {
-            await runSync(report.galleryId, name, { rawMode: mode });
-            return;
-        }
-    }
-    const remoteDeleted = report?.remoteDeleted || [];
-    if (remoteDeleted.length > 0) {
-        state.remoteDeleted = {
-            open: true,
-            galleryId: report.galleryId,
-            items: remoteDeleted,
-            busy: false,
-            result: null,
-            pendingFavorites: report,
-        };
-        renderRemoteDeleted();
-        return;
-    }
-    openFavoritesPrompt(report);
-}
-
-function fillFirstSyncList(container, items, s) {
-    container.replaceChildren();
-    const visible = items.slice(0, 8);
-    for (const item of visible) {
-        const line = el("div", "", item.filename);
-        // With RAW upload off, the RAW of a JPEG+RAW pair is listed (it moves
-        // with its photo if trashed) but is never uploaded: say so.
-        if (rawModeForFirstSync() === "jpeg_only" && isRawFile(item.filename)) {
-            line.appendChild(el("span", "first-sync-tag", s.rawNotUploaded));
-        }
-        container.appendChild(line);
-    }
-    if (items.length > visible.length) {
-        const line = document.createElement("div");
-        line.textContent = fmt(s.firstSyncMore, {
-            n: items.length - visible.length,
-        });
-        container.appendChild(line);
-    }
-}
-
-function renderFirstSync() {
-    const s = state.strings;
-    if (!s) return;
-    const modal = state.firstSync;
-    if (!modal.open || !modal.preview) {
-        hide(els.firstSyncModal);
-        return;
-    }
-    const preview = modal.preview;
-    show(els.firstSyncModal);
-    els.firstSyncTitle.textContent = s.firstSyncTitle;
-    els.firstSyncHint.textContent = s.firstSyncHint;
-    const hasUpload = (preview.localOnly || []).length > 0;
-    const hasDownload = (preview.remoteOnly || []).length > 0;
-    els.firstSyncUploadSection.classList.toggle("hidden", !hasUpload);
-    els.firstSyncDownloadSection.classList.toggle("hidden", !hasDownload);
-    els.firstSyncLocalUpload.checked = modal.localAction === "upload";
-    els.firstSyncLocalKeep.checked = modal.localAction === "keep";
-    els.firstSyncLocalTrash.checked = modal.localAction === "trash";
-    els.firstSyncDownload.checked = modal.download;
-    els.firstSyncUploadLabel.textContent = fmt(s.firstSyncUpload, {
-        n: (preview.localOnly || []).length,
-    });
-    els.firstSyncUploadHint.textContent = s.firstSyncUploadHint;
-    els.firstSyncLocalUploadLabel.textContent = s.firstSyncLocalUpload;
-    els.firstSyncLocalKeepLabel.textContent = s.firstSyncLocalKeep;
-    els.firstSyncLocalTrashLabel.textContent = s.firstSyncLocalTrash;
-    els.firstSyncDownloadLabel.textContent = fmt(s.firstSyncDownload, {
-        n: (preview.remoteOnly || []).length,
-    });
-    els.firstSyncDownloadHint.textContent = s.firstSyncDownloadHint;
-    const askRaw = modal.askRaw;
-    els.firstSyncRawSection.classList.toggle("hidden", !askRaw);
-    if (askRaw) {
-        els.firstSyncRawTitle.textContent = fmt(s.firstSyncRawTitle, { n: preview.rawPhotos });
-        els.firstSyncRawJpeg.checked = modal.rawMode === "jpeg_only";
-        els.firstSyncRawBoth.checked = modal.rawMode === "jpeg_and_raw";
-    }
-    const rawOnly = Number(preview.rawOnlyLocal) || 0;
-    els.firstSyncRawOnly.textContent = rawOnly ? fmt(s.firstSyncRawOnly, { n: rawOnly }) : "";
-    els.firstSyncRawOnly.classList.toggle("hidden", rawOnly === 0);
-    fillFirstSyncList(els.firstSyncUploadList, preview.localOnly || [], s);
-    fillFirstSyncList(els.firstSyncDownloadList, preview.remoteOnly || [], s);
-    const trashAction = hasUpload && modal.localAction === "trash";
-    els.btnFirstSyncConfirm.textContent = trashAction
-        ? s.firstSyncConfirmTrash
-        : s.firstSyncConfirm;
-    els.btnFirstSyncConfirm.className = trashAction ? "danger" : "primary";
-    els.btnFirstSyncCancel.textContent = s.cancel;
-    els.btnFirstSyncClose.textContent = s.close;
-}
-
-function settleFirstSync(confirmed) {
-    const modal = state.firstSync;
-    const resolve = modal.resolve;
-    const preview = modal.preview;
-    const localAction = modal.localAction;
-    const download = modal.download;
-    const rawMode = modal.askRaw ? modal.rawMode : null;
-    state.firstSync = emptyFirstSync();
-    renderFirstSync();
-    if (!resolve) return;
-    if (!confirmed || !preview) {
-        resolve(null);
-        return;
-    }
-    const localOnly = preview.localOnly || [];
-    resolve({
-        ignoreLocal: localAction === "keep" ? localOnly : [],
-        trashLocal: localAction === "trash" ? localOnly : [],
-        ignoreRemote: download ? [] : (preview.remoteOnly || []),
-        rawMode,
-    });
-}
-
-/** RAW choice that applies to the first sync being previewed. */
-function rawModeForFirstSync() {
-    const modal = state.firstSync;
-    return modal.askRaw ? modal.rawMode : modal.galleryRawMode;
-}
-
-function askFirstSync(preview, galleryRawMode = null) {
-    if (state.firstSync.resolve) settleFirstSync(false);
-    return new Promise((resolve) => {
-        state.firstSync = {
-            ...emptyFirstSync(),
-            open: true,
-            preview,
-            askRaw: !galleryRawMode && (Number(preview.rawPhotos) || 0) > 0,
-            galleryRawMode,
-            resolve,
-        };
-        renderFirstSync();
-    });
 }
 
 function renderConfirm() {
@@ -2072,8 +1750,7 @@ function renderAll() {
     renderReport();
     renderRating();
     renderFavorites();
-    renderFirstSync();
-    renderRemoteDeleted();
+    renderReview();
     renderConfirm();
     renderLog();
 }
@@ -2125,28 +1802,6 @@ async function refreshState() {
     const next = await invoke("get_state");
     setState(next);
     return next;
-}
-
-function openFavoritesPrompt(report) {
-    const favorites = report?.favorites || [];
-    const plan = report?.ratingPlan?.items || [];
-    if (favorites.length === 0 && plan.length === 0) return;
-    state.rating = {
-        open: true,
-        // Ask once for every favourite without a rating. The exact Picstome
-        // ratings of the other photos are written as-is.
-        files: favorites.map((photo) => stem(photo.filename)),
-        value: "5",
-        galleryId: report.galleryId,
-        photosDir: null,
-        source: "favorites",
-        mode: "plan",
-        favorites: favorites,
-        plan: plan,
-        busy: false,
-        result: null,
-    };
-    renderRating();
 }
 
 function filteredFavoritePhotos() {
@@ -2327,8 +1982,13 @@ async function handleUnknownGallery(gallery) {
  * the Sync button while the backend is still writing the snapshot.
  */
 
-function beginSync(galleryId, name) {
-    state.syncTarget = { galleryId, name: name || "Gallery" };
+/**
+ * Mark a backend operation on a gallery as running. `mode` is `"review"`
+ * (working out the changes) or `"apply"` (moving files); it only changes
+ * the wording of the progress dialog.
+ */
+function beginSync(galleryId, name, mode = "review") {
+    state.syncTarget = { galleryId, name: name || "Gallery", mode };
     state.syncBusy = true;
     state.progress = { phase: "manifest", done: 0, total: 1 };
     state.report = null;
@@ -2354,31 +2014,497 @@ async function handleSyncError(err, gallery) {
     return false;
 }
 
-/** Run the actual sync once any first-sync choice has been made. */
-async function runSync(galleryId, name, choice = null) {
-    if (state.syncBusy) return;
-    beginSync(galleryId, name);
-    let missing = false;
-    try {
-        const args = { galleryId };
-        if (choice) {
-            args.ignoreLocal = choice.ignoreLocal || [];
-            args.ignoreRemote = choice.ignoreRemote || [];
-            args.trashLocal = choice.trashLocal || [];
-            if (choice.rawMode) args.rawMode = choice.rawMode;
+/* Review → Apply
+ *
+ * "Review changes" asks the backend for a plan (nothing moves), shows every
+ * change grouped by direction with a choice per row, and applies only what
+ * the photographer chose. Rows left on "Later" are proposed again by the
+ * next review.
+ */
+
+/** Row choices offered per group, the first being the default. */
+const REVIEW_OPTIONS = {
+    downloads: ["apply", "later", "ignore"],
+    uploads: ["apply", "later", "ignore"],
+    uploadsFirstSync: ["apply", "later", "ignore", "trash"],
+    remoteDeleted: ["later", "keep", "trash", "upload"],
+    remoteDeletedWithRaw: ["later", "keep", "trash", "trash_raw", "upload"],
+    localDeleted: ["later", "delete", "restore"],
+};
+
+/** Rows shown per group before "Show all". */
+const REVIEW_PREVIEW_ROWS = 8;
+
+/** Label of a row choice. */
+function reviewOptionLabel(group, option, s) {
+    const labels = {
+        apply: group === "downloads" ? s.optDownload : s.optUpload,
+        later: s.optLater,
+        ignore: s.optIgnore,
+        trash: s.optTrash,
+        trash_raw: s.optTrashWithRaw,
+        keep: s.optKeep,
+        upload: s.optUploadAgain,
+        delete: s.optDeleteInPicstome,
+        restore: s.optDownloadAgain,
+    };
+    return labels[option] || option;
+}
+
+/** Build the review state for a plan, every row on its default. */
+function newReview(galleryId, plan) {
+    const choices = { downloads: {}, uploads: {}, remoteDeleted: {}, localDeleted: {} };
+    for (const item of plan.downloads) choices.downloads[item.id] = "apply";
+    for (const item of plan.uploads) choices.uploads[item.relativePath] = "apply";
+    for (const item of plan.remoteDeleted) choices.remoteDeleted[item.id] = "later";
+    for (const item of plan.localDeleted) choices.localDeleted[item.id] = "later";
+    return {
+        galleryId,
+        plan,
+        choices,
+        ratings: true,
+        favouritesStars: null,
+        massConfirm: "",
+        expanded: {},
+    };
+}
+
+/** The groups of a plan, in the order they are shown. */
+function reviewGroups(plan, s) {
+    const size = (bytes) => (bytes ? formatBytes(bytes) : "");
+    const meta = (...parts) => parts.filter(Boolean).join(" · ");
+    return [
+        {
+            key: "downloads",
+            title: s.groupDownloads,
+            items: plan.downloads,
+            id: (item) => item.id,
+            name: (item) => item.filename,
+            meta: (item) =>
+                meta(item.reason === "modified" ? s.reasonModified : s.reasonNew, size(item.size)),
+            options: REVIEW_OPTIONS.downloads,
+        },
+        {
+            key: "uploads",
+            title: s.groupUploads,
+            items: plan.uploads,
+            id: (item) => item.relativePath,
+            name: (item) => item.relativePath,
+            meta: (item) =>
+                meta(
+                    item.reason === "modified" ? s.reasonModifiedLocal : s.reasonNew,
+                    size(item.size),
+                    item.rawFirst?.length ? fmt(s.rawFirstTag, { raw: item.rawFirst.join(", ") }) : "",
+                ),
+            options: plan.firstSync ? REVIEW_OPTIONS.uploadsFirstSync : REVIEW_OPTIONS.uploads,
+        },
+        {
+            key: "remoteDeleted",
+            title: s.groupRemoteDeleted,
+            items: plan.remoteDeleted,
+            id: (item) => item.id,
+            name: (item) => item.relativePath || item.filename,
+            meta: (item) => (item.companions?.length ? `+ ${item.companions.join(", ")}` : ""),
+            options: plan.remoteDeleted.some((item) => item.companions?.length)
+                ? REVIEW_OPTIONS.remoteDeletedWithRaw
+                : REVIEW_OPTIONS.remoteDeleted,
+            rowOptions: (item) =>
+                item.companions?.length
+                    ? REVIEW_OPTIONS.remoteDeletedWithRaw
+                    : REVIEW_OPTIONS.remoteDeleted,
+            tone: "warn",
+        },
+        {
+            key: "localDeleted",
+            title: s.groupLocalDeleted,
+            items: plan.localDeleted,
+            id: (item) => item.id,
+            name: (item) => item.filename,
+            meta: () => "",
+            options: REVIEW_OPTIONS.localDeleted,
+            tone: "warn",
+        },
+    ];
+}
+
+/** Number of actions the photographer chose (everything not "Later"). */
+function reviewActionCount(review) {
+    let count = 0;
+    for (const group of Object.values(review.choices)) {
+        for (const choice of Object.values(group)) if (choice !== "later") count += 1;
+    }
+    if (reviewRatingsEnabled(review)) count += 1;
+    return count;
+}
+
+function reviewRatingsEnabled(review) {
+    const ratings = review.plan.ratings || {};
+    const writes = (ratings.items || []).length > 0;
+    const favourites = (ratings.needsRating || []).length > 0 && review.favouritesStars;
+    return review.ratings && Boolean(writes || favourites);
+}
+
+/** How many photos the review would delete in Picstome. */
+function reviewDeletes(review) {
+    return Object.values(review.choices.localDeleted).filter((choice) => choice === "delete").length;
+}
+
+/** A `<select>` with the choices of a row (or of a whole group). */
+function reviewSelect(group, options, value, s, extraClass = "") {
+    const select = el("select", `review-select ${extraClass}`.trim());
+    for (const option of options) {
+        const node = el("option", "", reviewOptionLabel(group, option, s));
+        node.value = option;
+        node.selected = option === value;
+        select.appendChild(node);
+    }
+    return select;
+}
+
+function renderReviewGroup(review, group, s) {
+    const section = el("section", `review-group ${group.tone || ""}`.trim());
+    section.dataset.group = group.key;
+    const head = el("div", "review-group-head");
+    const title = el("h3", "", group.title);
+    title.appendChild(el("span", "review-count", String(group.items.length)));
+    const all = reviewSelect(group.key, group.options, "", s, "review-all");
+    all.insertBefore(el("option", "", s.reviewSetAll), all.firstChild);
+    all.firstChild.value = "";
+    all.firstChild.selected = true;
+    all.dataset.group = group.key;
+    head.append(title, all);
+    section.appendChild(head);
+
+    if (group.key === "uploads") renderRawChoice(review, section, s);
+
+    const expanded = review.expanded[group.key];
+    const visible = expanded ? group.items : group.items.slice(0, REVIEW_PREVIEW_ROWS);
+    const list = el("div", "review-rows");
+    for (const item of visible) {
+        const id = group.id(item);
+        const choice = review.choices[group.key][id];
+        const row = el("div", `review-row choice-${choice}`);
+        const text = el("div", "review-row-text");
+        text.append(el("span", "review-row-name", group.name(item)));
+        const meta = group.meta(item);
+        if (meta) text.append(el("span", "review-row-meta", meta));
+        const select = reviewSelect(group.key, (group.rowOptions || (() => group.options))(item), choice, s);
+        select.dataset.group = group.key;
+        select.dataset.id = id;
+        row.append(text, select);
+        list.appendChild(row);
+    }
+    section.appendChild(list);
+    if (!expanded && group.items.length > visible.length) {
+        const more = el("button", "list-toggle", fmt(s.showAll, { n: group.items.length }));
+        more.type = "button";
+        more.dataset.expand = group.key;
+        section.appendChild(more);
+    }
+    if (group.key === "localDeleted") renderMassDeleteGuard(review, section, s);
+    return section;
+}
+
+/** "N photos have a RAW file. Upload: JPEG only / JPEG + RAW". */
+function renderRawChoice(review, section, s) {
+    const plan = review.plan;
+    if (plan.rawDecisionNeeded > 0) {
+        const box = el("div", "review-note raw-choice");
+        box.append(el("span", "", fmt(s.firstSyncRawTitle, { n: plan.rawDecisionNeeded })));
+        for (const [mode, label] of [["jpeg_only", s.rawJpegOnly], ["jpeg_and_raw", s.rawJpegAndRaw]]) {
+            const button = el("button", "secondary small", label);
+            button.type = "button";
+            button.dataset.rawMode = mode;
+            box.appendChild(button);
         }
-        state.report = await invoke("sync_gallery", args);
+        box.appendChild(el("p", "hint", s.firstSyncRawHint));
+        section.appendChild(box);
+    }
+    if (plan.rawKeptLocal?.length) {
+        section.appendChild(el("p", "hint review-note", fmt(s.rawKeptLocal, { n: plan.rawKeptLocal.length })));
+    }
+}
+
+/** Typed confirmation when the review deletes a large share in Picstome. */
+function renderMassDeleteGuard(review, section, s) {
+    const deletes = reviewDeletes(review);
+    if (!review.plan.massDelete || deletes === 0) return;
+    const total = review.plan.remoteTotal || 1;
+    const box = el("div", "review-note mass-delete");
+    box.appendChild(
+        el("p", "", fmt(s.massDeleteWarning, { n: deletes, percent: Math.round((deletes / total) * 100) })),
+    );
+    const input = el("input", "mass-delete-input");
+    input.id = "massDeleteConfirm";
+    input.inputMode = "numeric";
+    input.placeholder = fmt(s.massDeletePlaceholder, { n: deletes });
+    input.value = review.massConfirm;
+    box.appendChild(input);
+    section.appendChild(box);
+}
+
+function renderReviewRatings(review, s) {
+    const ratings = review.plan.ratings || {};
+    const writes = (ratings.items || []).length;
+    const favourites = (ratings.needsRating || []).length;
+    if (writes === 0 && favourites === 0) return null;
+    const section = el("section", "review-group");
+    const head = el("div", "review-group-head");
+    head.appendChild(el("h3", "", s.groupRatings));
+    section.appendChild(head);
+    const label = el("label", "review-check");
+    const box = el("input");
+    box.type = "checkbox";
+    box.id = "reviewRatings";
+    box.checked = review.ratings;
+    label.append(box, el("span", "", fmt(s.ratingsApply, { n: writes + (review.favouritesStars ? favourites : 0) })));
+    section.appendChild(label);
+    if (favourites > 0) {
+        const row = el("div", "review-row");
+        row.appendChild(el("span", "review-row-name", fmt(s.ratingsFavourites, { n: favourites })));
+        const select = el("select", "review-select");
+        select.id = "reviewFavouriteStars";
+        const skip = el("option", "", s.ratingsFavouritesSkip);
+        skip.value = "";
+        select.appendChild(skip);
+        for (let stars = 5; stars >= 1; stars -= 1) {
+            const option = el("option", "", "★".repeat(stars));
+            option.value = String(stars);
+            option.selected = review.favouritesStars === stars;
+            select.appendChild(option);
+        }
+        row.appendChild(select);
+        section.appendChild(row);
+    }
+    return section;
+}
+
+function renderReviewNotes(plan, s) {
+    const lines = [
+        ...plan.conflicts.map((item) =>
+            fmt(s.conflictDetail, {
+                filename: item.local?.filename || item.remote?.filename || "—",
+                remote: item.remote?.versionCount ?? 1,
+                remoteSize: formatBytes(item.remote?.size || 0),
+                localSize: formatBytes(item.local?.size || 0),
+            }),
+        ),
+        ...plan.warnings.map(warningText),
+        ...plan.errors.map((error) => `${error.path || error.filename || "—"} — ${error.message}`),
+    ];
+    if (lines.length === 0) return null;
+    const section = el("section", "review-group notes");
+    const head = el("div", "review-group-head");
+    head.appendChild(el("h3", "", plan.conflicts.length ? s.groupConflicts : s.groupNotes));
+    section.appendChild(head);
+    if (plan.conflicts.length) section.appendChild(el("p", "hint", s.groupConflictsHint));
+    for (const line of lines) section.appendChild(el("div", "review-note-line", line));
+    return section;
+}
+
+function renderReview() {
+    const s = state.strings;
+    const review = state.review;
+    const visible = Boolean(s && review && review.galleryId === state.currentGalleryId && !state.syncBusy);
+    els.review.classList.toggle("hidden", !visible);
+    els.reviewBar.classList.toggle("hidden", !visible);
+    if (!visible) return;
+
+    const plan = review.plan;
+    els.reviewTitle.textContent = s.reviewTitle;
+    els.reviewHint.textContent = plan.firstSync ? s.reviewFirstSyncHint : s.reviewHint;
+    const nodes = reviewGroups(plan, s)
+        .filter((group) => group.items.length > 0 || (group.key === "uploads" && plan.rawDecisionNeeded > 0))
+        .map((group) => renderReviewGroup(review, group, s));
+    const ratings = renderReviewRatings(review, s);
+    if (ratings) nodes.push(ratings);
+    const notes = renderReviewNotes(plan, s);
+    if (notes) nodes.push(notes);
+    els.reviewGroups.replaceChildren(...nodes);
+
+    els.btnReviewDiscard.textContent = s.reviewDiscard;
+    updateReviewBar();
+}
+
+/**
+ * Summary and Apply button. Kept separate from `renderReview` so typing the
+ * mass-delete confirmation does not redraw (and unfocus) the input.
+ */
+function updateReviewBar() {
+    const s = state.strings;
+    const review = state.review;
+    if (!s || !review) return;
+    const count = reviewActionCount(review);
+    const deletes = reviewDeletes(review);
+    const confirmed = !review.plan.massDelete || deletes === 0 || Number(review.massConfirm) === deletes;
+    els.reviewSummary.textContent = count ? fmt(s.reviewSelected, { n: count }) : s.reviewNothingSelected;
+    els.btnReviewApply.textContent = fmt(s.reviewApply, { n: count });
+    els.btnReviewApply.disabled = count === 0 || !confirmed;
+}
+
+/** An empty report, shown as "Everything is in sync". */
+function inSyncReport(galleryId) {
+    return { galleryId, counts: {}, downloaded: [], uploaded: [], conflicts: [], errors: [], warnings: [] };
+}
+
+/** Show a fresh plan: the review, or "in sync" when there is nothing to do. */
+function showPlan(galleryId, plan) {
+    const hasWork =
+        plan.downloads.length ||
+        plan.uploads.length ||
+        plan.rawDecisionNeeded ||
+        plan.remoteDeleted.length ||
+        plan.localDeleted.length ||
+        plan.conflicts.length ||
+        plan.errors.length ||
+        (plan.ratings?.items || []).length ||
+        (plan.ratings?.needsRating || []).length;
+    state.review = hasWork ? newReview(galleryId, plan) : null;
+    state.report = hasWork ? null : inSyncReport(galleryId);
+}
+
+/** Review the selected gallery. */
+async function reviewCurrent() {
+    const gallery = currentGallery();
+    if (!gallery || state.syncBusy) return;
+    beginSync(gallery.galleryId, gallery.name);
+    try {
+        const plan = await invoke("review_gallery", { galleryId: gallery.galleryId });
+        endSync();
+        showPlan(gallery.galleryId, plan);
     } catch (err) {
-        missing = await handleSyncError(err, { galleryId, name: name || galleryId });
+        endSync();
+        if (await handleSyncError(err, gallery)) return;
+    }
+    renderAll();
+}
+
+/**
+ * Link a Picstome gallery (asks for a folder when needed) and review it.
+ */
+async function linkAndReview(galleryId, name) {
+    if (state.syncBusy) return;
+    const label = name || "Gallery";
+    beginSync(galleryId, label);
+    let result = null;
+    try {
+        result = await invoke("start_sync", { galleryId, name });
+    } catch (err) {
+        endSync();
+        if (await handleSyncError(err, { galleryId, name: label })) return;
+        renderAll();
+        return;
+    }
+    endSync();
+    if (result?.canceled) {
+        renderAll();
+        return;
+    }
+    state.currentGalleryId = galleryId;
+    await refreshState();
+    if (result?.plan) showPlan(galleryId, result.plan);
+    renderAll();
+    refreshLog();
+}
+
+/** The backend selection for the choices of a review. */
+function reviewSelection(review) {
+    const pick = (group, value) =>
+        Object.entries(review.choices[group])
+            .filter(([, choice]) => choice === value)
+            .map(([id]) => id);
+    const actions = {
+        keep: ["keep_local", false],
+        trash: ["delete_local", false],
+        trash_raw: ["delete_local", true],
+        upload: ["upload", false],
+    };
+    return {
+        downloads: pick("downloads", "apply"),
+        ignoreRemote: pick("downloads", "ignore"),
+        uploads: pick("uploads", "apply"),
+        ignoreLocal: pick("uploads", "ignore"),
+        trashLocal: pick("uploads", "trash"),
+        deleteRemote: pick("localDeleted", "delete"),
+        restore: pick("localDeleted", "restore"),
+        confirmMassDelete: Number(review.massConfirm) || null,
+        remoteDeleted: Object.entries(review.choices.remoteDeleted)
+            .filter(([, choice]) => actions[choice])
+            .map(([id, choice]) => ({ id, action: actions[choice][0], includeRaw: actions[choice][1] })),
+    };
+}
+
+/** Apply the review, after a confirmation for anything destructive. */
+async function applyReview() {
+    const review = state.review;
+    if (!review || state.syncBusy) return;
+    const s = state.strings;
+    const deletes = reviewDeletes(review);
+    if (review.plan.massDelete && deletes > 0 && Number(review.massConfirm) !== deletes) {
+        document.getElementById("massDeleteConfirm")?.focus();
+        return;
+    }
+    if (deletes > 0) {
+        const confirmed = await askConfirm({
+            title: s.confirmRemoteDeleteTitle,
+            message: fmt(s.confirmRemoteDeleteMessage, { n: deletes }),
+            confirmLabel: s.confirmRemoteDeleteAction,
+        });
+        if (!confirmed) return;
+    }
+    const gallery = currentGallery();
+    beginSync(review.galleryId, gallery?.name || review.plan.name, "apply");
+    let applied = null;
+    try {
+        applied = await invoke("apply_review", {
+            galleryId: review.galleryId,
+            planId: review.plan.id,
+            selection: reviewSelection(review),
+            ratings: {
+                apply: reviewRatingsEnabled(review),
+                favouritesStars: review.favouritesStars,
+            },
+        });
+        state.review = null;
+        state.report = { ...applied.report, ratingsResult: applied.ratings || null };
+    } catch (err) {
+        state.review = null;
+        state.report = syncErrorReport(err);
     } finally {
         endSync();
-        if (!missing) await refreshState();
+        await refreshState();
         renderAll();
     }
-    if (!missing) {
-        refreshCoverAfterSync(galleryId);
-        handlePostSync(state.report);
+    if (applied) refreshCoverAfterSync(review.galleryId);
+}
+
+/** Forget the pending review. */
+async function discardReview() {
+    const review = state.review;
+    state.review = null;
+    renderAll();
+    if (review) {
+        try {
+            await invoke("discard_review", { galleryId: review.galleryId });
+        } catch {
+            // Nothing to undo: the review only lived in memory.
+        }
     }
+}
+
+/** Answer the RAW question inside a review, then review again. */
+async function chooseRawInReview(mode) {
+    const review = state.review;
+    if (!review) return;
+    try {
+        await invoke("set_gallery_raw_mode", { galleryId: review.galleryId, mode });
+        await refreshState();
+    } catch (err) {
+        state.report = syncErrorReport(err);
+        renderAll();
+        return;
+    }
+    await reviewCurrent();
 }
 
 /** A first sync is when a gallery gets its photos, and so its cover. */
@@ -2386,100 +2512,14 @@ function refreshCoverAfterSync(galleryId) {
     if (!state.covers[galleryId]) loadCovers(true);
 }
 
-/** Sync the selected gallery, asking first when this is its first sync. */
-async function syncCurrent() {
-    const gallery = currentGallery();
-    if (!gallery || state.syncBusy) return;
-
-    beginSync(gallery.galleryId, gallery.name);
-    let preview = null;
-    try {
-        preview = await invoke("preview_first_sync", {
-            galleryId: gallery.galleryId,
-        });
-    } catch (err) {
-        endSync();
-        if (!(await handleSyncError(err, gallery))) renderAll();
-        return;
-    }
-    endSync();
-    renderAll();
-
-    let choice = null;
-    if (preview?.needed) {
-        choice = await askFirstSync(preview, gallery.rawMode);
-        if (!choice) return;
-    }
-    await runSync(gallery.galleryId, gallery.name, choice);
-}
-
-/**
- * Link (if needed) and sync a gallery picked from Picstome: asks for a
- * folder, previews a first sync and syncs straight away when no choice is
- * needed.
- */
-async function startSync(galleryId, name) {
-    if (state.syncBusy) return;
-    const label = name || "Gallery";
-    beginSync(galleryId, label);
-
-    let result = null;
-    let missing = false;
-    try {
-        result = await invoke("start_sync", { galleryId, name });
-        if (!result?.canceled) {
-            state.currentGalleryId = result?.report?.galleryId || galleryId;
-        }
-        if (result?.report) state.report = result.report;
-    } catch (err) {
-        missing = await handleSyncError(err, { galleryId, name: label });
-    } finally {
-        endSync();
-        if (!missing && !result?.canceled) await refreshState();
-        renderAll();
-    }
-
-    if (missing || !result || result.canceled) return;
-    if (result.preview?.needed) {
-        const linked = state.galleries.find((item) => item.galleryId === galleryId);
-        const choice = await askFirstSync(result.preview, linked?.rawMode || null);
-        if (choice) await runSync(galleryId, label, choice);
-    } else if (result.report) {
-        refreshCoverAfterSync(galleryId);
-        handlePostSync(result.report);
-    }
-}
-
 async function applyRating() {
     if (state.rating.busy) return;
     const appliedState = state.rating;
-    const isPlan = appliedState.mode === "plan";
-    if (!isPlan && appliedState.files.length === 0) return;
+    if (appliedState.files.length === 0) return;
     appliedState.busy = true;
     appliedState.result = null;
     renderRating();
     try {
-        if (isPlan) {
-            // Sync flow: write the exact Picstome ratings, and answer the
-            // "favourite without a rating" prompt with the chosen value.
-            const favourites = appliedState.favorites || [];
-            const result = await invoke("apply_rating_plan", {
-                galleryId: appliedState.galleryId,
-                favouritesWithoutRating: favourites.length > 0
-                    ? Number(appliedState.value)
-                    : null,
-            });
-            appliedState.result = result;
-            if (result.errors === 0 && result.rated > 0) {
-                setTimeout(() => {
-                    if (state.rating === appliedState) {
-                        state.rating.open = false;
-                        renderRating();
-                    }
-                }, 1100);
-            }
-            return;
-        }
         const result = await invoke("rate_files", {
             files: appliedState.files,
             rating: appliedState.value,
@@ -2508,80 +2548,6 @@ async function applyRating() {
         appliedState.busy = false;
         renderRating();
         await refreshLog();
-    }
-}
-
-/**
- * Before trashing photos deleted in Picstome, ask whether their RAW files
- * (same name, same folder) should go too. Resolves true/false, or null when
- * the photographer cancels.
- */
-async function askIncludeCompanions(items) {
-    const withRaw = items.filter((item) => item.companions?.length);
-    if (withRaw.length === 0) return false;
-    const s = state.strings;
-    const files = withRaw.flatMap((item) => item.companions);
-    const shown = files.slice(0, 3).join(", ") + (files.length > 3 ? ", …" : "");
-    const choice = await askChoice({
-        title: s.deleteRawTitle,
-        message: fmt(s.deleteRawMessage, { n: withRaw.length, files: shown }),
-        confirmLabel: s.deleteRawYes,
-        altLabel: s.deleteRawNo,
-    });
-    if (choice === null) return null;
-    return choice === "confirm";
-}
-
-async function resolveRemoteDeleted(action) {
-    const modal = state.remoteDeleted;
-    if (!modal.galleryId || modal.busy) return;
-    const ids = Array.from(
-        els.remoteDeletedList.querySelectorAll("input[type=checkbox]:checked"),
-    ).map((checkbox) => checkbox.dataset.remoteId);
-    if (ids.length === 0) return;
-    let includeCompanions = false;
-    if (action === "delete_local") {
-        const selected = modal.items.filter((item) => ids.includes(item.id));
-        includeCompanions = await askIncludeCompanions(selected);
-        if (includeCompanions === null) return;
-    }
-    modal.busy = true;
-    modal.result = null;
-    renderRemoteDeleted();
-    try {
-        const result = await invoke("resolve_remote_deletions", {
-            galleryId: modal.galleryId,
-            photoIds: ids,
-            action,
-            includeCompanions,
-        });
-        modal.result = result;
-        const resolved = new Set(result.resolved || []);
-        modal.items = modal.items.filter((item) => !resolved.has(item.id));
-        if (state.report?.remoteDeleted) {
-            state.report.remoteDeleted = state.report.remoteDeleted.filter(
-                (item) => !resolved.has(item.id),
-            );
-        }
-        if (modal.items.length === 0) {
-            const pending = modal.pendingFavorites;
-            modal.open = false;
-            modal.pendingFavorites = null;
-            await refreshState();
-            renderAll();
-            if (pending) openFavoritesPrompt(pending);
-        } else {
-            await refreshState();
-            renderAll();
-        }
-    } catch (err) {
-        modal.result = {
-            resolved: [],
-            errors: [{ message: err?.message || String(err) }],
-        };
-    } finally {
-        modal.busy = false;
-        renderRemoteDeleted();
     }
 }
 
@@ -2675,6 +2641,7 @@ async function checkForUpdates({ manual = false } = {}) {
  * locate it or unlink the gallery.
  */
 async function openGallery(galleryId) {
+    if (state.review && state.review.galleryId !== galleryId) discardReview();
     state.currentGalleryId = galleryId;
     state.report = null;
     renderAll();
@@ -2749,11 +2716,10 @@ async function init() {
             (gallery) => gallery.galleryId === galleryId,
         );
         if (existing) {
-            state.currentGalleryId = galleryId;
-            renderAll();
-            syncCurrent();
+            // A link from Picstome opens the review; it never applies.
+            openGallery(galleryId).then(reviewCurrent);
         } else {
-            startSync(galleryId, name);
+            linkAndReview(galleryId, name);
         }
     });
     await listen("sync-progress", (event) => {
@@ -2790,7 +2756,7 @@ els.galleryList.addEventListener("click", (event) => {
     const row = event.target.closest(".gallery-row");
     if (!row) return;
     if (row.dataset.remote === "1") {
-        startSync(row.dataset.galleryId, row.dataset.galleryName);
+        linkAndReview(row.dataset.galleryId, row.dataset.galleryName);
         return;
     }
     openGallery(row.dataset.galleryId);
@@ -2801,7 +2767,7 @@ els.home.addEventListener("click", (event) => {
     const card = event.target.closest(".home-card");
     if (!card) return;
     if (card.dataset.remote === "1") {
-        startSync(card.dataset.galleryId, card.dataset.galleryName);
+        linkAndReview(card.dataset.galleryId, card.dataset.galleryName);
         return;
     }
     openGallery(card.dataset.galleryId);
@@ -2812,10 +2778,10 @@ els.galleryList.addEventListener("dblclick", (event) => {
     if (!row || row.dataset.remote === "1") return;
     state.currentGalleryId = row.dataset.galleryId;
     renderAll();
-    syncCurrent();
+    reviewCurrent();
 });
 
-els.btnSync.addEventListener("click", syncCurrent);
+els.btnSync.addEventListener("click", reviewCurrent);
 els.btnFavoritesList.addEventListener("click", openFavoritesList);
 els.favoritesFilter.addEventListener("input", () => {
     state.favorites.query = els.favoritesFilter.value;
@@ -2842,19 +2808,62 @@ els.btnFavoritesCopy.addEventListener("click", async () => {
     }, 1600);
 });
 els.btnClearLog.addEventListener("click", clearLog);
+
+els.btnReviewApply.addEventListener("click", applyReview);
+els.btnReviewDiscard.addEventListener("click", discardReview);
+els.reviewGroups.addEventListener("change", (event) => {
+    const review = state.review;
+    const target = event.target;
+    if (!review) return;
+    if (target.id === "reviewRatings") {
+        review.ratings = target.checked;
+    } else if (target.id === "reviewFavouriteStars") {
+        review.favouritesStars = Number(target.value) || null;
+    } else if (target.classList.contains("review-all") && target.value) {
+        for (const id of Object.keys(review.choices[target.dataset.group])) {
+            const row = els.reviewGroups.querySelector(
+                `select[data-group="${target.dataset.group}"][data-id="${CSS.escape(id)}"]`,
+            );
+            // "Trash with its RAW" only applies to rows that have a RAW.
+            const allowed = !row || Array.from(row.options).some((option) => option.value === target.value);
+            if (allowed) review.choices[target.dataset.group][id] = target.value;
+        }
+    } else if (target.dataset.group && target.dataset.id) {
+        review.choices[target.dataset.group][target.dataset.id] = target.value;
+    } else {
+        return;
+    }
+    renderReview();
+});
+els.reviewGroups.addEventListener("input", (event) => {
+    if (event.target.id === "massDeleteConfirm" && state.review) {
+        state.review.massConfirm = event.target.value.trim();
+        updateReviewBar();
+    }
+});
+els.reviewGroups.addEventListener("click", (event) => {
+    const expand = event.target.closest("[data-expand]");
+    if (expand && state.review) {
+        state.review.expanded[expand.dataset.expand] = true;
+        renderReview();
+        return;
+    }
+    const raw = event.target.closest("[data-raw-mode]");
+    if (raw) chooseRawInReview(raw.dataset.rawMode);
+});
 els.btnIdleSync.addEventListener("click", () => {
     const gallery = currentGallery();
     if (gallery && !gallery.exists) {
         locateCurrent();
     } else {
-        syncCurrent();
+        reviewCurrent();
     }
 });
 els.btnAddGallery.addEventListener("click", openPicstome);
 els.btnConnect.addEventListener("click", openPicstome);
 els.btnConnectWelcome.addEventListener("click", openPicstome);
-els.btnDemo.addEventListener("click", () => startSync("G123", "MiBoda"));
-els.btnDemoWelcome.addEventListener("click", () => startSync("G123", "MiBoda"));
+els.btnDemo.addEventListener("click", () => linkAndReview("G123", "MiBoda"));
+els.btnDemoWelcome.addEventListener("click", () => linkAndReview("G123", "MiBoda"));
 
 els.accountChip.addEventListener("click", (event) => {
     event.stopPropagation();
@@ -2994,46 +3003,6 @@ els.btnUnlink.addEventListener("click", async () => {
     await unlinkGallery(state.currentGalleryId);
 });
 
-els.btnDeleteRemote.addEventListener("click", async () => {
-    if (!state.currentGalleryId) return;
-    const ids = Array.from(
-        els.deleteList.querySelectorAll("input[type=checkbox]:checked"),
-    ).map((checkbox) => checkbox.dataset.photoId);
-    if (ids.length === 0) return;
-    const confirmed = await askConfirm({
-        title: state.strings.confirmRemoteDeleteTitle,
-        message: fmt(state.strings.confirmRemoteDeleteMessage, {
-            n: ids.length,
-        }),
-        confirmLabel: state.strings.confirmRemoteDeleteAction,
-    });
-    if (!confirmed) return;
-    try {
-        await invoke("apply_deletions", {
-            galleryId: state.currentGalleryId,
-            photoIds: ids,
-        });
-        if (state.report) {
-            state.report.proposals.deleteRemote =
-                state.report.proposals.deleteRemote.filter(
-                    (photo) => !ids.includes(photo.id),
-                );
-        }
-        hide(els.deleteBox);
-        await refreshState();
-        renderReport();
-    } catch (err) {
-        state.report = {
-            ...(state.report || {}),
-            errors: [{ filename: "—", message: err?.message || String(err) }],
-            proposals: { deleteRemote: [] },
-        };
-        renderReport();
-    }
-});
-
-els.btnCancelDelete.addEventListener("click", () => hide(els.deleteBox));
-
 for (const button of els.starButtons) {
     button.addEventListener("click", () => {
         state.rating.value = normalizeRating(button.dataset.rating);
@@ -3050,43 +3019,6 @@ els.btnRatingFolder.addEventListener("click", async () => {
         renderRating();
     }
 });
-
-els.btnRemoteDeleteLocal.addEventListener("click", () =>
-    resolveRemoteDeleted("delete_local"),
-);
-els.btnRemoteKeepLocal.addEventListener("click", () =>
-    resolveRemoteDeleted("keep_local"),
-);
-els.btnRemoteUploadAgain.addEventListener("click", () =>
-    resolveRemoteDeleted("upload"),
-);
-for (const radio of [
-    els.firstSyncLocalUpload,
-    els.firstSyncLocalKeep,
-    els.firstSyncLocalTrash,
-]) {
-    radio.addEventListener("change", () => {
-        if (radio.checked) {
-            state.firstSync.localAction = radio.value;
-            renderFirstSync();
-        }
-    });
-}
-
-for (const radio of [els.firstSyncRawJpeg, els.firstSyncRawBoth]) {
-    radio.addEventListener("change", () => {
-        if (radio.checked) {
-            state.firstSync.rawMode = radio.value;
-            renderFirstSync();
-        }
-    });
-}
-
-els.firstSyncDownload.addEventListener("change", () => {
-    state.firstSync.download = els.firstSyncDownload.checked;
-});
-
-els.btnFirstSyncConfirm.addEventListener("click", () => settleFirstSync(true));
 
 els.btnIncludeIgnored.addEventListener("click", async () => {
     if (!state.currentGalleryId) return;
@@ -3110,7 +3042,7 @@ els.btnIncludeIgnored.addEventListener("click", async () => {
         renderAll();
         return;
     }
-    await syncCurrent();
+    await reviewCurrent();
 });
 
 
@@ -3134,7 +3066,7 @@ els.gallerySearch.addEventListener("keydown", (event) => {
             renderAll();
         } else {
             const remote = remoteGalleries()[0];
-            if (remote) startSync(remote.id, remote.name);
+            if (remote) linkAndReview(remote.id, remote.name);
         }
     } else if (event.key === "Escape") {
         event.stopPropagation();
@@ -3158,23 +3090,6 @@ const MODALS = [
         buttons: [els.btnConfirmCancel],
         isOpen: () => state.confirm.open,
         close: () => settleConfirm(null),
-    },
-    {
-        backdrop: els.firstSyncModal,
-        buttons: [els.btnFirstSyncCancel, els.btnFirstSyncClose],
-        isOpen: () => state.firstSync.open,
-        close: () => settleFirstSync(false),
-    },
-    {
-        backdrop: els.remoteDeletedModal,
-        buttons: [els.btnRemoteClose],
-        isOpen: () => state.remoteDeleted.open,
-        busy: () => state.remoteDeleted.busy,
-        close: () => {
-            state.remoteDeleted.open = false;
-            state.remoteDeleted.pendingFavorites = null;
-            renderRemoteDeleted();
-        },
     },
     {
         backdrop: els.ratingModal,

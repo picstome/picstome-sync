@@ -570,6 +570,18 @@ pub struct SyncReport {
     /// no RAW choice yet. The UI asks and syncs again.
     #[serde(default)]
     pub raw_decision_needed: usize,
+    /// The reviewed plan this report applied.
+    #[serde(default)]
+    pub plan_id: Option<String>,
+    /// Files and photos left alone because they changed after the review.
+    #[serde(default)]
+    pub skipped_changed: Vec<String>,
+    /// Photos deleted in Picstome because they were deleted here.
+    #[serde(default)]
+    pub deleted_remote: Vec<String>,
+    /// Photos deleted in Picstome that were trashed, kept or uploaded again.
+    #[serde(default)]
+    pub remote_deleted_resolved: usize,
     #[serde(default)]
     pub timings: SyncTimings,
     #[serde(default)]
