@@ -2030,7 +2030,14 @@ const REVIEW_OPTIONS = {
     remoteDeleted: ["later", "keep", "trash", "upload"],
     remoteDeletedWithRaw: ["later", "keep", "trash", "trash_raw", "upload"],
     localDeleted: ["later", "delete", "restore"],
+    ratings: ["apply", "later"],
 };
+
+/** "★★★★☆" for 4 stars. */
+function starsText(stars) {
+    const n = Math.max(0, Math.min(5, Number(stars) || 0));
+    return "★".repeat(n) + "☆".repeat(5 - n);
+}
 
 /** Rows shown per group before "Show all". */
 const REVIEW_PREVIEW_ROWS = 8;
@@ -2038,7 +2045,12 @@ const REVIEW_PREVIEW_ROWS = 8;
 /** Label of a row choice. */
 function reviewOptionLabel(group, option, s) {
     const labels = {
-        apply: group === "downloads" ? s.optDownload : s.optUpload,
+        apply:
+            group === "downloads"
+                ? s.optDownload
+                : group === "ratings"
+                  ? s.optWriteStars
+                  : s.optUpload,
         later: s.optLater,
         ignore: s.optIgnore,
         trash: s.optTrash,
@@ -2053,7 +2065,10 @@ function reviewOptionLabel(group, option, s) {
 
 /** Build the review state for a plan, every row on its default. */
 function newReview(galleryId, plan) {
-    const choices = { downloads: {}, uploads: {}, remoteDeleted: {}, localDeleted: {} };
+    const choices = { downloads: {}, uploads: {}, remoteDeleted: {}, localDeleted: {}, ratings: {} };
+    const ratings = plan.ratings || {};
+    for (const item of ratings.items || []) choices.ratings[item.id] = "apply";
+    for (const item of ratings.needsRating || []) choices.ratings[item.id] = "apply";
     for (const item of plan.downloads) choices.downloads[item.id] = "apply";
     for (const item of plan.uploads) choices.uploads[item.relativePath] = "apply";
     for (const item of plan.remoteDeleted) choices.remoteDeleted[item.id] = "later";
@@ -2062,7 +2077,8 @@ function newReview(galleryId, plan) {
         galleryId,
         plan,
         choices,
-        ratings: true,
+        /** Favourites with a heart and no stars: they need a star value. */
+        favouriteIds: new Set((ratings.needsRating || []).map((item) => item.id)),
         favouritesStars: null,
         massConfirm: "",
         expanded: {},
@@ -2070,7 +2086,8 @@ function newReview(galleryId, plan) {
 }
 
 /** The groups of a plan, in the order they are shown. */
-function reviewGroups(plan, s) {
+function reviewGroups(review, s) {
+    const plan = review.plan;
     const size = (bytes) => (bytes ? formatBytes(bytes) : "");
     const meta = (...parts) => parts.filter(Boolean).join(" · ");
     return [
@@ -2124,24 +2141,52 @@ function reviewGroups(plan, s) {
             options: REVIEW_OPTIONS.localDeleted,
             tone: "warn",
         },
+        {
+            key: "ratings",
+            title: s.groupRatings,
+            items: [...(plan.ratings?.items || []), ...(plan.ratings?.needsRating || [])],
+            id: (item) => item.id,
+            name: (item) => item.filename,
+            meta: (item) => ratingRowMeta(review, item, s),
+            options: REVIEW_OPTIONS.ratings,
+        },
     ];
+}
+
+/**
+ * What a ratings row will write: "★★★★☆ · before ★★☆☆☆", "Remove stars",
+ * or, for a favourite without stars, the value chosen above the list.
+ */
+function ratingRowMeta(review, item, s) {
+    if (review.favouriteIds.has(item.id)) {
+        return review.favouritesStars
+            ? fmt(s.favouriteStarsChosen, { stars: starsText(review.favouritesStars) })
+            : s.favouriteStarsMissing;
+    }
+    const next = item.rating == null ? s.starsClear : starsText(item.rating);
+    const before = item.appliedRating == null ? "" : fmt(s.starsBefore, { stars: starsText(item.appliedRating) });
+    return [next, before].filter(Boolean).join(" · ");
 }
 
 /** Number of actions the photographer chose (everything not "Later"). */
 function reviewActionCount(review) {
     let count = 0;
-    for (const group of Object.values(review.choices)) {
-        for (const choice of Object.values(group)) if (choice !== "later") count += 1;
+    for (const [group, choices] of Object.entries(review.choices)) {
+        if (group === "ratings") continue;
+        for (const choice of Object.values(choices)) if (choice !== "later") count += 1;
     }
-    if (reviewRatingsEnabled(review)) count += 1;
-    return count;
+    return count + reviewRatingIds(review).length;
 }
 
-function reviewRatingsEnabled(review) {
-    const ratings = review.plan.ratings || {};
-    const writes = (ratings.items || []).length > 0;
-    const favourites = (ratings.needsRating || []).length > 0 && review.favouritesStars;
-    return review.ratings && Boolean(writes || favourites);
+/**
+ * Photo ids whose stars will be written: ticked rows, except favourites
+ * while no star value has been chosen for them.
+ */
+function reviewRatingIds(review) {
+    return Object.entries(review.choices.ratings)
+        .filter(([, choice]) => choice === "apply")
+        .map(([id]) => id)
+        .filter((id) => !review.favouriteIds.has(id) || review.favouritesStars);
 }
 
 /** How many photos the review would delete in Picstome. */
@@ -2176,6 +2221,7 @@ function renderReviewGroup(review, group, s) {
     section.appendChild(head);
 
     if (group.key === "uploads") renderRawChoice(review, section, s);
+    if (group.key === "ratings") renderFavouriteStars(review, section, s);
 
     const expanded = review.expanded[group.key];
     const visible = expanded ? group.items : group.items.slice(0, REVIEW_PREVIEW_ROWS);
@@ -2243,40 +2289,25 @@ function renderMassDeleteGuard(review, section, s) {
     section.appendChild(box);
 }
 
-function renderReviewRatings(review, s) {
-    const ratings = review.plan.ratings || {};
-    const writes = (ratings.items || []).length;
-    const favourites = (ratings.needsRating || []).length;
-    if (writes === 0 && favourites === 0) return null;
-    const section = el("section", "review-group");
-    const head = el("div", "review-group-head");
-    head.appendChild(el("h3", "", s.groupRatings));
-    section.appendChild(head);
-    const label = el("label", "review-check");
-    const box = el("input");
-    box.type = "checkbox";
-    box.id = "reviewRatings";
-    box.checked = review.ratings;
-    label.append(box, el("span", "", fmt(s.ratingsApply, { n: writes + (review.favouritesStars ? favourites : 0) })));
-    section.appendChild(label);
-    if (favourites > 0) {
-        const row = el("div", "review-row");
-        row.appendChild(el("span", "review-row-name", fmt(s.ratingsFavourites, { n: favourites })));
-        const select = el("select", "review-select");
-        select.id = "reviewFavouriteStars";
-        const skip = el("option", "", s.ratingsFavouritesSkip);
-        skip.value = "";
-        select.appendChild(skip);
-        for (let stars = 5; stars >= 1; stars -= 1) {
-            const option = el("option", "", "★".repeat(stars));
-            option.value = String(stars);
-            option.selected = review.favouritesStars === stars;
-            select.appendChild(option);
-        }
-        row.appendChild(select);
-        section.appendChild(row);
+/** Star value for every favourite that has a heart but no stars. */
+function renderFavouriteStars(review, section, s) {
+    const favourites = review.favouriteIds.size;
+    if (favourites === 0) return;
+    const box = el("div", "review-note");
+    box.appendChild(el("span", "", fmt(s.ratingsFavourites, { n: favourites })));
+    const select = el("select", "review-select");
+    select.id = "reviewFavouriteStars";
+    const skip = el("option", "", s.ratingsFavouritesSkip);
+    skip.value = "";
+    select.appendChild(skip);
+    for (let stars = 5; stars >= 1; stars -= 1) {
+        const option = el("option", "", starsText(stars));
+        option.value = String(stars);
+        option.selected = review.favouritesStars === stars;
+        select.appendChild(option);
     }
-    return section;
+    box.appendChild(select);
+    section.appendChild(box);
 }
 
 function renderReviewNotes(plan, s) {
@@ -2313,11 +2344,9 @@ function renderReview() {
     const plan = review.plan;
     els.reviewTitle.textContent = s.reviewTitle;
     els.reviewHint.textContent = plan.firstSync ? s.reviewFirstSyncHint : s.reviewHint;
-    const nodes = reviewGroups(plan, s)
+    const nodes = reviewGroups(review, s)
         .filter((group) => group.items.length > 0 || (group.key === "uploads" && plan.rawDecisionNeeded > 0))
         .map((group) => renderReviewGroup(review, group, s));
-    const ratings = renderReviewRatings(review, s);
-    if (ratings) nodes.push(ratings);
     const notes = renderReviewNotes(plan, s);
     if (notes) nodes.push(notes);
     els.reviewGroups.replaceChildren(...nodes);
@@ -2461,8 +2490,9 @@ async function applyReview() {
             planId: review.plan.id,
             selection: reviewSelection(review),
             ratings: {
-                apply: reviewRatingsEnabled(review),
+                apply: reviewRatingIds(review).length > 0,
                 favouritesStars: review.favouritesStars,
+                ids: reviewRatingIds(review),
             },
         });
         state.review = null;
@@ -2815,9 +2845,7 @@ els.reviewGroups.addEventListener("change", (event) => {
     const review = state.review;
     const target = event.target;
     if (!review) return;
-    if (target.id === "reviewRatings") {
-        review.ratings = target.checked;
-    } else if (target.id === "reviewFavouriteStars") {
+    if (target.id === "reviewFavouriteStars") {
         review.favouritesStars = Number(target.value) || null;
     } else if (target.classList.contains("review-all") && target.value) {
         for (const id of Object.keys(review.choices[target.dataset.group])) {

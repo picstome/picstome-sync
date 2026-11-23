@@ -801,7 +801,8 @@ pub async fn get_gallery_favorites(
     Ok(manifest.favorite_photos())
 }
 
-/// Write the Picstome ratings of a gallery into its local files.
+/// Write the Picstome ratings of a gallery into its local files, limited to
+/// the photo ids in `only` (the rows ticked in the review).
 ///
 /// `favourites_without_rating` is the star value chosen for favourites that
 /// have a heart but no rating; it applies to all of them. Runs as part of
@@ -811,6 +812,7 @@ async fn write_ratings(
     _ops: &GalleryOpsGuard<'_>,
     id: &str,
     favourites_without_rating: Option<u8>,
+    only: &std::collections::HashSet<String>,
 ) -> Result<RateResult, ErrorPayload> {
     let id = id.to_string();
     let Some(gallery) = state.store.get_gallery(&id) else {
@@ -826,7 +828,9 @@ async fn write_ratings(
     // Photos the prompt asked about, so a chosen value also marks them
     // answered and the question is not repeated on the next sync.
     let asked = rating_plan_from_snapshot(&snapshot, None).needs_rating;
-    let plan = rating_plan_from_snapshot(&snapshot, fallback);
+    let mut plan = rating_plan_from_snapshot(&snapshot, fallback);
+    // Only the photos the photographer saw and ticked in the review.
+    plan.items.retain(|item| only.contains(&item.id));
     if plan.items.is_empty() {
         return Ok(RateResult {
             rated: 0,
@@ -994,6 +998,8 @@ pub struct RatingSelection {
     pub apply: bool,
     /// Stars for favourites that have a heart but no rating (1-5).
     pub favourites_stars: Option<u8>,
+    /// Photo ids whose stars may be written (the ticked rows).
+    pub ids: Vec<String>,
 }
 
 /// What an Apply did: the sync report and, if requested, the ratings.
@@ -1057,7 +1063,7 @@ pub async fn apply_review(
     };
     append_sync_log(&state.store, &report);
     let ratings = match ratings {
-        Some(choice) if choice.apply => Some(
+        Some(choice) if choice.apply && !choice.ids.is_empty() => Some(
             write_ratings(
                 &state,
                 &ops,
@@ -1065,6 +1071,7 @@ pub async fn apply_review(
                 choice
                     .favourites_stars
                     .filter(|stars| (1..=5).contains(stars)),
+                &choice.ids.iter().cloned().collect(),
             )
             .await?,
         ),
