@@ -161,6 +161,7 @@ pub fn run() {
             commands::get_gallery_covers,
             commands::get_account_avatar,
             commands::check_gallery_folder,
+            commands::set_gallery_raw_mode,
             commands::get_config,
             commands::choose_folder,
             commands::connect,

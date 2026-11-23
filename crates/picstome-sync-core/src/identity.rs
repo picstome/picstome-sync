@@ -11,6 +11,13 @@ pub const PHOTO_EXTS: &[&str] = &[
     "srw", "mos", "mrw", "3fr", "mp4", "mov", "avi", "mkv", "webm", "m4v", "ogg", "pdf",
 ];
 
+/// Camera RAW formats, DNG included. Used by the "do not upload RAW" option:
+/// Picstome is for delivering photos to clients, not a RAW backup.
+pub fn is_raw(filename: &str) -> bool {
+    let ext = extension_of(filename);
+    ext == "dng" || RAW_EXTS.contains(&ext.as_str())
+}
+
 pub fn extension_of(filename: &str) -> String {
     Path::new(filename)
         .extension()
@@ -105,6 +112,16 @@ mod tests {
         assert_eq!(identity_key(files[0]), identity_key(files[1]));
         let chosen = preferred_file(&files, |f| *f).unwrap();
         assert_eq!(*chosen, "1Z8A1081.JPG");
+    }
+
+    #[test]
+    fn recognises_raw_formats_including_dng() {
+        for name in ["a.CR3", "a.nef", "a.ARW", "a.dng", "a.RAF"] {
+            assert!(is_raw(name), "{name}");
+        }
+        for name in ["a.jpg", "a.png", "a.tiff", "a.mp4", "a.pdf"] {
+            assert!(!is_raw(name), "{name}");
+        }
     }
 
     #[test]

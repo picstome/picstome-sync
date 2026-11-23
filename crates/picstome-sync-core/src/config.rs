@@ -112,6 +112,7 @@ fn normalize_entry(entry: GalleryEntry) -> Option<GalleryEntry> {
         parent_gallery_id: entry
             .parent_gallery_id
             .and_then(|id| sanitize_gallery_id(&id)),
+        raw_mode: entry.raw_mode,
     })
 }
 
@@ -337,6 +338,7 @@ mod tests {
                 last_sync_at: None,
                 remote_rev: None,
                 parent_gallery_id: None,
+                raw_mode: None,
             })
             .unwrap();
         store
@@ -347,6 +349,7 @@ mod tests {
                 last_sync_at: None,
                 remote_rev: None,
                 parent_gallery_id: None,
+                raw_mode: None,
             })
             .unwrap();
         assert_eq!(store.load_index().len(), 1);
@@ -371,6 +374,7 @@ mod tests {
                 last_sync_at: None,
                 remote_rev: None,
                 parent_gallery_id: None,
+                raw_mode: None,
             })
             .unwrap()
             .is_none());
@@ -411,6 +415,7 @@ mod extra_tests {
             last_sync_at: None,
             remote_rev: None,
             parent_gallery_id: None,
+            raw_mode: None,
         }
     }
 

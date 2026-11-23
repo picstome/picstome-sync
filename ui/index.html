@@ -166,6 +166,11 @@
                         <div class="main-meta">
                             <span class="meta-pill" id="detailStats"></span>
                             <span class="meta-pill" id="detailLastSync"></span>
+                            <button
+                                type="button"
+                                class="meta-pill meta-action hidden"
+                                id="detailRawMode"
+                            ></button>
                         </div>
                     </div>
                     <div class="main-actions" id="mainActions">
@@ -266,6 +271,7 @@
                         <div class="report-errors" id="reportErrors"></div>
                         <div class="report-warnings" id="reportWarnings"></div>
                         <div class="report-files" id="reportFiles"></div>
+                        <p class="hint raw-note hidden" id="reportRaw"></p>
                         <div class="report-ignored hidden" id="reportIgnored">
                             <span id="reportIgnoredText"></span>
                             <button
@@ -547,6 +553,22 @@
                     </button>
                 </div>
                 <p class="hint" id="firstSyncHint"></p>
+                <p class="hint raw-note hidden" id="firstSyncRawOnly"></p>
+
+                <!-- Only when local-only photos have RAW files and the gallery
+                     has no RAW choice yet. -->
+                <div class="first-sync-section hidden" id="firstSyncRawSection">
+                    <div class="first-sync-choice-title" id="firstSyncRawTitle"></div>
+                    <label class="first-sync-option">
+                        <input type="radio" name="firstSyncRaw" id="firstSyncRawJpeg" value="jpeg_only" checked />
+                        <span id="firstSyncRawJpegLabel"></span>
+                    </label>
+                    <label class="first-sync-option">
+                        <input type="radio" name="firstSyncRaw" id="firstSyncRawBoth" value="jpeg_and_raw" />
+                        <span id="firstSyncRawBothLabel"></span>
+                    </label>
+                    <p class="hint" id="firstSyncRawHint"></p>
+                </div>
 
                 <div class="first-sync-section" id="firstSyncUploadSection">
                     <div class="first-sync-choice-title" id="firstSyncUploadLabel"></div>

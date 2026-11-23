@@ -36,6 +36,7 @@ fn gallery(store: &Store, root: &std::path::Path) -> GalleryEntry {
             last_sync_at: None,
             remote_rev: None,
             parent_gallery_id: None,
+            raw_mode: None,
         })
         .unwrap()
         .unwrap()
@@ -152,6 +153,7 @@ async fn missing_local_folder_is_an_error() {
             last_sync_at: None,
             remote_rev: None,
             parent_gallery_id: None,
+            raw_mode: None,
         })
         .unwrap()
         .unwrap();

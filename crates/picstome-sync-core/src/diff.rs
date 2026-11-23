@@ -81,6 +81,7 @@ pub fn compute_diff(
                         filename: file.filename.clone(),
                         identity_key: Some(key.clone()),
                         relative_path: Some(file.relative_path.clone()),
+                        companions: Vec::new(),
                     });
                 }
                 _ => diff.local_new.push(file.clone()),

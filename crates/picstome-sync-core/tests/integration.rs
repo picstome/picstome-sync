@@ -1,5 +1,7 @@
 use std::sync::Arc;
 
+use picstome_sync_core::model::RawMode;
+
 use picstome_sync_core::api::ApiClient;
 use picstome_sync_core::config::Store;
 use picstome_sync_core::ignored::{GalleryIgnores, IgnoredLocal, IgnoredRemote};
@@ -188,6 +190,7 @@ async fn setup_sync() -> (
             last_sync_at: None,
             remote_rev: None,
             parent_gallery_id: None,
+            raw_mode: None,
         })
         .unwrap()
         .unwrap();
@@ -620,6 +623,7 @@ async fn remote_deletions_are_reported_and_resolved_explicitly() {
         &gallery,
         std::slice::from_ref(&kept.id),
         RemoteDeleteAction::KeepLocal,
+        false,
         1,
     )
     .await
@@ -646,6 +650,7 @@ async fn remote_deletions_are_reported_and_resolved_explicitly() {
         &gallery,
         std::slice::from_ref(&deleted.id),
         RemoteDeleteAction::DeleteLocal,
+        false,
         2,
     )
     .await
@@ -678,6 +683,7 @@ async fn remote_deletions_are_reported_and_resolved_explicitly() {
         &gallery,
         std::slice::from_ref(&restored.id),
         RemoteDeleteAction::Upload,
+        false,
         3,
     )
     .await
@@ -878,7 +884,9 @@ async fn first_sync_preview_lists_both_sides() {
     )
     .unwrap();
 
-    let preview = preview_first_sync(&api, &store, &gallery).await.unwrap();
+    let preview = preview_first_sync(&api, &store, &gallery, None)
+        .await
+        .unwrap();
     assert!(preview.needed);
     assert_eq!(preview.local_total, 3);
     assert_eq!(preview.remote_total, 50);
@@ -1053,7 +1061,9 @@ async fn first_sync_trashes_every_local_representation() {
     dng_bytes.resize(640, 0);
     std::fs::write(&dng, &dng_bytes).unwrap();
 
-    let preview = preview_first_sync(&api, &store, &gallery).await.unwrap();
+    let preview = preview_first_sync(&api, &store, &gallery, None)
+        .await
+        .unwrap();
     let names: Vec<&str> = preview
         .local_only
         .iter()
@@ -1354,4 +1364,222 @@ async fn resolves_and_caches_gallery_covers() {
     let later = 2_000 + picstome_sync_core::covers::COVER_REFRESH_MS + 1;
     let stale = resolve_cover(&api, &cache, "G123", "MiBoda", dir.path(), later).await;
     assert_eq!(stale, Some(cover));
+}
+
+fn raw_bytes(fill: u8) -> Vec<u8> {
+    let mut raw = b"II*\0".to_vec();
+    raw.resize(2048, fill);
+    raw
+}
+
+fn sync_with(raw_mode: Option<RawMode>) -> SyncOptions {
+    SyncOptions {
+        raw_mode,
+        ..Default::default()
+    }
+}
+
+#[tokio::test]
+async fn photos_with_raw_wait_for_a_choice_then_follow_jpeg_only() {
+    let (mock, api, _dir, store, gallery) = setup_sync().await;
+    run_gallery_sync(&api, &store, &gallery, SyncOptions::default(), silence())
+        .await
+        .unwrap();
+    let root = std::path::Path::new(&gallery.local_path);
+    std::fs::write(root.join("ONLY_RAW.CR3"), raw_bytes(3)).unwrap();
+    std::fs::write(root.join("WITH_JPG.jpg"), jpeg_bytes(900, 4)).unwrap();
+    std::fs::write(root.join("WITH_JPG.NEF"), raw_bytes(4)).unwrap();
+    std::fs::write(root.join("PLAIN.jpg"), jpeg_bytes(800, 6)).unwrap();
+
+    // No choice yet: photos with a RAW wait (JPEG included); the rest goes up.
+    let report = run_gallery_sync(&api, &store, &gallery, sync_with(None), silence())
+        .await
+        .unwrap();
+    let uploaded: Vec<&str> = report
+        .uploaded
+        .iter()
+        .map(|item| item.filename.as_str())
+        .collect();
+    assert_eq!(uploaded, vec!["PLAIN.jpg"]);
+    assert_eq!(report.raw_decision_needed, 2);
+    assert!(report.proposals.delete_remote.is_empty());
+    assert!(report.errors.is_empty(), "{:?}", report.errors);
+
+    // JPEG only: the JPEG of the pair is uploaded, RAW files stay local.
+    for _ in 0..2 {
+        let report = run_gallery_sync(
+            &api,
+            &store,
+            &gallery,
+            sync_with(Some(RawMode::JpegOnly)),
+            silence(),
+        )
+        .await
+        .unwrap();
+        assert!(report.uploaded_raw.is_empty());
+        assert_eq!(report.raw_kept_local, vec!["ONLY_RAW.CR3".to_string()]);
+        assert_eq!(report.raw_decision_needed, 0);
+        assert!(report.errors.is_empty(), "{:?}", report.errors);
+    }
+    let names: Vec<String> = api
+        .manifest("G123")
+        .await
+        .unwrap()
+        .photos
+        .into_iter()
+        .map(|photo| photo.filename)
+        .collect();
+    assert!(names.contains(&"WITH_JPG.jpg".to_string()), "{names:?}");
+    assert!(!names
+        .iter()
+        .any(|name| name.ends_with(".CR3") || name.ends_with(".NEF")));
+    let quiet = run_gallery_sync(
+        &api,
+        &store,
+        &gallery,
+        sync_with(Some(RawMode::JpegOnly)),
+        silence(),
+    )
+    .await
+    .unwrap();
+    assert!(
+        quiet.skipped,
+        "held RAW files are not pending changes: {:?}",
+        quiet.counts
+    );
+    mock.close().await;
+}
+
+#[tokio::test]
+async fn jpeg_and_raw_uploads_the_raw_first_so_clients_see_the_jpeg() {
+    let (mock, api, _dir, store, gallery) = setup_sync().await;
+    run_gallery_sync(&api, &store, &gallery, SyncOptions::default(), silence())
+        .await
+        .unwrap();
+    let root = std::path::Path::new(&gallery.local_path);
+    std::fs::write(root.join("PAIR.jpg"), jpeg_bytes(900, 4)).unwrap();
+    std::fs::write(root.join("PAIR.CR3"), raw_bytes(4)).unwrap();
+    std::fs::write(root.join("SOLO.NEF"), raw_bytes(7)).unwrap();
+
+    let options = || sync_with(Some(RawMode::JpegAndRaw));
+    let report = run_gallery_sync(&api, &store, &gallery, options(), silence())
+        .await
+        .unwrap();
+    assert!(report.errors.is_empty(), "{:?}", report.errors);
+    let raw: Vec<&str> = report
+        .uploaded_raw
+        .iter()
+        .map(|item| item.filename.as_str())
+        .collect();
+    assert_eq!(raw, vec!["PAIR.CR3"]);
+    let mut main: Vec<&str> = report
+        .uploaded
+        .iter()
+        .map(|item| item.filename.as_str())
+        .collect();
+    main.sort();
+    assert_eq!(main, vec!["PAIR.jpg", "SOLO.NEF"]);
+
+    // In Picstome the pair is one photo with two versions, the JPEG current.
+    let manifest = api.manifest("G123").await.unwrap();
+    let pair = manifest
+        .photos
+        .iter()
+        .find(|photo| photo.filename.to_lowercase().starts_with("pair."))
+        .expect("pair photo");
+    assert_eq!(pair.filename, "PAIR.jpg");
+    assert_eq!(pair.version_count, Some(2));
+
+    // Nothing to do on the next sync: no re-download, no re-upload.
+    let again = run_gallery_sync(&api, &store, &gallery, options(), silence())
+        .await
+        .unwrap();
+    assert!(again.skipped, "{:?}", again.counts);
+    assert!(again.downloaded.is_empty());
+    mock.close().await;
+}
+
+#[tokio::test]
+async fn first_sync_preview_counts_photos_with_raw() {
+    let (mock, api, _dir, store, gallery) = setup_sync().await;
+    let root = std::path::Path::new(&gallery.local_path);
+    std::fs::write(root.join("ONLY_RAW.CR3"), raw_bytes(3)).unwrap();
+    std::fs::write(root.join("PAIR.jpg"), jpeg_bytes(700, 2)).unwrap();
+    std::fs::write(root.join("PAIR.NEF"), raw_bytes(2)).unwrap();
+    std::fs::write(root.join("LOCAL.jpg"), jpeg_bytes(600, 9)).unwrap();
+
+    let ask = preview_first_sync(&api, &store, &gallery, None)
+        .await
+        .unwrap();
+    assert_eq!(ask.raw_photos, 2);
+    assert_eq!(ask.local_only.len(), 4);
+
+    let jpeg_only = preview_first_sync(&api, &store, &gallery, Some(RawMode::JpegOnly))
+        .await
+        .unwrap();
+    let names: Vec<&str> = jpeg_only
+        .local_only
+        .iter()
+        .map(|item| item.filename.as_str())
+        .collect();
+    assert!(!names.contains(&"ONLY_RAW.CR3"), "{names:?}");
+    assert_eq!(jpeg_only.raw_only_local, 1);
+    mock.close().await;
+}
+
+#[tokio::test]
+async fn photo_deleted_in_picstome_can_take_its_raw_to_the_trash() {
+    let (mock, api, _dir, store, gallery) = setup_sync().await;
+    run_gallery_sync(&api, &store, &gallery, SyncOptions::default(), silence())
+        .await
+        .unwrap();
+    let manifest = api.manifest("G123").await.unwrap();
+    let photo = manifest.photos.first().unwrap().clone();
+    let root = std::path::Path::new(&gallery.local_path);
+    let jpg = root.join(&photo.filename);
+    let stem = std::path::Path::new(&photo.filename)
+        .file_stem()
+        .unwrap()
+        .to_string_lossy()
+        .to_string();
+    let raw_path = root.join(format!("{stem}.CR3"));
+    let mut raw = b"II*\0".to_vec();
+    raw.resize(2048, 5);
+    std::fs::write(&raw_path, &raw).unwrap();
+
+    reqwest::Client::new()
+        .post(format!("{}/api/v1/dev/remove", mock.url))
+        .bearer_auth(&mock.token)
+        .json(&serde_json::json!({"gallery_id": "G123", "photo_id": photo.id}))
+        .send()
+        .await
+        .unwrap();
+    let report = run_gallery_sync(&api, &store, &gallery, SyncOptions::default(), silence())
+        .await
+        .unwrap();
+    assert_eq!(report.remote_deleted.len(), 1);
+    assert_eq!(
+        report.remote_deleted[0].companions,
+        vec![format!("{stem}.CR3")]
+    );
+
+    let resolution = resolve_remote_deletions(
+        &api,
+        &store,
+        &gallery,
+        std::slice::from_ref(&photo.id),
+        RemoteDeleteAction::DeleteLocal,
+        true,
+        5,
+    )
+    .await
+    .unwrap();
+    assert_eq!(resolution.resolved, vec![photo.id.clone()]);
+    assert!(!jpg.exists());
+    assert!(
+        !raw_path.exists(),
+        "the RAW should follow its JPEG to the trash"
+    );
+    assert_eq!(resolution.trashed.len(), 2);
+    mock.close().await;
 }

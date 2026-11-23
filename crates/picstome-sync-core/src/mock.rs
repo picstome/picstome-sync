@@ -612,9 +612,13 @@ async fn upload_photo(
                 }),
             );
         }
+        // Like Picstome: the new upload becomes the current version, name
+        // included (a RAW uploaded after its JPEG would become what clients
+        // see).
         let photo = &mut gallery.photos[index];
         photo.data = Arc::new(data);
         photo.hash = hash;
+        photo.filename = filename;
         photo.version_count += 1;
         photo.version_number = photo.version_count;
         photo.updated_at = iso_now();

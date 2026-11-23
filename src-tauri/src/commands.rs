@@ -17,7 +17,7 @@ use picstome_sync_core::ignored::{GalleryIgnores, IgnoredLocal, IgnoredRemote};
 use picstome_sync_core::mock::MockServer;
 use picstome_sync_core::model::{
     AppState as AppStateView, AuthState, ConfigView, DeleteResponse, FavoritePhoto, GalleryEntry,
-    GalleryPage, GallerySummary, GalleryView, Progress, SyncReport, DEFAULT_API_BASE,
+    GalleryPage, GallerySummary, GalleryView, Progress, RawMode, SyncReport, DEFAULT_API_BASE,
 };
 use picstome_sync_core::sanitize::{safe_join, sanitize_file_names, sanitize_gallery_id};
 use picstome_sync_core::sync::{
@@ -536,7 +536,7 @@ async fn sync_linked(
     state: &AppState,
     _ops: &GalleryOpsGuard<'_>,
     gallery_id: &str,
-    options: SyncOptions,
+    mut options: SyncOptions,
 ) -> Result<SyncReport, ErrorPayload> {
     let Some(id) = sanitize_gallery_id(gallery_id) else {
         return Err(invalid_gallery());
@@ -544,6 +544,9 @@ async fn sync_linked(
     let Some(gallery) = state.store.get_gallery(&id) else {
         return Err(not_linked());
     };
+    // The gallery's RAW choice is read here, once, so every way of starting
+    // a sync (button, deep link, first-sync choice) honours it.
+    options.raw_mode = gallery.raw_mode;
     if !folder_exists(&gallery.local_path) {
         append_sync_error_log(&state.store, &id, "Folder not found");
         return Err(folder_missing());
@@ -971,6 +974,7 @@ pub async fn start_sync(
             last_sync_at: None,
             remote_rev: None,
             parent_gallery_id: None,
+            raw_mode: None,
         })?
         else {
             return Err(invalid_gallery());
@@ -981,10 +985,15 @@ pub async fn start_sync(
         return Err(invalid_gallery());
     };
     let api = state.api().await;
+    let raw_mode = gallery.raw_mode;
     let progress = progress_emitter(app.clone());
     let gallery_for_scan = id.clone();
-    let (preview, prepared_scan) =
-        preview_first_sync_prepared(&api, &state.store, &gallery, move |seen, matched| {
+    let (preview, prepared_scan) = preview_first_sync_prepared(
+        &api,
+        &state.store,
+        &gallery,
+        raw_mode,
+        move |seen, matched| {
             progress(Progress {
                 gallery_id: gallery_for_scan.clone(),
                 phase: "scan".into(),
@@ -993,8 +1002,9 @@ pub async fn start_sync(
                 file_done: Some(seen),
                 ..Default::default()
             })
-        })
-        .await?;
+        },
+    )
+    .await?;
     if preview.needed {
         return Ok(StartSyncResult {
             canceled: false,
@@ -1034,7 +1044,7 @@ pub async fn preview_first_sync(
         return Err(not_linked());
     };
     let api = state.api().await;
-    Ok(preview_first_sync_core(&api, &state.store, &gallery).await?)
+    Ok(preview_first_sync_core(&api, &state.store, &gallery, gallery.raw_mode).await?)
 }
 
 #[tauri::command]
@@ -1045,11 +1055,20 @@ pub async fn sync_gallery(
     ignore_local: Option<Vec<FirstSyncItem>>,
     ignore_remote: Option<Vec<FirstSyncItem>>,
     trash_local: Option<Vec<FirstSyncItem>>,
+    raw_mode: Option<String>,
 ) -> Result<SyncReport, ErrorPayload> {
     let Some(id) = sanitize_gallery_id(&gallery_id) else {
         return Err(invalid_gallery());
     };
     let ops = state.try_gallery_ops()?;
+    // An answer given in the first-sync dialog (or right after a sync that
+    // asked) is stored before syncing, so this sync already uses it.
+    if let Some(mode) = raw_mode.as_deref() {
+        let mode = parse_raw_mode(mode)?;
+        state
+            .store
+            .patch_gallery(&id, |entry| entry.raw_mode = Some(mode))?;
+    }
     if ignore_local.is_some() || ignore_remote.is_some() {
         let Some(gallery) = state.store.get_gallery(&id) else {
             return Err(not_linked());
@@ -1128,6 +1147,40 @@ pub async fn change_folder(
     patch_linked_folder(&app, &state, &gallery_id, true).await
 }
 
+/// Parse the RAW choice sent by the UI (`"jpeg_only"` / `"jpeg_and_raw"`).
+fn parse_raw_mode(value: &str) -> Result<RawMode, ErrorPayload> {
+    match value {
+        "jpeg_only" => Ok(RawMode::JpegOnly),
+        "jpeg_and_raw" => Ok(RawMode::JpegAndRaw),
+        _ => Err(command_error("Unknown RAW option", "invalid_request")),
+    }
+}
+
+/// Remember what to upload for photos with a RAW file in this gallery.
+/// Applies from the next sync; photos already in Picstome are not changed.
+#[tauri::command]
+pub async fn set_gallery_raw_mode(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    gallery_id: String,
+    mode: String,
+) -> Result<Value, ErrorPayload> {
+    let Some(id) = sanitize_gallery_id(&gallery_id) else {
+        return Err(invalid_gallery());
+    };
+    let mode = parse_raw_mode(&mode)?;
+    let _ops = state.try_gallery_ops()?;
+    if state
+        .store
+        .patch_gallery(&id, |entry| entry.raw_mode = Some(mode))?
+        .is_none()
+    {
+        return Err(not_linked());
+    }
+    emit_state(&app, &state).await;
+    Ok(json!({"ok": true}))
+}
+
 /// Quick check, run when a gallery is opened, that its linked folder is still
 /// there (it may have been moved, renamed, deleted or be on an unplugged
 /// drive since the app started). Only a `stat`; nothing is scanned.
@@ -1192,6 +1245,7 @@ pub async fn resolve_remote_deletions(
     gallery_id: String,
     photo_ids: Vec<String>,
     action: String,
+    include_companions: Option<bool>,
 ) -> Result<Value, ErrorPayload> {
     let Some(id) = sanitize_gallery_id(&gallery_id) else {
         return Err(invalid_gallery());
@@ -1228,24 +1282,31 @@ pub async fn resolve_remote_deletions(
             })
         })
         .collect();
-    let result =
-        match resolve_remote_deletions_core(&api, &state.store, &gallery, &photo_ids, action, now)
-            .await
-        {
-            Ok(result) => result,
-            Err(error) => {
-                append_deletion_log(
-                    &state.store,
-                    &id,
-                    &action_name,
-                    files,
-                    0,
-                    Vec::new(),
-                    vec![error.to_string()],
-                );
-                return Err(error.into());
-            }
-        };
+    let result = match resolve_remote_deletions_core(
+        &api,
+        &state.store,
+        &gallery,
+        &photo_ids,
+        action,
+        include_companions.unwrap_or(false),
+        now,
+    )
+    .await
+    {
+        Ok(result) => result,
+        Err(error) => {
+            append_deletion_log(
+                &state.store,
+                &id,
+                &action_name,
+                files,
+                0,
+                Vec::new(),
+                vec![error.to_string()],
+            );
+            return Err(error.into());
+        }
+    };
     append_deletion_log(
         &state.store,
         &id,

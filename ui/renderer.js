@@ -95,14 +95,24 @@ const state = {
         danger: true,
         resolve: null,
     },
-    firstSync: {
+    firstSync: emptyFirstSync(),
+};
+
+/** Closed first-sync dialog state. */
+function emptyFirstSync() {
+    return {
         open: false,
         preview: null,
         localAction: "upload",
         download: true,
+        /** Ask "JPEG only / JPEG + RAW" in the dialog (no gallery choice yet). */
+        askRaw: false,
+        rawMode: "jpeg_only",
+        /** The gallery's stored RAW choice, when it has one. */
+        galleryRawMode: null,
         resolve: null,
-    },
-};
+    };
+}
 
 const els = {
     envBadge: document.getElementById("envBadge"),
@@ -141,6 +151,16 @@ const els = {
     btnCheckUpdates: document.getElementById("btnCheckUpdates"),
     updateStatus: document.getElementById("updateStatus"),
     btnConfirmAlt: document.getElementById("btnConfirmAlt"),
+    detailRawMode: document.getElementById("detailRawMode"),
+    firstSyncRawSection: document.getElementById("firstSyncRawSection"),
+    firstSyncRawTitle: document.getElementById("firstSyncRawTitle"),
+    firstSyncRawJpeg: document.getElementById("firstSyncRawJpeg"),
+    firstSyncRawBoth: document.getElementById("firstSyncRawBoth"),
+    firstSyncRawJpegLabel: document.getElementById("firstSyncRawJpegLabel"),
+    firstSyncRawBothLabel: document.getElementById("firstSyncRawBothLabel"),
+    firstSyncRawHint: document.getElementById("firstSyncRawHint"),
+    firstSyncRawOnly: document.getElementById("firstSyncRawOnly"),
+    reportRaw: document.getElementById("reportRaw"),
     btnLogout: document.getElementById("btnLogout"),
     btnInfo: document.getElementById("btnInfo"),
 
@@ -460,6 +480,16 @@ function formatDate(value) {
     }
 }
 
+/** Camera RAW formats (DNG included), as in the sync engine. */
+const RAW_EXTENSIONS = new Set([
+    "dng", "cr3", "cr2", "arw", "nef", "raf", "orf", "rw2", "pef", "srw", "mos", "mrw", "3fr",
+]);
+
+function isRawFile(filename) {
+    const ext = String(filename || "").split(".").pop().toLowerCase();
+    return RAW_EXTENSIONS.has(ext);
+}
+
 /** First letter of a name for avatars, `?` when there is none. */
 function initial(name) {
     return String(name || "").trim().charAt(0).toUpperCase() || "?";
@@ -490,6 +520,9 @@ function applyStrings() {
     setLabel(els.btnOpenProfile, s.myProfile);
     setLabel(els.btnCheckUpdates, s.checkUpdates);
     setLabel(els.btnInfo, s.info);
+    els.firstSyncRawJpegLabel.textContent = s.rawJpegOnly;
+    els.firstSyncRawBothLabel.textContent = s.rawJpegAndRaw;
+    els.firstSyncRawHint.textContent = s.firstSyncRawHint;
     renderSyncButton(s);
     setLabel(els.btnChangeFolder, s.changeFolder);
     els.btnChangeFolder.title = s.changeFolder;
@@ -1196,6 +1229,10 @@ function renderMain() {
     els.detailPath.disabled = !gallery.exists;
     els.detailPath.title = gallery.exists ? s.openFolder : s.folderMissing;
     els.detailStats.textContent = galleryStatsText(gallery);
+    const rawLabels = { jpeg_only: s.rawModeJpegOnly, jpeg_and_raw: s.rawModeJpegAndRaw };
+    els.detailRawMode.textContent = rawLabels[gallery.rawMode] || "";
+    els.detailRawMode.title = s.rawChangeTitle;
+    els.detailRawMode.classList.toggle("hidden", !gallery.rawMode);
     els.detailLastSync.textContent = fmt(s.lastSyncAt, {
         date: formatDate(gallery.lastSyncAt),
     });
@@ -1424,6 +1461,11 @@ function renderReport() {
             els.reportFiles.appendChild(line);
         }
     }
+
+    const rawKept = report.rawKeptLocal || [];
+    els.reportRaw.textContent = rawKept.length ? fmt(s.rawKeptLocal, { n: rawKept.length }) : "";
+    els.reportRaw.title = rawKept.join("\n");
+    els.reportRaw.classList.toggle("hidden", rawKept.length === 0);
 
     const ignoredLocal = report.ignoredLocal || [];
     const ignoredRemote = report.ignoredRemote || [];
@@ -1760,16 +1802,17 @@ function renderRemoteDeleted() {
     });
     els.remoteDeletedList.replaceChildren();
     for (const item of modal.items) {
-        const label = document.createElement("label");
-        label.className = "delete-item";
-        const checkbox = document.createElement("input");
+        const label = el("label", "delete-item");
+        const checkbox = el("input");
         checkbox.type = "checkbox";
         checkbox.checked = true;
         checkbox.dataset.remoteId = item.id;
-        const text = document.createElement("span");
-        text.textContent = item.filename;
-        label.appendChild(checkbox);
-        label.appendChild(text);
+        const text = el("span", "", item.filename);
+        label.append(checkbox, text);
+        // The RAW (or other copies) of the same photo sitting next to it.
+        if (item.companions?.length) {
+            label.appendChild(el("span", "delete-companions", `+ ${item.companions.join(", ")}`));
+        }
         els.remoteDeletedList.appendChild(label);
     }
     els.btnRemoteDeleteLocal.disabled = modal.busy || modal.items.length === 0;
@@ -1802,7 +1845,41 @@ function renderRemoteDeleted() {
     }
 }
 
-function handlePostSync(report) {
+/**
+ * Ask what to upload for photos with a RAW file. Resolves `"jpeg_only"`,
+ * `"jpeg_and_raw"` or `null` (cancelled: asked again next time).
+ */
+async function askRawMode({ title, message }) {
+    const s = state.strings;
+    const choice = await askChoice({
+        title,
+        message,
+        confirmLabel: s.rawJpegOnly,
+        altLabel: s.rawJpegAndRaw,
+        danger: false,
+    });
+    if (choice === "confirm") return "jpeg_only";
+    if (choice === "alt") return "jpeg_and_raw";
+    return null;
+}
+
+async function handlePostSync(report) {
+    // Photos with a RAW waited for this gallery's answer: ask, then sync
+    // again so they go up straight away.
+    const waiting = Number(report?.rawDecisionNeeded) || 0;
+    if (waiting > 0) {
+        const s = state.strings;
+        const gallery = state.galleries.find((item) => item.galleryId === report.galleryId);
+        const name = gallery?.name || report.name || "";
+        const mode = await askRawMode({
+            title: s.rawQuestionTitle,
+            message: fmt(s.rawQuestionMessage, { name, n: waiting }),
+        });
+        if (mode) {
+            await runSync(report.galleryId, name, { rawMode: mode });
+            return;
+        }
+    }
     const remoteDeleted = report?.remoteDeleted || [];
     if (remoteDeleted.length > 0) {
         state.remoteDeleted = {
@@ -1823,8 +1900,12 @@ function fillFirstSyncList(container, items, s) {
     container.replaceChildren();
     const visible = items.slice(0, 8);
     for (const item of visible) {
-        const line = document.createElement("div");
-        line.textContent = item.filename;
+        const line = el("div", "", item.filename);
+        // With RAW upload off, the RAW of a JPEG+RAW pair is listed (it moves
+        // with its photo if trashed) but is never uploaded: say so.
+        if (rawModeForFirstSync() === "jpeg_only" && isRawFile(item.filename)) {
+            line.appendChild(el("span", "first-sync-tag", s.rawNotUploaded));
+        }
         container.appendChild(line);
     }
     if (items.length > visible.length) {
@@ -1867,6 +1948,16 @@ function renderFirstSync() {
         n: (preview.remoteOnly || []).length,
     });
     els.firstSyncDownloadHint.textContent = s.firstSyncDownloadHint;
+    const askRaw = modal.askRaw;
+    els.firstSyncRawSection.classList.toggle("hidden", !askRaw);
+    if (askRaw) {
+        els.firstSyncRawTitle.textContent = fmt(s.firstSyncRawTitle, { n: preview.rawPhotos });
+        els.firstSyncRawJpeg.checked = modal.rawMode === "jpeg_only";
+        els.firstSyncRawBoth.checked = modal.rawMode === "jpeg_and_raw";
+    }
+    const rawOnly = Number(preview.rawOnlyLocal) || 0;
+    els.firstSyncRawOnly.textContent = rawOnly ? fmt(s.firstSyncRawOnly, { n: rawOnly }) : "";
+    els.firstSyncRawOnly.classList.toggle("hidden", rawOnly === 0);
     fillFirstSyncList(els.firstSyncUploadList, preview.localOnly || [], s);
     fillFirstSyncList(els.firstSyncDownloadList, preview.remoteOnly || [], s);
     const trashAction = hasUpload && modal.localAction === "trash";
@@ -1884,13 +1975,8 @@ function settleFirstSync(confirmed) {
     const preview = modal.preview;
     const localAction = modal.localAction;
     const download = modal.download;
-    state.firstSync = {
-        open: false,
-        preview: null,
-        localAction: "upload",
-        download: true,
-        resolve: null,
-    };
+    const rawMode = modal.askRaw ? modal.rawMode : null;
+    state.firstSync = emptyFirstSync();
     renderFirstSync();
     if (!resolve) return;
     if (!confirmed || !preview) {
@@ -1902,17 +1988,25 @@ function settleFirstSync(confirmed) {
         ignoreLocal: localAction === "keep" ? localOnly : [],
         trashLocal: localAction === "trash" ? localOnly : [],
         ignoreRemote: download ? [] : (preview.remoteOnly || []),
+        rawMode,
     });
 }
 
-function askFirstSync(preview) {
+/** RAW choice that applies to the first sync being previewed. */
+function rawModeForFirstSync() {
+    const modal = state.firstSync;
+    return modal.askRaw ? modal.rawMode : modal.galleryRawMode;
+}
+
+function askFirstSync(preview, galleryRawMode = null) {
     if (state.firstSync.resolve) settleFirstSync(false);
     return new Promise((resolve) => {
         state.firstSync = {
+            ...emptyFirstSync(),
             open: true,
             preview,
-            localAction: "upload",
-            download: true,
+            askRaw: !galleryRawMode && (Number(preview.rawPhotos) || 0) > 0,
+            galleryRawMode,
             resolve,
         };
         renderFirstSync();
@@ -2271,6 +2365,7 @@ async function runSync(galleryId, name, choice = null) {
             args.ignoreLocal = choice.ignoreLocal || [];
             args.ignoreRemote = choice.ignoreRemote || [];
             args.trashLocal = choice.trashLocal || [];
+            if (choice.rawMode) args.rawMode = choice.rawMode;
         }
         state.report = await invoke("sync_gallery", args);
     } catch (err) {
@@ -2312,7 +2407,7 @@ async function syncCurrent() {
 
     let choice = null;
     if (preview?.needed) {
-        choice = await askFirstSync(preview);
+        choice = await askFirstSync(preview, gallery.rawMode);
         if (!choice) return;
     }
     await runSync(gallery.galleryId, gallery.name, choice);
@@ -2346,7 +2441,8 @@ async function startSync(galleryId, name) {
 
     if (missing || !result || result.canceled) return;
     if (result.preview?.needed) {
-        const choice = await askFirstSync(result.preview);
+        const linked = state.galleries.find((item) => item.galleryId === galleryId);
+        const choice = await askFirstSync(result.preview, linked?.rawMode || null);
         if (choice) await runSync(galleryId, label, choice);
     } else if (result.report) {
         refreshCoverAfterSync(galleryId);
@@ -2415,6 +2511,27 @@ async function applyRating() {
     }
 }
 
+/**
+ * Before trashing photos deleted in Picstome, ask whether their RAW files
+ * (same name, same folder) should go too. Resolves true/false, or null when
+ * the photographer cancels.
+ */
+async function askIncludeCompanions(items) {
+    const withRaw = items.filter((item) => item.companions?.length);
+    if (withRaw.length === 0) return false;
+    const s = state.strings;
+    const files = withRaw.flatMap((item) => item.companions);
+    const shown = files.slice(0, 3).join(", ") + (files.length > 3 ? ", …" : "");
+    const choice = await askChoice({
+        title: s.deleteRawTitle,
+        message: fmt(s.deleteRawMessage, { n: withRaw.length, files: shown }),
+        confirmLabel: s.deleteRawYes,
+        altLabel: s.deleteRawNo,
+    });
+    if (choice === null) return null;
+    return choice === "confirm";
+}
+
 async function resolveRemoteDeleted(action) {
     const modal = state.remoteDeleted;
     if (!modal.galleryId || modal.busy) return;
@@ -2422,6 +2539,12 @@ async function resolveRemoteDeleted(action) {
         els.remoteDeletedList.querySelectorAll("input[type=checkbox]:checked"),
     ).map((checkbox) => checkbox.dataset.remoteId);
     if (ids.length === 0) return;
+    let includeCompanions = false;
+    if (action === "delete_local") {
+        const selected = modal.items.filter((item) => ids.includes(item.id));
+        includeCompanions = await askIncludeCompanions(selected);
+        if (includeCompanions === null) return;
+    }
     modal.busy = true;
     modal.result = null;
     renderRemoteDeleted();
@@ -2430,6 +2553,7 @@ async function resolveRemoteDeleted(action) {
             galleryId: modal.galleryId,
             photoIds: ids,
             action,
+            includeCompanions,
         });
         modal.result = result;
         const resolved = new Set(result.resolved || []);
@@ -2760,6 +2884,21 @@ document.addEventListener("click", (event) => {
     if (!event.target.closest(".account-wrap")) closeAccountMenu();
 });
 
+els.detailRawMode.addEventListener("click", async () => {
+    const gallery = currentGallery();
+    if (!gallery || state.syncBusy) return;
+    const s = state.strings;
+    const mode = await askRawMode({ title: s.rawChangeTitle, message: s.rawChangeMessage });
+    if (!mode || mode === gallery.rawMode) return;
+    try {
+        await invoke("set_gallery_raw_mode", { galleryId: gallery.galleryId, mode });
+        await refreshState();
+    } catch (err) {
+        state.report = syncErrorReport(err);
+        renderAll();
+    }
+});
+
 els.btnCheckUpdates.addEventListener("click", () => checkForUpdates({ manual: true }));
 
 async function toggleTestMode() {
@@ -2929,6 +3068,15 @@ for (const radio of [
     radio.addEventListener("change", () => {
         if (radio.checked) {
             state.firstSync.localAction = radio.value;
+            renderFirstSync();
+        }
+    });
+}
+
+for (const radio of [els.firstSyncRawJpeg, els.firstSyncRawBoth]) {
+    radio.addEventListener("change", () => {
+        if (radio.checked) {
+            state.firstSync.rawMode = radio.value;
             renderFirstSync();
         }
     });

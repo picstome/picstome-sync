@@ -53,6 +53,7 @@ async fn run_async() -> Result<serde_json::Value, String> {
                 last_sync_at: None,
                 remote_rev: None,
                 parent_gallery_id: None,
+                raw_mode: None,
             })
             .map_err(|err| err.to_string())?
             .ok_or_else(|| "could not link gallery".to_string())?;

@@ -16,10 +16,11 @@ use crate::localfiles::{
     file_identity, folder_exists as path_is_dir, group_local_files, preferred_local_files,
     scan_local_photos_with, RawLocalFile, MAX_PHOTO_BYTES,
 };
+use crate::model::RawMode;
 use crate::model::{
     DeleteProposal, DeleteProposals, DeleteResponse, Diff, DownloadedItem, FavoritePhoto,
-    GalleryEntry, Manifest, Photo, Progress, RatingSyncItem, RatingSyncPlan, Snapshot,
-    SnapshotFile, SyncErrorItem, SyncReport, SyncScanStats, SyncTimings, SyncWarningItem,
+    GalleryEntry, Manifest, Photo, Progress, RatingSyncItem, RatingSyncPlan, RemoteDeletedItem,
+    Snapshot, SnapshotFile, SyncErrorItem, SyncReport, SyncScanStats, SyncTimings, SyncWarningItem,
     TrashedFile, UploadedItem, SNAPSHOT_SCHEMA,
 };
 use crate::sanitize::{is_inside, safe_join, sanitize_file_name};
@@ -40,6 +41,9 @@ pub struct SyncOptions {
     /// Scan already performed by the first-sync preview. Reusing it avoids
     /// walking and fingerprinting the folder twice in the same user action.
     pub prepared_scan: Option<PreparedScan>,
+    /// What to upload for photos that have a RAW file. `None` means the
+    /// gallery has no answer yet: those photos wait and the report asks.
+    pub raw_mode: Option<RawMode>,
 }
 
 impl Default for SyncOptions {
@@ -52,6 +56,7 @@ impl Default for SyncOptions {
             hash_concurrency: default_hash_concurrency(),
             trash_local: Vec::new(),
             prepared_scan: None,
+            raw_mode: None,
         }
     }
 }
@@ -111,6 +116,15 @@ pub struct FirstSyncPreview {
     pub local_only: Vec<FirstSyncItem>,
     #[serde(default)]
     pub remote_only: Vec<FirstSyncItem>,
+    /// Local photos that only exist as RAW and stay on disk because the
+    /// gallery uploads JPEG only. They are offered neither for upload nor for
+    /// the trash.
+    #[serde(default)]
+    pub raw_only_local: u64,
+    /// Local-only photos that have a RAW file (pairs and RAW-only). When the
+    /// gallery has no RAW choice yet, the preview asks for it.
+    #[serde(default)]
+    pub raw_photos: u64,
 }
 
 fn now_millis() -> i64 {
@@ -914,12 +928,48 @@ pub async fn adopt_local_changes(
     Ok(updated)
 }
 
+/// Other photo files next to `path` that belong to the same photo (same
+/// stem and family, e.g. `IMG_1.CR3` beside `IMG_1.JPG`). Only the same
+/// folder is searched: that is where cameras and editors put them.
+fn companion_paths(path: &Path) -> Vec<PathBuf> {
+    let Some(key) = path
+        .file_name()
+        .and_then(|name| identity_key(&name.to_string_lossy()))
+    else {
+        return Vec::new();
+    };
+    let Some(folder) = path.parent() else {
+        return Vec::new();
+    };
+    let Ok(entries) = std::fs::read_dir(folder) else {
+        return Vec::new();
+    };
+    let mut companions: Vec<PathBuf> = entries
+        .filter_map(Result::ok)
+        .map(|entry| entry.path())
+        .filter(|candidate| candidate != path && candidate.is_file())
+        .filter(|candidate| {
+            candidate.file_name().is_some_and(|name| {
+                let name = name.to_string_lossy();
+                crate::identity::is_photo_file(&name)
+                    && identity_key(&name).as_deref() == Some(&key)
+            })
+        })
+        .collect();
+    companions.sort();
+    companions
+}
+
+/// Resolve photos deleted in Picstome: trash the local copy, keep it, or
+/// upload it again. With `include_companions`, trashing a photo also trashes
+/// the other files of the same photo beside it (its RAW).
 pub async fn resolve_remote_deletions(
     api: &ApiClient,
     store: &Store,
     gallery: &GalleryEntry,
     ids: &[String],
     action: RemoteDeleteAction,
+    include_companions: bool,
     now: i64,
 ) -> CoreResult<RemoteDeleteResolution> {
     let mut snapshot = store
@@ -931,6 +981,7 @@ pub async fn resolve_remote_deletions(
 
     if action == RemoteDeleteAction::DeleteLocal {
         let mut targets = Vec::new();
+        let mut companion_targets = Vec::new();
         let mut target_ids = Vec::new();
         let mut target_names = Vec::new();
         for id in ids {
@@ -948,6 +999,15 @@ pub async fn resolve_remote_deletions(
                 continue;
             };
             if let Some(path) = local_path_for(gallery, &snapshot.files[index]) {
+                if include_companions {
+                    for companion in companion_paths(&path) {
+                        let name = companion
+                            .file_name()
+                            .map(|name| name.to_string_lossy().to_string())
+                            .unwrap_or_default();
+                        companion_targets.push((id.clone(), name, companion));
+                    }
+                }
                 targets.push((id.clone(), snapshot.files[index].filename.clone(), path));
                 target_ids.push(id.clone());
                 target_names.push(snapshot.files[index].filename.clone());
@@ -990,6 +1050,41 @@ pub async fn resolve_remote_deletions(
         for (index, id) in target_ids.iter().enumerate() {
             if !failed.contains(&index) {
                 resolved.push(id.clone());
+            }
+        }
+
+        // Companions (RAW files) follow only photos whose main file went to
+        // the trash. A failure here is reported but does not undo the
+        // resolution: the photo itself is already gone.
+        companion_targets.retain(|(id, _, _)| resolved.contains(id));
+        if !companion_targets.is_empty() {
+            let gallery_for_trash = gallery.clone();
+            let names: Vec<String> = companion_targets
+                .iter()
+                .map(|(_, name, _)| name.clone())
+                .collect();
+            match tokio::task::spawn_blocking(move || {
+                trash_targets(&gallery_for_trash, &companion_targets)
+            })
+            .await
+            {
+                Ok((items, failures)) => {
+                    trashed.extend(items);
+                    for (index, message) in failures {
+                        errors.push(SyncErrorItem {
+                            phase: "remote_delete".into(),
+                            filename: Some(names[index].clone()),
+                            path: None,
+                            message,
+                        });
+                    }
+                }
+                Err(error) => errors.push(SyncErrorItem {
+                    phase: "remote_delete".into(),
+                    filename: None,
+                    path: None,
+                    message: error.to_string(),
+                }),
             }
         }
 
@@ -1165,8 +1260,9 @@ pub async fn preview_first_sync(
     api: &ApiClient,
     store: &Store,
     gallery: &GalleryEntry,
+    raw_mode: Option<RawMode>,
 ) -> CoreResult<FirstSyncPreview> {
-    preview_first_sync_with(api, store, gallery, |_, _| {}).await
+    preview_first_sync_with(api, store, gallery, raw_mode, |_, _| {}).await
 }
 
 /// Same as [`preview_first_sync`] but reports how many entries the local walk
@@ -1175,14 +1271,17 @@ pub async fn preview_first_sync_with<F>(
     api: &ApiClient,
     store: &Store,
     gallery: &GalleryEntry,
+    raw_mode: Option<RawMode>,
     on_scan: F,
 ) -> CoreResult<FirstSyncPreview>
 where
     F: Fn(u64, u64) + Send + Sync + 'static,
 {
-    Ok(preview_first_sync_prepared(api, store, gallery, on_scan)
-        .await?
-        .0)
+    Ok(
+        preview_first_sync_prepared(api, store, gallery, raw_mode, on_scan)
+            .await?
+            .0,
+    )
 }
 
 /// First-sync preview that also hands back the walk it performed, so the sync
@@ -1194,6 +1293,7 @@ pub async fn preview_first_sync_prepared<F>(
     api: &ApiClient,
     store: &Store,
     gallery: &GalleryEntry,
+    raw_mode: Option<RawMode>,
     on_scan: F,
 ) -> CoreResult<(FirstSyncPreview, Option<PreparedScan>)>
 where
@@ -1248,12 +1348,29 @@ where
     let mut local_only = Vec::new();
     let mut remote_only = Vec::new();
     let mut in_sync = 0u64;
+    let mut raw_only_local = 0u64;
+    let mut raw_photos = 0u64;
     let keys: HashSet<&String> = local_groups.keys().chain(remote_groups.keys()).collect();
 
     for key in keys {
         match (local_groups.get(key), remote_groups.get(key)) {
             (Some(_), Some(_)) => in_sync += 1,
+            (Some(local), None)
+                if raw_mode == Some(RawMode::JpegOnly)
+                    && local
+                        .iter()
+                        .all(|file| crate::identity::is_raw(&file.filename)) =>
+            {
+                // Never uploaded with RAW upload off: nothing to decide.
+                raw_only_local += 1;
+            }
             (Some(local), None) => {
+                if local
+                    .iter()
+                    .any(|file| crate::identity::is_raw(&file.filename))
+                {
+                    raw_photos += 1;
+                }
                 // A logical photo may have several local representations
                 // (for example JPG + RAW). Treat all of them together so
                 // trashing or ignoring one does not promote the other into
@@ -1300,9 +1417,32 @@ where
             in_sync,
             local_only,
             remote_only,
+            raw_only_local,
+            raw_photos,
         },
         Some(PreparedScan { records }),
     ))
+}
+
+/// List, for every photo deleted in Picstome, the other local files of the
+/// same photo (typically the RAW beside the JPEG), so the UI can ask whether
+/// to trash them too.
+fn attach_companions(items: &mut [RemoteDeletedItem], local_files: &[crate::model::LocalFile]) {
+    let groups = group_local_files(local_files);
+    for item in items {
+        let Some(key) = item.identity_key.as_deref() else {
+            continue;
+        };
+        let Some(group) = groups.get(key) else {
+            continue;
+        };
+        item.companions = group
+            .iter()
+            .filter(|file| Some(&file.relative_path) != item.relative_path.as_ref())
+            .map(|file| file.filename.clone())
+            .collect();
+        item.companions.sort();
+    }
 }
 
 /// Where a remote photo is written locally.
@@ -1431,6 +1571,198 @@ impl TransferPhase {
         self.files_done.fetch_add(1, Ordering::SeqCst);
         self.emit(file, None, None);
     }
+}
+
+/// One photo to upload: its main file, preceded by the RAW files that go up
+/// first in "JPEG + RAW" mode (so the JPEG ends up as the current version).
+struct UploadUnit {
+    file: crate::model::LocalFile,
+    /// `"new"` or `"modified"`; a `String` because a borrowed `&'static str`
+    /// inside the stream closure trips a rustc higher-ranked lifetime
+    /// limitation once the future must be `Send` (Tauri commands).
+    reason: String,
+    raw_first: Vec<crate::model::LocalFile>,
+}
+
+/// What a sync uploads, and what it leaves alone because of the RAW choice.
+struct UploadPlan {
+    units: Vec<UploadUnit>,
+    raw_kept_local: Vec<String>,
+    raw_decision_needed: usize,
+}
+
+/// Decide what to upload according to the gallery's RAW choice.
+///
+/// * No choice yet: photos that have a RAW wait (JPEG included), so the
+///   answer can still be "JPEG + RAW" without re-uploading anything. The
+///   report asks and the UI syncs again.
+/// * JPEG only: a JPEG is uploaded without its RAW; a RAW-only photo stays on
+///   this computer.
+/// * JPEG + RAW: new photos upload their RAW files first and the JPEG last.
+///   A modified photo only re-uploads the edited file.
+///
+/// Held photos are removed from the diff, so they are not pending changes,
+/// never deletion proposals and not recorded in the snapshot.
+fn plan_uploads(
+    diff: &mut Diff,
+    local_files: &[crate::model::LocalFile],
+    raw_mode: Option<RawMode>,
+) -> UploadPlan {
+    use crate::identity::is_raw;
+    let groups = group_local_files(local_files);
+    let mut plan = UploadPlan {
+        units: Vec::new(),
+        raw_kept_local: Vec::new(),
+        raw_decision_needed: 0,
+    };
+    let mut keep_new = Vec::new();
+    let mut keep_modified = Vec::new();
+
+    let pending = std::mem::take(&mut diff.local_new)
+        .into_iter()
+        .map(|file| (file, true))
+        .chain(
+            std::mem::take(&mut diff.local_modified)
+                .into_iter()
+                .map(|file| (file, false)),
+        );
+    for (file, is_new) in pending {
+        let raws: Vec<crate::model::LocalFile> = groups
+            .get(&file.identity_key)
+            .map(|group| {
+                group
+                    .iter()
+                    .filter(|other| other.relative_path != file.relative_path)
+                    .filter(|other| is_raw(&other.filename))
+                    .map(|other| (*other).clone())
+                    .collect()
+            })
+            .unwrap_or_default();
+        let has_raw = is_raw(&file.filename) || !raws.is_empty();
+
+        let raw_first = match (raw_mode, has_raw) {
+            (_, false) => Vec::new(),
+            (None, true) => {
+                plan.raw_decision_needed += 1;
+                continue;
+            }
+            (Some(RawMode::JpegOnly), true) if is_raw(&file.filename) => {
+                plan.raw_kept_local.push(file.filename.clone());
+                continue;
+            }
+            (Some(RawMode::JpegOnly), true) => Vec::new(),
+            (Some(RawMode::JpegAndRaw), true) if is_new => {
+                let mut raws = raws;
+                raws.sort_by(|a, b| a.relative_path.cmp(&b.relative_path));
+                raws
+            }
+            (Some(RawMode::JpegAndRaw), true) => Vec::new(),
+        };
+        plan.units.push(UploadUnit {
+            file: file.clone(),
+            reason: if is_new { "new" } else { "modified" }.to_string(),
+            raw_first,
+        });
+        if is_new {
+            keep_new.push(file);
+        } else {
+            keep_modified.push(file);
+        }
+    }
+
+    diff.local_new = keep_new;
+    diff.local_modified = keep_modified;
+    diff.counts.local_new = diff.local_new.len();
+    diff.counts.local_modified = diff.local_modified.len();
+    plan.raw_kept_local.sort();
+    plan
+}
+
+/// Result of uploading one photo: its RAW files and the main file.
+struct UnitOutcome {
+    raw: Vec<UploadedItem>,
+    main: Result<UploadedItem, SyncErrorItem>,
+}
+
+/// Upload one file and check that the server stored the same bytes.
+async fn upload_one(
+    api: &ApiClient,
+    gallery_id: &str,
+    phase: &TransferPhase,
+    file: &crate::model::LocalFile,
+    reason: &str,
+) -> Result<UploadedItem, SyncErrorItem> {
+    let transfer_error = |message: String| SyncErrorItem {
+        phase: "upload".into(),
+        filename: Some(file.filename.clone()),
+        path: None,
+        message,
+    };
+    let response = api
+        .upload_photo_with_progress(
+            gallery_id,
+            &file.filename,
+            &file.path,
+            file.size,
+            file.hash.as_deref(),
+            Some(phase.file_progress(&file.filename)),
+        )
+        .await
+        .map_err(|err| transfer_error(err.to_string()))?;
+    if let (Some(server_hash), Some(local_hash)) = (response.hash.as_deref(), file.hash.as_deref())
+    {
+        if local_hash != server_hash {
+            return Err(transfer_error(
+                "the server stored different bytes; sync again".into(),
+            ));
+        }
+    }
+    phase.finish_file(&file.filename);
+    Ok(UploadedItem {
+        id: response.id,
+        filename: response.filename.unwrap_or_else(|| file.filename.clone()),
+        reason: Some(reason.to_string()),
+        size: Some(file.size),
+        version_count: response.version_count,
+        version_number: response.version_number,
+        identity_key: Some(file.identity_key.clone()),
+    })
+}
+
+/// Upload a photo: RAW files first (in order), then the main file.
+///
+/// If a RAW fails, the JPEG is not uploaded either, so the next sync retries
+/// the whole photo. Once a RAW is in Picstome the JPEG must follow, or the RAW
+/// would stay the version clients see: that last upload is retried a few
+/// times before giving up.
+async fn upload_unit(
+    api: &ApiClient,
+    gallery_id: &str,
+    phase: &TransferPhase,
+    unit: UploadUnit,
+) -> UnitOutcome {
+    let mut raw = Vec::new();
+    for file in &unit.raw_first {
+        match upload_one(api, gallery_id, phase, file, &unit.reason).await {
+            Ok(item) => raw.push(item),
+            Err(error) => {
+                return UnitOutcome {
+                    raw,
+                    main: Err(error),
+                };
+            }
+        }
+    }
+    let attempts = if raw.is_empty() { 1 } else { 3 };
+    let mut main = upload_one(api, gallery_id, phase, &unit.file, &unit.reason).await;
+    for attempt in 1..attempts {
+        if main.is_ok() {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(500 * attempt as u64)).await;
+        main = upload_one(api, gallery_id, phase, &unit.file, &unit.reason).await;
+    }
+    UnitOutcome { raw, main }
 }
 
 pub async fn run_gallery_sync(
@@ -1759,7 +2091,9 @@ pub async fn run_gallery_sync(
         })
         .collect();
 
-    let diff = compute_diff(&previous_files, &active_photos, &local_files);
+    let mut diff = compute_diff(&previous_files, &active_photos, &local_files);
+    let upload_plan = plan_uploads(&mut diff, &local_files, options.raw_mode);
+    attach_companions(&mut diff.remote_deleted, &local_files);
 
     // A file over the size limit is a known, deliberate skip: report it as a
     // warning. Only real read failures count as scan errors, because those
@@ -1828,6 +2162,9 @@ pub async fn run_gallery_sync(
             .map(|photo| photo.filename.clone())
             .collect(),
         trashed_local,
+        raw_kept_local: upload_plan.raw_kept_local,
+        uploaded_raw: Vec::new(),
+        raw_decision_needed: upload_plan.raw_decision_needed,
         timings,
         scan_stats,
         skipped: false,
@@ -1932,78 +2269,39 @@ pub async fn run_gallery_sync(
     }
     timings.download_ms = download_started.elapsed().as_millis() as u64;
 
-    // `String` rather than `&'static str`: a borrowed tuple element inside the
-    // stream closure trips a rustc higher-ranked lifetime limitation when the
-    // future is later required to be `Send` (Tauri commands).
-    let to_upload: Vec<(crate::model::LocalFile, String)> = diff
-        .local_new
-        .iter()
-        .map(|file| (file.clone(), "new".to_string()))
-        .chain(
-            diff.local_modified
-                .iter()
-                .map(|file| (file.clone(), "modified".to_string())),
-        )
-        .collect();
+    let units = upload_plan.units;
     let upload_phase = TransferPhase::new(
         progress.clone(),
         &gallery.gallery_id,
         "upload",
-        to_upload.len() as u64,
-        Some(to_upload.iter().map(|(file, _)| file.size).sum()),
+        units
+            .iter()
+            .map(|unit| 1 + unit.raw_first.len() as u64)
+            .sum(),
+        Some(
+            units
+                .iter()
+                .flat_map(|unit| unit.raw_first.iter().chain(std::iter::once(&unit.file)))
+                .map(|file| file.size)
+                .sum(),
+        ),
     );
     let upload_started = std::time::Instant::now();
 
-    let upload_results: Vec<Result<UploadedItem, SyncErrorItem>> = futures::stream::iter(to_upload)
-        .map(|(entry, reason)| {
+    let upload_results: Vec<UnitOutcome> = futures::stream::iter(units)
+        .map(|unit| {
             let api = api.clone();
             let gallery_id = gallery.gallery_id.clone();
             let phase = upload_phase.clone();
-            async move {
-                let transfer_error = |message: String| SyncErrorItem {
-                    phase: "upload".into(),
-                    filename: Some(entry.filename.clone()),
-                    path: None,
-                    message,
-                };
-                let response = api
-                    .upload_photo_with_progress(
-                        &gallery_id,
-                        &entry.filename,
-                        &entry.path,
-                        entry.size,
-                        entry.hash.as_deref(),
-                        Some(phase.file_progress(&entry.filename)),
-                    )
-                    .await
-                    .map_err(|err| transfer_error(err.to_string()))?;
-                if let (Some(server_hash), Some(local_hash)) =
-                    (response.hash.as_deref(), entry.hash.as_deref())
-                {
-                    if local_hash != server_hash {
-                        return Err(transfer_error(
-                            "the server stored different bytes; sync again".into(),
-                        ));
-                    }
-                }
-                phase.finish_file(&entry.filename);
-                Ok(UploadedItem {
-                    id: response.id,
-                    filename: response.filename.unwrap_or_else(|| entry.filename.clone()),
-                    reason: Some(reason),
-                    size: Some(entry.size),
-                    version_count: response.version_count,
-                    version_number: response.version_number,
-                    identity_key: Some(entry.identity_key.clone()),
-                })
-            }
+            async move { upload_unit(&api, &gallery_id, &phase, unit).await }
         })
         .buffer_unordered(options.upload_concurrency.max(1))
         .collect()
         .await;
 
-    for result in upload_results {
-        match result {
+    for outcome in upload_results {
+        report.uploaded_raw.extend(outcome.raw);
+        match outcome.main {
             Ok(item) => report.uploaded.push(item),
             Err(error) => report.errors.push(error),
         }
@@ -2070,6 +2368,7 @@ pub async fn run_gallery_sync(
             last_sync_at: Some(now),
             remote_rev: snapshot.remote_rev.clone(),
             parent_gallery_id: gallery.parent_gallery_id.clone(),
+            raw_mode: gallery.raw_mode,
         })?;
     }
 
@@ -2163,6 +2462,7 @@ mod tests {
             last_sync_at: None,
             remote_rev: None,
             parent_gallery_id: None,
+            raw_mode: None,
         }
     }
 
@@ -2467,6 +2767,7 @@ mod tests {
                 last_sync_at: None,
                 remote_rev: None,
                 parent_gallery_id: None,
+                raw_mode: None,
             })
             .unwrap();
 

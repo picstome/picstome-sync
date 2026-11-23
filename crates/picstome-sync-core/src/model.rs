@@ -64,6 +64,25 @@ pub struct GalleryEntry {
     pub remote_rev: Option<Value>,
     #[serde(default)]
     pub parent_gallery_id: Option<String>,
+    /// What to upload for photos that have a RAW file. `None` until the
+    /// photographer answers the question for this gallery.
+    #[serde(default)]
+    pub raw_mode: Option<RawMode>,
+}
+
+/// How photos with a RAW file are uploaded to a gallery.
+///
+/// In Picstome a JPEG and its RAW (same name) are one photo, and every upload
+/// becomes its current version. With [`RawMode::JpegAndRaw`] the RAW is
+/// uploaded first and the JPEG last, so clients see the JPEG and the RAW is
+/// kept as the previous version.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RawMode {
+    /// Only JPEGs go to Picstome; RAW files stay on this computer.
+    JpegOnly,
+    /// JPEG and RAW are uploaded (as versions of the same photo).
+    JpegAndRaw,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -419,6 +438,10 @@ pub struct RemoteDeletedItem {
     pub identity_key: Option<String>,
     #[serde(default)]
     pub relative_path: Option<String>,
+    /// Other local files of the same photo next to it (typically the RAW
+    /// beside a JPEG). The UI asks whether to trash them too.
+    #[serde(default)]
+    pub companions: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -537,6 +560,16 @@ pub struct SyncReport {
     pub ignored_remote: Vec<String>,
     #[serde(default)]
     pub trashed_local: Vec<TrashedFile>,
+    /// RAW files left on this computer only (gallery set to "JPEG only").
+    #[serde(default)]
+    pub raw_kept_local: Vec<String>,
+    /// RAW files uploaded before their JPEG (gallery set to "JPEG + RAW").
+    #[serde(default)]
+    pub uploaded_raw: Vec<UploadedItem>,
+    /// Photos with a RAW file that were not uploaded because this gallery has
+    /// no RAW choice yet. The UI asks and syncs again.
+    #[serde(default)]
+    pub raw_decision_needed: usize,
     #[serde(default)]
     pub timings: SyncTimings,
     #[serde(default)]
