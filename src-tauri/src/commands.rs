@@ -123,12 +123,18 @@ impl AppState {
     }
 
     pub fn defer_link(&self, raw: &str) {
-        *self.pending_link.lock().unwrap() = Some(raw.to_string());
+        *self
+            .pending_link
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(raw.to_string());
     }
 
     pub fn mark_frontend_ready(&self) -> Option<String> {
         self.frontend_ready.store(true, Ordering::SeqCst);
-        self.pending_link.lock().unwrap().take()
+        self.pending_link
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .take()
     }
 
     pub fn mark_frontend_closed(&self) {
@@ -137,7 +143,10 @@ impl AppState {
 
     pub fn should_process_link(&self, raw: &str) -> bool {
         let now = Instant::now();
-        let mut last = self.last_link.lock().unwrap();
+        let mut last = self
+            .last_link
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         if let Some((previous, at)) = last.as_ref() {
             if previous == raw && now.duration_since(*at) < Duration::from_secs(2) {
                 return false;
@@ -145,6 +154,25 @@ impl AppState {
         }
         *last = Some((raw.to_string(), now));
         true
+    }
+
+    /// Drop a pending review (folder changed, RAW choice changed, unlinked).
+    /// Returns whether there was one.
+    pub fn forget_review(&self, gallery_id: &str) -> bool {
+        self.reviews
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .remove(gallery_id)
+            .is_some()
+    }
+
+    /// Drop every pending review (logout, API target change): they were
+    /// computed against an account that is no longer signed in.
+    pub fn clear_reviews(&self) {
+        self.reviews
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .clear();
     }
 }
 
@@ -554,7 +582,7 @@ async fn review_linked(
     state
         .reviews
         .lock()
-        .unwrap()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
         .insert(id.to_string(), planned);
     Ok(plan)
 }
@@ -576,8 +604,11 @@ async fn patch_linked_folder(
     state.store.patch_gallery(&id, |entry| {
         entry.local_path = folder.clone();
     })?;
+    // A review computed against the old folder must never be applied.
+    state.forget_review(&id);
     if reset_snapshot {
         let _ = state.store.delete_snapshot(&id);
+        let _ = state.store.delete_fingerprints(&id);
         if let Some(old_path) = old_path {
             let _ = GalleryIgnores::clear(Path::new(&old_path));
         }
@@ -649,7 +680,10 @@ pub async fn connect(app: AppHandle, state: State<'_, AppState>) -> Result<Value
     }
 
     let nonce = auth::new_nonce();
-    *state.auth_nonce.lock().unwrap() = Some(nonce.clone());
+    *state
+        .auth_nonce
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(nonce.clone());
     let url = api.authorize_url(&nonce)?;
     if std::env::var("PICSTOME_DISABLE_BROWSER_OPEN")
         .map(|value| value == "1")
@@ -675,13 +709,17 @@ pub async fn connect(app: AppHandle, state: State<'_, AppState>) -> Result<Value
 
 #[tauri::command]
 pub async fn logout(app: AppHandle, state: State<'_, AppState>) -> Result<Value, ErrorPayload> {
+    // Never revoke the token under a running transfer: the sync would start
+    // failing halfway through and leave a partial apply.
+    let _ops = state.gallery_ops().await;
     let api = state.api().await;
     if api.has_token().await {
         let _ = api.revoke().await;
     }
     api.set_token(None).await;
-    let _ = state.token_store.save(None);
+    let _ = state.token_store.save_async(None).await;
     let _ = state.store.update_config(|config| config.clear_account());
+    state.clear_reviews();
     CoverCache::new(state.store.root()).remove(ACCOUNT_AVATAR_KEY);
     emit_state(&app, &state).await;
     Ok(json!({"ok": true}))
@@ -987,7 +1025,7 @@ pub async fn review_gallery(
 /// Forget a pending review without applying anything.
 #[tauri::command]
 pub fn discard_review(state: State<'_, AppState>, gallery_id: String) -> bool {
-    state.reviews.lock().unwrap().remove(&gallery_id).is_some()
+    state.forget_review(&gallery_id)
 }
 
 /// Ratings part of an Apply.
@@ -1026,7 +1064,10 @@ pub async fn apply_review(
     };
     let ops = state.try_gallery_ops()?;
     let planned = {
-        let mut reviews = state.reviews.lock().unwrap();
+        let mut reviews = state
+            .reviews
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         match reviews.remove(&id) {
             Some(planned) if planned.id() == plan_id => planned,
             Some(other) => {
@@ -1145,6 +1186,8 @@ pub async fn set_gallery_raw_mode(
     {
         return Err(not_linked());
     }
+    // The review's upload units were computed with the old RAW choice.
+    state.forget_review(&id);
     emit_state(&app, &state).await;
     Ok(json!({"ok": true}))
 }
@@ -1177,8 +1220,10 @@ pub fn unlink_gallery(
     let _ops = state.try_gallery_ops()?;
     let local_path = state.store.get_gallery(&id).map(|entry| entry.local_path);
     state.store.remove_gallery(&id)?;
+    state.forget_review(&id);
     CoverCache::new(state.store.root()).remove(&id);
     let _ = state.store.delete_snapshot(&id);
+    let _ = state.store.delete_fingerprints(&id);
     if let Some(local_path) = local_path {
         let _ = GalleryIgnores::clear(Path::new(&local_path));
     }
@@ -1379,6 +1424,9 @@ pub async fn set_test_mode(
     state: State<'_, AppState>,
     enabled: bool,
 ) -> Result<AppStateView, ErrorPayload> {
+    // Switching the API target revokes the token and replaces the client.
+    // Do it only when no sync is writing gallery state.
+    let _ops = state.gallery_ops().await;
     let base = if enabled {
         "https://devel.picstome.com".to_string()
     } else {
@@ -1388,11 +1436,12 @@ pub async fn set_test_mode(
     if old_api.has_token().await {
         let _ = old_api.revoke().await;
     }
-    let _ = state.token_store.save(None);
+    let _ = state.token_store.save_async(None).await;
 
     let new_api = ApiClient::new(Some(&base), None)?;
     state.replace_api(new_api).await;
     state.set_mock(false);
+    state.clear_reviews();
     let _ = state.store.update_config(|config| {
         config.api_base = None;
         config.clear_account();

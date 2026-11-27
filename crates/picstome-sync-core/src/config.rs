@@ -92,6 +92,21 @@ fn forget_snapshot(path: &Path) {
     }
 }
 
+/// Serialises the read-modify-write cycles on `config.json` and `index.json`.
+/// Two commands can update different fields at the same time (an update check
+/// and a folder pick, for example); without this one write would silently
+/// discard the other field.
+fn write_lock() -> &'static Mutex<()> {
+    static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+    LOCK.get_or_init(|| Mutex::new(()))
+}
+
+fn lock_writes() -> std::sync::MutexGuard<'static, ()> {
+    write_lock()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
 fn normalize_entry(entry: GalleryEntry) -> Option<GalleryEntry> {
     let gallery_id = sanitize_gallery_id(&entry.gallery_id)?;
     let local_path = entry.local_path.trim();
@@ -188,6 +203,7 @@ impl Store {
     where
         F: FnOnce(&mut Config),
     {
+        let _guard = lock_writes();
         let mut config = self.load_config();
         update(&mut config);
         self.save_config(&config)?;
@@ -224,6 +240,7 @@ impl Store {
         let Some(normalized) = normalize_entry(entry) else {
             return Ok(None);
         };
+        let _guard = lock_writes();
         let mut entries = self.load_index();
         entries.retain(|existing| existing.gallery_id != normalized.gallery_id);
         entries.push(normalized.clone());
@@ -238,6 +255,7 @@ impl Store {
         let Some(id) = sanitize_gallery_id(gallery_id) else {
             return Ok(None);
         };
+        let _guard = lock_writes();
         let mut entries = self.load_index();
         let Some(index) = entries.iter().position(|entry| entry.gallery_id == id) else {
             return Ok(None);
@@ -255,6 +273,7 @@ impl Store {
         let Some(id) = sanitize_gallery_id(gallery_id) else {
             return Ok(false);
         };
+        let _guard = lock_writes();
         let mut entries = self.load_index();
         let before = entries.len();
         entries.retain(|entry| entry.gallery_id != id);

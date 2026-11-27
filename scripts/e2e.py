@@ -1,22 +1,25 @@
 #!/usr/bin/env python3
 """End-to-end test for the real Tauri app through WebDriver.
 
-Modes
------
-Mock mode (default, CI-friendly):
-    E2E_MOCK=1 python3 scripts/e2e.py
-  Starts `target/debug/picstome-sync-mock`, launches the app in demo mode,
-  links gallery G123 to a temp folder, syncs 50 fake photos, uploads one,
-  deletes it and verifies the final no-op sync.
+Drives the review -> apply flow the way a photographer does: press "Review
+changes", choose per row, press Apply, and check the disk and the Picstome
+side after every step.
 
-Real API mode:
+Mock mode (default):
+    E2E_MOCK=1 xvfb-run -a python3 scripts/e2e.py
+  Starts `target/debug/picstome-sync-mock` and covers: a review moves
+  nothing; partial apply (the rest comes back next review); upload; a local
+  deletion is proposed (never re-downloaded) and deleting in Picstome asks
+  first; a photo deleted in Picstome goes to the trash with its RAW; stars
+  photo by photo; a file edited after the review is skipped; the mass-delete
+  guard; a picstome://sync link opens the review without applying.
+
+Real API mode (read-only unless E2E_WRITE=1):
     E2E_GALLERY=<ulid> PICSTOME_API_BASE=https://devel.picstome.com \
-    PICSTOME_TOKEN=... E2E_EXPECTED_PHOTOS=50 E2E_WRITE=1 \
-    python3 scripts/e2e.py
-  Set E2E_WRITE=0 (default) to avoid uploading/deleting on the real gallery.
+    PICSTOME_TOKEN=... E2E_MOCK=0 python3 scripts/e2e.py
 
-Requirements: Rust app built (`cargo build -p picstome-sync`), tauri-driver,
-WebKitWebDriver, and a display (use xvfb-run on headless Linux).
+Requirements: `cargo build -p picstome-sync` and the mock binary,
+tauri-driver, WebKitWebDriver, and a display (xvfb-run on headless Linux).
 """
 
 import json
@@ -152,6 +155,196 @@ def start_mock():
     return process, f"http://127.0.0.1:{port}"
 
 
+# --- UI helpers ------------------------------------------------------------
+#
+# `ui` runs a snippet in the app window; the snippet calls `done(value)` and
+# gets the value back as JSON. The renderer's top-level `state` is reachable
+# from here, which is how the tests wait for a review or a report.
+
+
+def ui(session, body):
+    script = """
+    const callback = arguments[arguments.length - 1];
+    const done = (value) => callback(JSON.stringify(value === undefined ? null : value));
+    try {
+    %s
+    } catch (error) {
+      done({ __error: String(error && (error.stack || error)) });
+    }
+    """ % body
+    value = json.loads(run_async(session, script))
+    if isinstance(value, dict) and "__error" in value:
+        raise RuntimeError(value["__error"])
+    return value
+
+
+def wait_for(session, body, timeout=90):
+    """Poll a snippet until it returns something truthy."""
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        value = ui(session, body)
+        if value:
+            return value
+        time.sleep(0.25)
+    raise RuntimeError(f"timed out waiting for: {body.strip()[:120]}")
+
+
+def click(session, selector):
+    ok = ui(
+        session,
+        "const node = document.querySelector(%s); if (node) node.click(); done(Boolean(node));"
+        % json.dumps(selector),
+    )
+    assert ok, f"nothing to click at {selector}"
+
+
+def _choose(session, selector, value):
+    ok = ui(
+        session,
+        """
+        const select = document.querySelector(%s);
+        if (!select) { done(false); } else {
+          select.value = %s;
+          select.dispatchEvent(new Event('change', { bubbles: true }));
+          done(select.value === %s);
+        }
+        """
+        % (json.dumps(selector), json.dumps(value), json.dumps(value)),
+    )
+    assert ok, f"could not choose {value} in {selector}"
+
+
+def set_row(session, group, row_id, value):
+    _choose(session, f'select[data-group="{group}"][data-id="{row_id}"]', value)
+
+
+def set_group(session, group, value):
+    _choose(session, f'select.review-all[data-group="{group}"]', value)
+
+
+def has_group(session, group):
+    return ui(
+        session,
+        "done(Boolean(document.querySelector('select.review-all[data-group=\"%s\"]')));" % group,
+    )
+
+
+def open_gallery(session, gallery_id):
+    click(session, f'.gallery-row[data-gallery-id="{gallery_id}"]')
+    wait_for(session, "done(state.currentGalleryId === %s);" % json.dumps(gallery_id))
+
+
+def review_ui(session):
+    """Press "Review changes" and return the plan, or None when in sync."""
+    click(session, "#btnSync")
+    result = wait_for(
+        session,
+        """
+        if (state.syncBusy || !(state.review || state.report)) { done(null); }
+        else done({ plan: state.review ? state.review.plan : null, report: state.report });
+        """,
+    )
+    errors = (result.get("report") or {}).get("errors") or []
+    assert not errors, f"review failed: {errors}"
+    return result["plan"]
+
+
+def wait_report(session):
+    report = wait_for(
+        session,
+        "done(!state.syncBusy && !state.review && state.report ? state.report : null);",
+        timeout=180,
+    )
+    assert not report.get("errors"), f"apply failed: {report.get('errors')}"
+    return report
+
+
+def apply_ui(session):
+    """Press Apply (confirming a Picstome deletion if asked) and return the report."""
+    click(session, "#btnReviewApply")
+    time.sleep(0.3)
+    if ui(session, "done(!document.getElementById('confirmModal').classList.contains('hidden'));"):
+        click(session, "#btnConfirmOk")
+    return wait_report(session)
+
+
+def discard_ui(session):
+    ui(
+        session,
+        "const button = document.getElementById('btnReviewDiscard');"
+        " if (!document.getElementById('reviewBar').classList.contains('hidden')) button.click();"
+        " done(true);",
+    )
+    wait_for(session, "done(state.review === null);")
+
+
+def summarize(plan):
+    if not plan:
+        return None
+    return {
+        key: len(plan.get(key) or [])
+        for key in ("downloads", "uploads", "remoteDeleted", "localDeleted", "conflicts")
+    } | {"ratings": len(plan["ratings"]["items"]), "rawDecision": plan.get("rawDecisionNeeded")}
+
+
+def report_summary(report):
+    return {
+        "downloaded": [item["filename"] for item in report.get("downloaded") or []],
+        "uploaded": [item["filename"] for item in report.get("uploaded") or []],
+        "deletedRemote": report.get("deletedRemote"),
+        "skippedChanged": report.get("skippedChanged"),
+        "errors": report.get("errors"),
+    }
+
+
+def finish_without_writes(session):
+    log("E2E PASSED (read-only)")
+
+
+# --- Disk and fake Picstome helpers ------------------------------------------
+
+
+def photo_files(folder):
+    return {
+        name
+        for name in os.listdir(folder)
+        if not name.startswith(".") and os.path.isfile(os.path.join(folder, name))
+    }
+
+
+def write_jpeg(path, size, seed):
+    body = bytes((seed * 31 + index) % 251 for index in range(max(0, size - 4)))
+    with open(path, "wb") as handle:
+        handle.write(b"\xff\xd8\xff\xe0" + body)
+
+
+def _mock_request(url, body=None):
+    request_ = urllib.request.Request(
+        url,
+        data=json.dumps(body).encode() if body is not None else None,
+        headers={
+            "Accept": "application/json",
+            "Content-Type": "application/json",
+            "Authorization": "Bearer demo-token",
+        },
+        method="POST" if body is not None else "GET",
+    )
+    with urllib.request.urlopen(request_, timeout=30) as response:
+        return json.loads(response.read() or b"null")
+
+
+def mock_manifest(api_base):
+    return _mock_request(f"{api_base}/api/v1/manifest?gallery=G123")
+
+
+def mock_remove(api_base, photo_id):
+    return _mock_request(f"{api_base}/api/v1/dev/remove", {"gallery_id": "G123", "photo_id": photo_id})
+
+
+def mock_add(api_base, filename):
+    return _mock_request(f"{api_base}/api/v1/dev/add", {"gallery_id": "G123", "filename": filename})
+
+
 def main():
     if not os.path.exists(APP):
         raise SystemExit(f"App binary not found: {APP}. Run cargo build -p picstome-sync first.")
@@ -192,6 +385,9 @@ def main():
     env.setdefault("LIBGL_ALWAYS_SOFTWARE", "1")
     env.setdefault("PICSTOME_DISABLE_BROWSER_OPEN", "1")
     env.setdefault("PICSTOME_DISABLE_UPDATE_CHECK", "1")
+    # Headless runners have no unlocked Secret Service. The app then uses its
+    # 0600 auth.json fallback, which is exactly what these tests exercise.
+    env.setdefault("PICSTOME_DISABLE_KEYRING", "1")
     env.setdefault("RUST_BACKTRACE", "1")
 
     global DRIVER_LOG_PATH, DRIVER_PROCESS
@@ -256,1047 +452,212 @@ def main():
         assert state["auth"]["connected"], "app is not connected"
         assert not state["mock"], "E2E should not use the auto-login demo mode"
 
-        dom = json.loads(
-            run_async(
-                session,
-                """
-                const done = arguments[arguments.length - 1];
-                document.getElementById('btnInfo').click();
-                const modal = document.getElementById('infoModal');
-                const info = {
-                  account: document.getElementById('accountChip').textContent,
-                  rows: document.querySelectorAll('.gallery-row').length,
-                  tabs: document.querySelectorAll('.tab').length,
-                  syncLabel: document.getElementById('btnSync').textContent.trim(),
-                  emptyHidden: document.getElementById('syncEmpty').classList.contains('hidden'),
-                  badge: document.getElementById('envBadge').textContent,
-                  badgeHidden: document.getElementById('envBadge').classList.contains('hidden'),
-                  infoVisible: !modal.classList.contains('hidden'),
-                  infoText: modal.innerText,
-                  title: document.title
-                };
-                document.getElementById('btnInfoClose').click();
-                done(JSON.stringify(info));
-                """,
-            )
-        )
-        log("dom:", {k: v for k, v in dom.items() if k != "infoText"})
-        assert dom["rows"] >= 1, "renderer did not draw the gallery list"
-        assert dom["account"].strip(), "renderer did not show the account chip"
-        assert dom["emptyHidden"], "empty state should be hidden with a linked gallery"
-        assert dom["tabs"] == 0, "the desktop UI must not have web-style tabs"
-        assert "sync" in dom["syncLabel"].lower(), dom["syncLabel"]
-        assert dom["title"] == "Picstome Sync", dom["title"]
-        assert dom["infoVisible"], "info modal did not open"
+        # ------------------------------------------------------------------
+        # Review → Apply. Every step drives the real UI (clicks, selects) and
+        # checks the disk and the Picstome side, not only the app state.
+        # ------------------------------------------------------------------
 
-        remote_search = js_invoke(
-            session,
-            "search_remote_galleries",
-            {"search": "retrato", "page": 1, "perPage": 25},
-        )
-        log("remote search:", remote_search)
-        assert remote_search["data"][0]["id"] == "G456", remote_search
-        assert remote_search["meta"]["total"] == 1, remote_search
-
-        layout = json.loads(
-            run_async(
-                session,
-                """
-                const done = arguments[arguments.length - 1];
-                done(JSON.stringify({
-                  path: document.getElementById('detailPathText').textContent,
-                  pathTag: document.getElementById('detailPath').tagName,
-                  sync: document.getElementById('btnSync').textContent,
-                  syncIcon: document.querySelector('#btnSync svg use')?.getAttribute('href') || '',
-                  favorites: document.getElementById('btnFavoritesList').textContent,
-                  favoritesIcon: document.querySelector('#btnFavoritesList svg use')?.getAttribute('href') || '',
-                  unlinkParent: document.getElementById('btnUnlink').closest('.main-footer')?.id || '',
-                  changeTitle: document.getElementById('btnChangeFolder').title,
-                  changeText: document.getElementById('btnChangeFolder').textContent,
-                  footerVisible: !document.getElementById('mainFooter').classList.contains('hidden'),
-                  webLink: document.getElementById('btnOpenWebGallery').title,
-                  webLinkVisible: !document.getElementById('btnOpenWebGallery').classList.contains('hidden')
-                }));
-                """,
-            )
-        )
-        log("layout:", layout)
-        assert layout["pathTag"] == "BUTTON", layout
-        assert layout["path"].startswith("/"), layout
-        assert layout["syncIcon"] == "#i-sync", layout
-        assert layout["favoritesIcon"] == "#i-heart", layout
-        assert layout["sync"].strip() in ("Sync", "Sincronizar"), layout
-        assert layout["unlinkParent"] == "mainFooter", layout
-        assert layout["footerVisible"], layout
-        assert "Change folder" in layout["changeTitle"] or "Cambiar carpeta" in layout["changeTitle"], layout
-        assert "Change folder" in layout["changeText"] or "Cambiar carpeta" in layout["changeText"], layout
-        assert layout["webLinkVisible"], layout
-        assert "Picstome" in layout["webLink"], layout
-        assert state["config"]["appVersion"] in dom["infoText"], "info modal must show the version"
-        kind = state["config"]["apiKind"]
-        if kind == "production":
-            assert dom["badgeHidden"], "production should not show a badge"
-        else:
-            expected_badge = {
-                "development": "DEV",
-                "local": "LOCAL",
-                "demo": "DEMO",
-                "custom": "CUSTOM",
-            }[kind]
-            assert dom["badge"] == expected_badge, (kind, dom["badge"])
-            assert not dom["badgeHidden"], "non-production builds should show a badge"
-
-        if MOCK:
-            search_state = json.loads(
-                run_async(
-                    session,
-                    """
-                    const done = arguments[arguments.length - 1];
-                    const input = document.getElementById('gallerySearch');
-                    const setQuery = (value) => {
-                      input.value = value;
-                      input.dispatchEvent(new Event('input', { bubbles: true }));
-                    };
-                    setQuery('Other');
-                    const otherRows = document.querySelectorAll('.gallery-row').length;
-                    setQuery('zzz');
-                    done(JSON.stringify({ otherRows }));
-                    """,
-                )
-            )
-            assert search_state["otherRows"] == 1, search_state
-            time.sleep(1.2)
-            empty_visible = json.loads(
-                run_async(
-                    session,
-                    "const done = arguments[arguments.length - 1]; done(JSON.stringify(!document.getElementById('searchEmpty').classList.contains('hidden')));",
-                )
-            )
-            assert empty_visible, "search empty state should appear after remote search"
-            search_state = json.loads(
-                run_async(
-                    session,
-                    """
-                    const done = arguments[arguments.length - 1];
-                    const input = document.getElementById('gallerySearch');
-                    input.value = '';
-                    input.dispatchEvent(new Event('input', { bubbles: true }));
-                    const allRows = document.querySelectorAll('.gallery-row').length;
-                    document.dispatchEvent(new KeyboardEvent('keydown', { key: 'f', ctrlKey: true, bubbles: true }));
-                    const focused = document.activeElement && document.activeElement.id;
-                    done(JSON.stringify({ allRows, focused }));
-                    """,
-                )
-            )
-            log("search:", search_state)
-            assert search_state["allRows"] == 2, search_state
-            assert search_state["focused"] == "gallerySearch", search_state
-            run_async(
-                session,
-                "const done = arguments[arguments.length - 1]; document.getElementById('gallerySearch').blur(); done('blurred');",
-            )
-
-        first = js_invoke(session, "sync_gallery", {"galleryId": gallery})
-        log("first:", first["counts"], "errors:", first["errors"])
-        assert not first["errors"], first["errors"]
-        assert len(first["downloaded"]) == EXPECTED, first["counts"]
-        files = [name for name in os.listdir(photos) if name.endswith(".jpg")]
-        assert len(files) == EXPECTED, f"expected {EXPECTED} files, got {len(files)}"
-        assert os.path.exists(os.path.join(user_data, f"{gallery}.json")), "snapshot missing"
-
-        # The sync dialog must never look frozen. Two checks that do not depend
-        # on timing: the renderer has to translate the new phases into visible
-        # text and a moving bar, and the real sync has to emit them (covered by
-        # the engine integration test).
-        dialog = json.loads(
-            run_async(
-                session,
-                """
-                const done = arguments[arguments.length - 1];
-                state.syncBusy = true;
-                state.syncTarget = { galleryId: 'G123', name: 'E2E Gallery' };
-                const samples = {};
-                const box = document.querySelector('#syncModal .sync-modal');
-
-                state.progress = { phase: 'scan', done: 120, fileDone: 5000 };
-                renderSyncModal();
-                samples.scan = {
-                  phase: document.getElementById('syncModalPhase').textContent,
-                  detail: document.getElementById('syncModalFile').textContent,
-                  percent: document.getElementById('syncModalPercent').textContent,
-                  indeterminate: box.classList.contains('indeterminate'),
-                  animated: document.querySelector('#syncModal .sync-modal-bar span')
-                    .getBoundingClientRect().width > 0
-                };
-
-                state.progress = { phase: 'hash', done: 5, total: 10 };
-                renderSyncModal();
-                samples.hash = {
-                  phase: document.getElementById('syncModalPhase').textContent,
-                  percent: document.getElementById('syncModalPercent').textContent,
-                  indeterminate: box.classList.contains('indeterminate')
-                };
-
-                state.progress = { phase: 'manifest', done: 0, total: 1 };
-                renderSyncModal();
-                samples.manifest = {
-                  phase: document.getElementById('syncModalPhase').textContent,
-                  indeterminate: box.classList.contains('indeterminate')
-                };
-
-                state.syncBusy = false;
-                state.progress = null;
-                renderSyncModal();
-                done(JSON.stringify(samples));
-                """,
-            )
-        )
-        log("sync dialog phases:", dialog)
-        assert "entries scanned" in dialog["scan"]["detail"], dialog["scan"]
-        assert dialog["scan"]["indeterminate"], dialog["scan"]
-        assert dialog["scan"]["animated"], dialog["scan"]
-        assert "10" in dialog["hash"]["phase"], dialog["hash"]
-        assert dialog["hash"]["percent"] == "50%", dialog["hash"]
-        assert not dialog["hash"]["indeterminate"], dialog["hash"]
-        # Fetching the manifest has no known total either: keep the bar moving.
-        assert dialog["manifest"]["indeterminate"], dialog["manifest"]
-
-        # Sidebar layout regression guard: with many galleries the list must
-        # scroll, never compress rows into each other. Flexbox used to shrink
-        # each row to its 38px min-height while the three text lines needed
-        # ~42-64px, so names and "last sync" lines overlapped between rows.
-        sidebar_layout = json.loads(
-            run_async(
-                session,
-                """
-                const done = arguments[arguments.length - 1];
-                const list = document.getElementById('galleryList');
-                const original = list.innerHTML;
-                const names = [
-                  'Halloween 2026',
-                  'Laura - Street Book',
-                  'Leslie - Otono 2026 - Editorial',
-                  'Rebeca fitness - Editadas',
-                  'Jennifer - Puesta de sol',
-                  'Chema Photo',
-                  'Boda Marta y Luis',
-                  'Sesion producto'
-                ];
-                list.innerHTML = '';
-                for (const name of names) {
-                  const row = document.createElement('button');
-                  row.type = 'button';
-                  row.className = 'gallery-row';
-                  const avatar = document.createElement('span');
-                  avatar.className = 'gallery-avatar';
-                  avatar.textContent = name.trim().charAt(0).toUpperCase();
-                  const info = document.createElement('span');
-                  info.className = 'gallery-info';
-                  const title = document.createElement('span');
-                  title.className = 'gallery-name';
-                  title.textContent = name;
-                  const stats = document.createElement('span');
-                  stats.className = 'gallery-stats';
-                  stats.textContent = '330 fotos - 4.3 GB en disco';
-                  const meta = document.createElement('span');
-                  meta.className = 'gallery-meta';
-                  meta.textContent = 'Ultima sync: 5 nov';
-                  info.append(title, stats, meta);
-                  row.append(avatar, info);
-                  list.appendChild(row);
-                }
-                // Reproduce a short window, where the bug appeared.
-                list.style.maxHeight = '260px';
-                const rects = Array.from(list.children).map((row) => {
-                  const box = row.getBoundingClientRect();
-                  return {
-                    top: box.top,
-                    bottom: box.bottom,
-                    height: box.height,
-                    contentHeight: row.scrollHeight
-                  };
-                });
-                const overlaps = [];
-                for (let i = 1; i < rects.length; i += 1) {
-                  if (rects[i].top < rects[i - 1].bottom - 0.5) {
-                    overlaps.push(i);
-                  }
-                }
-                const clipped = rects.filter((r) => r.contentHeight > r.height + 0.5).length;
-                const scrolls = list.scrollHeight > list.clientHeight;
-                list.style.maxHeight = '';
-                list.innerHTML = original;
-                done(JSON.stringify({ overlaps, clipped, scrolls, count: rects.length }));
-                """,
-            )
-        )
-        log("sidebar layout:", sidebar_layout)
-        assert sidebar_layout["count"] == 8, sidebar_layout
-        assert not sidebar_layout["overlaps"], (
-            f"gallery rows overlap at {sidebar_layout['overlaps']}: {sidebar_layout}"
-        )
-        assert sidebar_layout["clipped"] == 0, (
-            f"gallery row text is clipped: {sidebar_layout}"
-        )
-        assert sidebar_layout["scrolls"], (
-            f"long gallery list should scroll instead of shrinking rows: {sidebar_layout}"
-        )
-
-        second = js_invoke(session, "sync_gallery", {"galleryId": gallery})
-        log("second:", second["counts"], "skipped:", second["skipped"])
-        assert second["skipped"] and not second["downloaded"], second["counts"]
-        stats_text = run_async(
+        home = ui(
             session,
             """
-            const done = arguments[arguments.length - 1];
-            const row = Array.from(document.querySelectorAll('.gallery-row'))
-              .find((item) => item.dataset.galleryId === 'G123');
-            done(JSON.stringify({
-              row: row ? row.textContent : '',
-              detail: document.getElementById('detailStats').textContent
-            }));
+            done({
+              title: document.getElementById('detailName').textContent,
+              homeVisible: !document.getElementById('home').classList.contains('hidden'),
+              rows: document.querySelectorAll('.gallery-row').length,
+              accountMenuItems: document.querySelectorAll('#accountMenu [role=menuitem]').length,
+              syncLabel: document.getElementById('btnSync').textContent.trim(),
+              title_: document.title
+            });
             """,
         )
-        stats_text = json.loads(stats_text)
-        log("gallery stats:", stats_text)
-        assert "50 photos" in stats_text["row"], stats_text
-        assert "on disk" in stats_text["detail"], stats_text
-        assert "KB" in stats_text["row"] or "MB" in stats_text["row"], stats_text
+        log("home:", home)
+        assert home["homeVisible"], "the app must open on the home page"
+        assert home["rows"] >= 1, "linked galleries must be listed"
+        assert home["accountMenuItems"] >= 3, "account menu: profile, info, log out"
+        assert home["title_"] == "Picstome Sync", home
 
-        if WRITE:
-            source = next(name for name in files if name.endswith(".jpg"))
-            upload_name = "e2e-upload.jpg"
-            with open(os.path.join(photos, source), "rb") as src, open(
-                os.path.join(photos, upload_name), "wb"
-            ) as out:
-                out.write(src.read())
+        open_gallery(session, gallery)
+        label = ui(session, "done(document.getElementById('btnSync').textContent.trim());")
+        assert label in ("Review changes", "Revisar cambios"), label
 
-            third = js_invoke(session, "sync_gallery", {"galleryId": gallery})
-            log("upload:", third["counts"], "errors:", third["errors"])
-            assert not third["errors"], third["errors"]
-            assert len(third["uploaded"]) == 1, third["counts"]
-            deadline = time.time() + 15
-            stats_after_upload = ""
-            while time.time() < deadline:
-                stats_after_upload = json.loads(
-                    run_async(
-                        session,
-                        """
-                        const done = arguments[arguments.length - 1];
-                        const row = Array.from(document.querySelectorAll('.gallery-row'))
-                          .find((item) => item.dataset.galleryId === 'G123');
-                        done(JSON.stringify(row ? row.textContent : ''));
-                        """,
-                    )
-                )
-                if "51 photos" in stats_after_upload:
-                    break
-                time.sleep(0.2)
-            assert "51 photos" in stats_after_upload, stats_after_upload
-            sync_log_path = os.path.join(user_data, "logs", f"{gallery}.log")
-            assert os.path.exists(sync_log_path), "per-gallery log was not written"
-            with open(sync_log_path, encoding="utf-8") as handle:
-                sync_log = handle.read()
-            assert upload_name in sync_log, sync_log[-500:]
-            log_entries = js_invoke(
-                session, "get_sync_log", {"galleryId": gallery}
-            )
-            assert any(
-                item.get("filename") == upload_name
-                for entry in log_entries
-                for item in entry.get("uploaded", [])
-            ), log_entries
-            log_dom = json.loads(
-                run_async(
-                    session,
-                    """
-                    const done = arguments[arguments.length - 1];
-                    const card = document.getElementById('syncLog');
-                    done(JSON.stringify({
-                      exists: !!card,
-                      count: document.getElementById('syncLogCount').textContent
-                    }));
-                    """,
-                )
-            )
-            assert log_dom["exists"], log_dom
-            assert int(log_dom["count"] or 0) > 0, log_dom
+        # 1. Reviewing moves nothing.
+        before = photo_files(photos)
+        plan = review_ui(session)
+        log("first review:", summarize(plan))
+        assert plan is not None, "first review must list changes"
+        assert plan["firstSync"], plan["firstSync"]
+        assert photo_files(photos) == before, "a review must not touch the disk"
+        if not MOCK:
+            # Real API: read-only from here on unless E2E_WRITE=1.
+            discard_ui(session)
+            if not WRITE:
+                log("real API, read-only: review checked, nothing applied")
+                return finish_without_writes(session)
+        expected_downloads = len(plan["downloads"])
+        assert expected_downloads >= 1, plan
 
-            os.remove(os.path.join(photos, upload_name))
-            run_async(
-                session,
-                "const done = arguments[arguments.length - 1]; document.getElementById('btnSync').click(); done('clicked');",
-            )
-            deadline = time.time() + 60
-            proposal_state = None
-            while time.time() < deadline:
-                proposal_state = json.loads(
-                    run_async(
-                        session,
-                        """
-                        const done = arguments[arguments.length - 1];
-                        const checks = Array.from(
-                          document.querySelectorAll('#deleteList input[type=checkbox]')
-                        );
-                        done(JSON.stringify({
-                          visible: !document.getElementById('deleteBox').classList.contains('hidden'),
-                          ids: checks.map((item) => item.dataset.photoId),
-                          names: checks.map((item) => item.nextElementSibling.textContent)
-                        }));
-                        """,
-                    )
-                )
-                if proposal_state["visible"]:
-                    break
-                time.sleep(0.2)
-            log("proposal:", proposal_state)
-            assert proposal_state and proposal_state["visible"], "deletion proposal did not render"
-            ids = proposal_state["ids"]
-            assert len(ids) == 1, proposal_state
+        # 2. Apply only part of the review: 5 downloads, everything else later.
+        set_group(session, "downloads", "later")
+        if plan["ratings"]["items"] or plan["ratings"]["needsRating"]:
+            set_group(session, "ratings", "later")
+        first_ids = [item["id"] for item in plan["downloads"][:5]]
+        for photo_id in first_ids:
+            set_row(session, "downloads", photo_id, "apply")
+        report = apply_ui(session)
+        log("partial apply:", report_summary(report))
+        assert len(report["downloaded"]) == 5, report_summary(report)
+        assert len(photo_files(photos)) == len(before) + 5, sorted(photo_files(photos))
 
-            run_async(
-                session,
-                "const done = arguments[arguments.length - 1]; document.getElementById('btnDeleteRemote').click(); done('clicked');",
-            )
-            confirm_state = json.loads(
-                run_async(
-                    session,
-                    """
-                    const done = arguments[arguments.length - 1];
-                    done(JSON.stringify({
-                      visible: !document.getElementById('confirmModal').classList.contains('hidden'),
-                      message: document.getElementById('confirmMessage').textContent
-                    }));
-                    """,
-                )
-            )
-            log("remote delete confirmation:", confirm_state)
-            assert confirm_state["visible"], "remote delete confirmation did not open"
-            assert "1" in confirm_state["message"], confirm_state
+        # What was left for later comes back in the next review.
+        plan = review_ui(session)
+        assert len(plan["downloads"]) == expected_downloads - 5, summarize(plan)
+        set_group(session, "ratings", "later") if has_group(session, "ratings") else None
+        report = apply_ui(session)
+        assert len(report["downloaded"]) == expected_downloads - 5, report_summary(report)
+        assert len(photo_files(photos)) == len(before) + expected_downloads
 
-            run_async(
-                session,
-                "const done = arguments[arguments.length - 1]; document.getElementById('btnConfirmCancel').click(); done('cancelled');",
-            )
-            cancelled_state = json.loads(
-                run_async(
-                    session,
-                    """
-                    const done = arguments[arguments.length - 1];
-                    done(JSON.stringify({
-                      confirm: !document.getElementById('confirmModal').classList.contains('hidden'),
-                      deleteBox: !document.getElementById('deleteBox').classList.contains('hidden')
-                    }));
-                    """,
-                )
-            )
-            assert not cancelled_state["confirm"], cancelled_state
-            assert cancelled_state["deleteBox"], "cancel must keep the deletion proposal"
+        if not MOCK:
+            return finish_without_writes(session)
 
-            run_async(
-                session,
-                "const done = arguments[arguments.length - 1]; document.getElementById('btnDeleteRemote').click(); done('clicked');",
-            )
-            run_async(
-                session,
-                "const done = arguments[arguments.length - 1]; document.getElementById('btnConfirmOk').click(); done('confirmed');",
-            )
-            deadline = time.time() + 30
-            while time.time() < deadline:
-                deleted_state = json.loads(
-                    run_async(
-                        session,
-                        """
-                        const done = arguments[arguments.length - 1];
-                        done(JSON.stringify({
-                          deleteBox: !document.getElementById('deleteBox').classList.contains('hidden')
-                        }));
-                        """,
-                    )
-                )
-                if not deleted_state["deleteBox"]:
-                    break
-                time.sleep(0.2)
-            assert not deleted_state["deleteBox"], "confirmed remote deletion did not run"
-            deletion_log = js_invoke(session, "get_sync_log", {"galleryId": gallery})
-            assert any(
-                entry.get("kind") == "deletion"
-                and entry.get("action") == "remote_delete"
-                and entry.get("resolved") == 1
-                for entry in deletion_log
-            ), deletion_log
-            log_text = json.loads(
-                run_async(
-                    session,
-                    """
-                    const done = arguments[arguments.length - 1];
-                    done(JSON.stringify(
-                      document.getElementById('syncLogEntries').textContent
-                    ));
-                    """,
-                )
-            )
-            assert "Deleted in Picstome" in log_text, log_text
-            assert upload_name in log_text, log_text
+        # 3. Upload a new local photo.
+        local_new = os.path.join(photos, "LOCAL_NEW.jpg")
+        write_jpeg(local_new, 4096, 7)
+        plan = review_ui(session)
+        names = [item["filename"] for item in plan["uploads"]]
+        assert names == ["LOCAL_NEW.jpg"], summarize(plan)
+        set_group(session, "ratings", "later") if has_group(session, "ratings") else None
+        report = apply_ui(session)
+        assert [item["filename"] for item in report["uploaded"]] == ["LOCAL_NEW.jpg"], report_summary(report)
+        assert any(p["filename"] == "LOCAL_NEW.jpg" for p in mock_manifest(api_base)["photos"])
 
-            final = js_invoke(session, "sync_gallery", {"galleryId": gallery})
-            log("final:", final["counts"], "skipped:", final["skipped"])
-            assert final["skipped"], final["counts"]
-
-        if MOCK:
-            # Remote deletion: Sync must ask what to do and never re-upload silently.
-            manifest_request = urllib.request.Request(
-                f"{api_base}/api/v1/manifest?gallery=G123",
-                headers={
-                    "Accept": "application/json",
-                    "Authorization": "Bearer demo-token",
-                },
-            )
-            with urllib.request.urlopen(manifest_request, timeout=30) as response:
-                remote_manifest = json.loads(response.read())
-            removed = remote_manifest["photos"][0]
-            remove_request = urllib.request.Request(
-                f"{api_base}/api/v1/dev/remove",
-                data=json.dumps(
-                    {"gallery_id": "G123", "photo_id": removed["id"]}
-                ).encode(),
-                headers={"Content-Type": "application/json"},
-                method="POST",
-            )
-            urllib.request.urlopen(remove_request, timeout=30).read()
-
-            run_async(
-                session,
-                "const done = arguments[arguments.length - 1]; document.getElementById('btnSync').click(); done('clicked');",
-            )
-            deadline = time.time() + 60
-            remote_prompt = None
-            while time.time() < deadline:
-                remote_prompt = json.loads(
-                    run_async(
-                        session,
-                        """
-                        const done = arguments[arguments.length - 1];
-                        const modal = document.getElementById('remoteDeletedModal');
-                        done(JSON.stringify({
-                          visible: !modal.classList.contains('hidden'),
-                          title: document.getElementById('remoteDeletedTitle').textContent,
-                          hint: document.getElementById('remoteDeletedHint').textContent,
-                          list: document.getElementById('remoteDeletedList').textContent
-                        }));
-                        """,
-                    )
-                )
-                if remote_prompt["visible"]:
-                    break
-                time.sleep(0.4)
-            log("remote deletion prompt:", remote_prompt)
-            assert remote_prompt and remote_prompt["visible"], "remote deletion prompt did not open"
-            assert "deleted" in remote_prompt["title"].lower(), remote_prompt
-            assert removed["filename"] in remote_prompt["list"], remote_prompt
-
-            removed_path = os.path.join(photos, removed["filename"])
-            assert os.path.exists(removed_path), "photo should exist before resolving"
-            run_async(
-                session,
-                "const done = arguments[arguments.length - 1]; document.getElementById('btnRemoteDeleteLocal').click(); done('clicked');",
-            )
-            local_confirm = json.loads(
-                run_async(
-                    session,
-                    """
-                    const done = arguments[arguments.length - 1];
-                    done(JSON.stringify({
-                      confirmVisible: !document.getElementById('confirmModal').classList.contains('hidden')
-                    }));
-                    """,
-                )
-            )
-            assert not local_confirm["confirmVisible"], "local trash must not ask twice"
-            deadline = time.time() + 30
-            while time.time() < deadline:
-                state_after = json.loads(
-                    run_async(
-                        session,
-                        """
-                        const done = arguments[arguments.length - 1];
-                        done(JSON.stringify({
-                          remote: !document.getElementById('remoteDeletedModal').classList.contains('hidden'),
-                          rating: !document.getElementById('ratingModal').classList.contains('hidden')
-                        }));
-                        """,
-                    )
-                )
-                if not state_after["remote"]:
-                    break
-                time.sleep(0.2)
-            assert not os.path.exists(removed_path), "Delete locally should remove the file"
-            local_delete_log = js_invoke(session, "get_sync_log", {"galleryId": gallery})
-            local_delete_entry = next(
-                (
-                    entry
-                    for entry in local_delete_log
-                    if entry.get("kind") == "deletion"
-                    and entry.get("action") == "delete_local"
-                ),
-                None,
-            )
-            assert local_delete_entry, local_delete_log
-            assert local_delete_entry.get("trashed"), local_delete_entry
-            for trashed in local_delete_entry["trashed"]:
-                assert trashed["location"] in {"system", "gallery"}, trashed
-                if trashed["location"] == "gallery":
-                    assert os.path.exists(trashed["trashPath"]), trashed
-            log_text = json.loads(
-                run_async(
-                    session,
-                    """
-                    const done = arguments[arguments.length - 1];
-                    done(JSON.stringify(
-                      document.getElementById('syncLogEntries').textContent
-                    ));
-                    """,
-                )
-            )
-            assert "Moved local files to trash" in log_text, log_text
-            assert removed["filename"] in log_text, log_text
-            run_async(
-                session,
-                "const done = arguments[arguments.length - 1]; if (!document.getElementById('ratingModal').classList.contains('hidden')) document.getElementById('btnRatingClose').click(); done('closed');",
-            )
-            after_remote = js_invoke(session, "sync_gallery", {"galleryId": gallery})
-            log("after remote delete:", after_remote["counts"], "skipped:", after_remote["skipped"])
-            assert not after_remote["uploaded"], "remote-deleted photo must not be uploaded"
-            assert not after_remote["remoteDeleted"], after_remote["remoteDeleted"]
-
-        # Rating modal: deep link with no gallery must fall back to the selected gallery.
-        rate_name = next(
-            name
-            for name in files
-            if name.endswith(".jpg") and os.path.exists(os.path.join(photos, name))
-        )
-        rate_stem = os.path.splitext(rate_name)[0]
-        js_invoke(
+        # 4. Deleted on this computer: proposed, never re-downloaded behind our
+        #    back; deleting in Picstome asks for confirmation.
+        os.remove(local_new)
+        plan = review_ui(session)
+        assert [item["filename"] for item in plan["localDeleted"]] == ["LOCAL_NEW.jpg"], summarize(plan)
+        assert not plan["downloads"], "a photo deleted here must not be re-downloaded"
+        deleted_id = plan["localDeleted"][0]["id"]
+        set_row(session, "localDeleted", deleted_id, "delete")
+        set_group(session, "ratings", "later") if has_group(session, "ratings") else None
+        click(session, "#btnReviewApply")
+        confirm = wait_for(
             session,
-            "dev_handle_deep_link",
-            {"url": f"picstome://rate?files={rate_stem}&rating=4"},
+            "done(!document.getElementById('confirmModal').classList.contains('hidden')"
+            " ? document.getElementById('confirmMessage').textContent : null);",
         )
-        rating_target = run_async(
+        log("delete confirmation:", confirm)
+        click(session, "#btnConfirmOk")
+        report = wait_report(session)
+        assert report["deletedRemote"] == ["LOCAL_NEW.jpg"], report_summary(report)
+        assert not any(p["filename"] == "LOCAL_NEW.jpg" for p in mock_manifest(api_base)["photos"])
+
+        # 5. Deleted in Picstome, still here with its RAW: trash both.
+        manifest = mock_manifest(api_base)
+        victim = manifest["photos"][0]
+        stem = os.path.splitext(victim["filename"])[0]
+        victim_path = os.path.join(photos, victim["filename"])
+        raw_path = os.path.join(photos, stem + ".CR3")
+        with open(raw_path, "wb") as handle:
+            handle.write(b"II*\0" + os.urandom(2044))
+        mock_remove(api_base, victim["id"])
+        plan = review_ui(session)
+        rows = plan["remoteDeleted"]
+        assert [row["filename"] for row in rows] == [victim["filename"]], summarize(plan)
+        assert rows[0]["companions"] == [stem + ".CR3"], rows
+        # The RAW is a companion: the pair is not proposed for upload.
+        set_row(session, "remoteDeleted", rows[0]["id"], "trash_raw")
+        set_group(session, "ratings", "later") if has_group(session, "ratings") else None
+        report = apply_ui(session)
+        assert not os.path.exists(victim_path), "the photo should be in the trash"
+        assert not os.path.exists(raw_path), "its RAW should be in the trash too"
+        assert report["remoteDeletedResolved"] == 1, report_summary(report)
+
+        # 6. Picstome stars, photo by photo: one row left for later.
+        plan = review_ui(session)
+        ratings = plan["ratings"]["items"]
+        log("ratings:", [(item["filename"], item["rating"]) for item in ratings])
+        assert ratings, "the demo gallery has rated photos"
+        later_id = ratings[0]["id"]
+        set_row(session, "ratings", later_id, "later")
+        report = apply_ui(session)
+        rated = (report.get("ratingsResult") or {}).get("rated", 0)
+        assert rated == len(ratings) - 1, (rated, len(ratings))
+        plan = review_ui(session)
+        left = [item["id"] for item in plan["ratings"]["items"]]
+        assert left == [later_id], left
+        discard_ui(session)
+
+        # 7. A file edited after the review is left alone.
+        edited = os.path.join(photos, "EDITED_AFTER_REVIEW.jpg")
+        write_jpeg(edited, 3000, 3)
+        plan = review_ui(session)
+        assert [item["filename"] for item in plan["uploads"]] == ["EDITED_AFTER_REVIEW.jpg"], summarize(plan)
+        time.sleep(0.05)
+        write_jpeg(edited, 5000, 9)
+        set_group(session, "ratings", "later") if has_group(session, "ratings") else None
+        report = apply_ui(session)
+        assert report["skippedChanged"] == ["EDITED_AFTER_REVIEW.jpg"], report_summary(report)
+        assert not report["uploaded"], report_summary(report)
+        os.remove(edited)
+
+        # 8. Mass delete guard: Apply stays disabled until the count is typed.
+        doomed = sorted(photo_files(photos))[:12]
+        for name in doomed:
+            os.remove(os.path.join(photos, name))
+        plan = review_ui(session)
+        assert plan["massDelete"], summarize(plan)
+        set_group(session, "localDeleted", "delete")
+        guard = ui(
+            session,
+            "done({input: Boolean(document.getElementById('massDeleteConfirm')),"
+            " disabled: document.getElementById('btnReviewApply').disabled});",
+        )
+        assert guard == {"input": True, "disabled": True}, guard
+        ui(
             session,
             """
-            const done = arguments[arguments.length - 1];
-            done(document.getElementById('ratingTarget').textContent);
-            """,
+            const input = document.getElementById('massDeleteConfirm');
+            input.value = String(%d);
+            input.dispatchEvent(new Event('input', { bubbles: true }));
+            done(document.getElementById('btnReviewApply').disabled);
+            """ % len(plan["localDeleted"]),
         )
-        log("rating target:", rating_target)
-        assert photos in rating_target, rating_target
-        rate_result = run_async(
-            session,
-            """
-            const done = arguments[arguments.length - 1];
-            const btn = document.getElementById('btnRatingApply');
-            if (btn.disabled) { done('DISABLED'); }
-            else {
-              btn.click();
-              const deadline = Date.now() + 30000;
-              const timer = setInterval(() => {
-                const result = document.getElementById('ratingResult');
-                const visible = !result.classList.contains('hidden');
-                if (visible && result.textContent) {
-                  clearInterval(timer);
-                  done(result.textContent);
-                } else if (Date.now() > deadline) {
-                  clearInterval(timer);
-                  done('TIMEOUT');
-                }
-              }, 200);
-            }
-            """,
-        )
-        log("rate:", rate_result.splitlines()[0] if rate_result else rate_result)
-        assert not rate_result.startswith("DISABLED"), rate_result
-        assert "1 file" in rate_result.lower() and "rated" in rate_result.lower(), rate_result
-        deadline = time.time() + 10
-        while time.time() < deadline:
-            modal_state = run_async(
-                session,
-                "const done = arguments[arguments.length - 1]; done(JSON.stringify({ hidden: document.getElementById('ratingModal').classList.contains('hidden') }));",
-            )
-            if json.loads(modal_state)["hidden"]:
-                break
-            time.sleep(0.2)
+        enabled = not ui(session, "done(document.getElementById('btnReviewApply').disabled);")
+        assert enabled, "typing the count must enable Apply"
+        # Do not delete: bring the photos back instead.
+        set_group(session, "localDeleted", "restore")
+        set_group(session, "ratings", "later") if has_group(session, "ratings") else None
+        report = apply_ui(session)
+        assert len(report["downloaded"]) == len(doomed), report_summary(report)
+        assert all(os.path.exists(os.path.join(photos, name)) for name in doomed)
+        assert len(mock_manifest(api_base)["photos"]) == EXPECTED - 1
 
-        # Favorites: Sync from the UI, detect remote favorites and apply a rating.
-        run_async(
+        # 9. A picstome://sync link opens the review and applies nothing.
+        mock_add(api_base, "FROM_THE_WEB.jpg")
+        files_before = photo_files(photos)
+        js_invoke(session, "dev_handle_deep_link", {"url": f"picstome://sync?gallery={gallery}&name=E2E"})
+        plan = wait_for(
             session,
-            "const done = arguments[arguments.length - 1]; document.getElementById('btnSync').click(); done('clicked');",
+            "done(!state.syncBusy && state.review ? state.review.plan : null);",
+            timeout=60,
         )
-        deadline = time.time() + 60
-        favorite_prompt = None
-        while time.time() < deadline:
-            favorite_prompt = json.loads(
-                run_async(
-                    session,
-                    """
-                    const done = arguments[arguments.length - 1];
-                    const modal = document.getElementById('ratingModal');
-                    done(JSON.stringify({
-                      visible: !modal.classList.contains('hidden'),
-                      title: document.getElementById('ratingTitle').textContent,
-                      subtitle: document.getElementById('ratingSubtitle').textContent
-                    }));
-                    """,
-                )
-            )
-            if favorite_prompt["visible"] and "favorite" in favorite_prompt["title"].lower():
-                break
-            time.sleep(0.4)
-        log("favorites prompt:", favorite_prompt)
-        assert favorite_prompt and favorite_prompt["visible"], "favorites prompt did not open"
-        assert "favorite" in favorite_prompt["title"].lower(), favorite_prompt
+        assert any(item["filename"] == "FROM_THE_WEB.jpg" for item in plan["downloads"]), summarize(plan)
+        assert photo_files(photos) == files_before, "a deep link must not apply anything"
+        discard_ui(session)
 
-        favorites_result = run_async(
-            session,
-            """
-            const done = arguments[arguments.length - 1];
-            document.querySelector('#ratingStars .star-btn[data-rating="4"]').click();
-            document.getElementById('btnRatingApply').click();
-            const deadline = Date.now() + 30000;
-            const timer = setInterval(() => {
-              const result = document.getElementById('ratingResult');
-              if (!result.classList.contains('hidden') && result.textContent) {
-                clearInterval(timer);
-                done(result.textContent);
-              } else if (Date.now() > deadline) {
-                clearInterval(timer);
-                done('TIMEOUT');
-              }
-            }, 200);
-            """,
-        )
-        log("favorites rating:", favorites_result.splitlines()[0] if favorites_result else favorites_result)
-        assert "file" in favorites_result.lower() and "rated" in favorites_result.lower(), favorites_result
-        deadline = time.time() + 10
-        while time.time() < deadline:
-            modal_state = run_async(
-                session,
-                "const done = arguments[arguments.length - 1]; done(JSON.stringify({ hidden: document.getElementById('ratingModal').classList.contains('hidden') }));",
-            )
-            if json.loads(modal_state)["hidden"]:
-                break
-            time.sleep(0.2)
-        assert json.loads(modal_state)["hidden"], "favorites modal should close automatically"
-        favorites_log_text = json.loads(
-            run_async(
-                session,
-                """
-                const done = arguments[arguments.length - 1];
-                done(JSON.stringify(
-                  document.getElementById('syncLogEntries').textContent
-                ));
-                """,
-            )
-        )
-        log("favorites log:", favorites_log_text)
-        assert "Rating 1–5★" in favorites_log_text, favorites_log_text
+        # 10. In sync: a review with nothing to do says so.
+        plan = review_ui(session)
+        if plan:
+            set_group(session, "ratings", "later") if has_group(session, "ratings") else None
+            apply_ui(session)
+            plan = review_ui(session)
+        assert plan is None or not (plan["downloads"] or plan["uploads"]), summarize(plan)
 
-        with open(os.path.join(user_data, f"{gallery}.json"), encoding="utf-8") as handle:
-            snapshot = json.load(handle)
-        rated_favorites = [
-            file for file in snapshot["files"] if file.get("favoriteRatedFor")
-        ]
-        assert len(rated_favorites) >= 1, rated_favorites
-        # Every Picstome rating must reach disk, including 1-4 star photos.
-        assert any(
-            file.get("ratingApplied") == 4 for file in snapshot["files"]
-        ), snapshot["files"]
-        rating_log = js_invoke(session, "get_sync_log", {"galleryId": gallery})
-        assert any(
-            entry.get("kind") == "rating"
-            and entry.get("source") == "picstome"
-            and entry.get("rated", 0) >= 1
-            for entry in rating_log
-        ), rating_log
-        after_rating = js_invoke(session, "sync_gallery", {"galleryId": gallery})
-        log("after favorites:", after_rating["counts"], "favorites:", len(after_rating["favorites"]))
-        assert not after_rating["favorites"], after_rating["favorites"]
-        assert not after_rating["ratingPlan"]["items"], after_rating["ratingPlan"]["items"]
-        assert not after_rating["uploaded"], after_rating["uploaded"]
-
-        # First-sync review: both directions must be visible and selectable.
-        run_async(
-            session,
-            """
-            const done = arguments[arguments.length - 1];
-            window.__firstSyncChoice = null;
-            askFirstSync({
-              needed: true,
-              localTotal: 2,
-              remoteTotal: 2,
-              inSync: 1,
-              localOnly: [{ filename: 'LOCAL_ONLY.jpg', relativePath: 'LOCAL_ONLY.jpg', size: 10, mtimeMs: 1 }],
-              remoteOnly: [{ filename: 'REMOTE_ONLY.jpg', relativePath: 'REMOTE_ONLY.jpg', size: 10, mtimeMs: 0, id: 'p1', versionCount: 1 }],
-            }).then((choice) => { window.__firstSyncChoice = choice; });
-            done('opened');
-            """,
-        )
-        first_sync_modal = json.loads(
-            run_async(
-                session,
-                """
-                const done = arguments[arguments.length - 1];
-                done(JSON.stringify({
-                  visible: !document.getElementById('firstSyncModal').classList.contains('hidden'),
-                  localUpload: document.getElementById('firstSyncLocalUpload').checked,
-                  localTrash: document.getElementById('firstSyncLocalTrash').checked,
-                  download: document.getElementById('firstSyncDownload').checked,
-                  uploadLabel: document.getElementById('firstSyncUploadLabel').textContent,
-                  downloadLabel: document.getElementById('firstSyncDownloadLabel').textContent,
-                }));
-                """,
-            )
-        )
-        log("first sync modal:", first_sync_modal)
-        assert first_sync_modal["visible"], first_sync_modal
-        assert first_sync_modal["localUpload"] and not first_sync_modal["localTrash"], first_sync_modal
-        assert first_sync_modal["download"], first_sync_modal
-        assert "1" in first_sync_modal["uploadLabel"], first_sync_modal
-        assert "1" in first_sync_modal["downloadLabel"], first_sync_modal
-
-        run_async(
-            session,
-            """
-            const done = arguments[arguments.length - 1];
-            document.getElementById('firstSyncLocalTrash').click();
-            document.getElementById('btnFirstSyncConfirm').click();
-            done('confirmed');
-            """,
-        )
-        deadline = time.time() + 5
-        first_sync_choice = None
-        while time.time() < deadline:
-            first_sync_choice = json.loads(
-                run_async(
-                    session,
-                    """
-                    const done = arguments[arguments.length - 1];
-                    done(JSON.stringify(window.__firstSyncChoice));
-                    """,
-                )
-            )
-            if first_sync_choice:
-                break
-            time.sleep(0.1)
-        log("first sync choice:", first_sync_choice)
-        assert first_sync_choice and len(first_sync_choice["trashLocal"]) == 1, first_sync_choice
-        assert not first_sync_choice["ignoreLocal"], first_sync_choice
-        assert not first_sync_choice["ignoreRemote"], first_sync_choice
-
-        run_async(
-            session,
-            "const done = arguments[arguments.length - 1]; document.getElementById('btnFavoritesList').click(); done('clicked');",
-        )
-        deadline = time.time() + 20
-        favorites_export = None
-        while time.time() < deadline:
-            favorites_export = json.loads(
-                run_async(
-                    session,
-                    """
-                    const done = arguments[arguments.length - 1];
-                    done(JSON.stringify({
-                      visible: !document.getElementById('favoritesModal').classList.contains('hidden'),
-                      hasAppTab: !!document.querySelector('#favoritesTabs [data-tab="app"]'),
-                      active: document.querySelector('#favoritesTabs .favorites-tab.active')?.dataset.tab || '',
-                      text: document.getElementById('favoritesText').value
-                    }));
-                    """,
-                )
-            )
-            if favorites_export["visible"] and favorites_export["text"]:
-                break
-            time.sleep(0.2)
-        log("favorites export:", favorites_export)
-        assert favorites_export and favorites_export["visible"], favorites_export
-        assert not favorites_export["hasAppTab"], favorites_export
-        assert favorites_export["active"] == "lightroom", favorites_export
-        assert favorites_export["text"], favorites_export
-        run_async(
-            session,
-            "const done = arguments[arguments.length - 1]; document.getElementById('btnFavoritesClose').click(); done('closed');",
-        )
-
-        with open(os.path.join(photos, "DUP-WARN.JPG"), "wb") as handle:
-            handle.write(b"preferred duplicate")
-        with open(os.path.join(photos, "DUP-WARN.jpeg"), "wb") as handle:
-            handle.write(b"ignored duplicate")
-        run_async(
-            session,
-            "const done = arguments[arguments.length - 1]; document.getElementById('btnSync').click(); done('clicked');",
-        )
-        deadline = time.time() + 60
-        duplicate_warning = None
-        while time.time() < deadline:
-            duplicate_warning = json.loads(
-                run_async(
-                    session,
-                    """
-                    const done = arguments[arguments.length - 1];
-                    done(JSON.stringify({
-                      visible: !document.getElementById('reportWarnings').classList.contains('hidden'),
-                      text: document.getElementById('reportWarnings').textContent
-                    }));
-                    """,
-                )
-            )
-            if duplicate_warning["visible"] and duplicate_warning["text"]:
-                break
-            time.sleep(0.2)
-        log("duplicate warning:", duplicate_warning)
-        assert duplicate_warning and duplicate_warning["visible"], duplicate_warning
-        assert "DUP-WARN.jpeg" in duplicate_warning["text"], duplicate_warning
-        assert "won't be uploaded" in duplicate_warning["text"], duplicate_warning
-        warning_log = js_invoke(session, "get_sync_log", {"galleryId": gallery})
-        assert any(
-            warning.get("kind") == "duplicate_local_ignored"
-            and warning.get("filename") == "DUP-WARN.jpeg"
-            for entry in warning_log
-            for warning in entry.get("warnings", [])
-        ), warning_log
-
-        cleared = js_invoke(session, "clear_sync_log", {"galleryId": gallery})
-        assert cleared.get("ok"), cleared
-        assert not os.path.exists(
-            os.path.join(user_data, "logs", f"{gallery}.log")
-        ), "per-gallery log was not removed"
-        assert not js_invoke(session, "get_sync_log", {"galleryId": gallery})
-
-        # Unlink must ask before removing the app state.
-        run_async(
-            session,
-            """
-            const done = arguments[arguments.length - 1];
-            const row = Array.from(document.querySelectorAll('.gallery-row'))
-              .find((item) => item.dataset.galleryId === 'G456');
-            row.click();
-            document.getElementById('btnUnlink').click();
-            done('clicked');
-            """,
-        )
-        unlink_confirm = json.loads(
-            run_async(
-                session,
-                """
-                const done = arguments[arguments.length - 1];
-                done(JSON.stringify({
-                  visible: !document.getElementById('confirmModal').classList.contains('hidden'),
-                  title: document.getElementById('confirmTitle').textContent
-                }));
-                """,
-            )
-        )
-        log("unlink confirmation:", unlink_confirm)
-        assert unlink_confirm["visible"], unlink_confirm
-        assert "unlink" in unlink_confirm["title"].lower(), unlink_confirm
-        run_async(
-            session,
-            "const done = arguments[arguments.length - 1]; document.getElementById('btnConfirmCancel').click(); done('cancelled');",
-        )
-        assert any(
-            item["galleryId"] == "G456"
-            for item in js_invoke(session, "get_state", {})["galleries"]
-        ), "cancelling unlink must keep the gallery"
-
-        # A gallery deleted on the web must not delete local files. The app asks
-        # whether to remove it locally; Cancel keeps it, Accept unlinks it.
-        remove_gallery_request = urllib.request.Request(
-            f"{api_base}/api/v1/dev/remove-gallery",
-            data=json.dumps({"gallery_id": "G456"}).encode(),
-            headers={
-                "Content-Type": "application/json",
-                "Authorization": "Bearer demo-token",
-            },
-            method="POST",
-        )
-        urllib.request.urlopen(remove_gallery_request, timeout=30).read()
-        run_async(
-            session,
-            """
-            const done = arguments[arguments.length - 1];
-            const row = Array.from(document.querySelectorAll('.gallery-row'))
-              .find((item) => item.dataset.galleryId === 'G456');
-            row.click();
-            document.getElementById('btnSync').click();
-            done('clicked');
-            """,
-        )
-        deadline = time.time() + 30
-        missing_prompt = None
-        while time.time() < deadline:
-            missing_prompt = json.loads(
-                run_async(
-                    session,
-                    """
-                    const done = arguments[arguments.length - 1];
-                    done(JSON.stringify({
-                      visible: !document.getElementById('confirmModal').classList.contains('hidden'),
-                      title: document.getElementById('confirmTitle').textContent,
-                      message: document.getElementById('confirmMessage').textContent
-                    }));
-                    """,
-                )
-            )
-            if missing_prompt["visible"]:
-                break
-            time.sleep(0.2)
-        log("missing gallery prompt:", missing_prompt)
-        assert missing_prompt and missing_prompt["visible"], "missing gallery prompt did not open"
-        assert "not found" in missing_prompt["title"].lower(), missing_prompt
-        assert "nothing will be deleted" in missing_prompt["message"].lower(), missing_prompt
-
-        run_async(
-            session,
-            "const done = arguments[arguments.length - 1]; document.getElementById('btnConfirmCancel').click(); done('cancelled');",
-        )
-        time.sleep(0.5)
-        state_after_cancel = js_invoke(session, "get_state", {})
-        assert any(
-            item["galleryId"] == "G456" for item in state_after_cancel["galleries"]
-        ), state_after_cancel["galleries"]
-
-        run_async(
-            session,
-            "const done = arguments[arguments.length - 1]; document.getElementById('btnSync').click(); done('clicked');",
-        )
-        deadline = time.time() + 30
-        while time.time() < deadline:
-            missing_prompt = json.loads(
-                run_async(
-                    session,
-                    "const done = arguments[arguments.length - 1]; done(JSON.stringify({ visible: !document.getElementById('confirmModal').classList.contains('hidden') }));",
-                )
-            )
-            if missing_prompt["visible"]:
-                break
-            time.sleep(0.2)
-        assert missing_prompt and missing_prompt["visible"], "missing gallery prompt did not reopen"
-        run_async(
-            session,
-            "const done = arguments[arguments.length - 1]; document.getElementById('btnConfirmOk').click(); done('confirmed');",
-        )
-        deadline = time.time() + 30
-        while time.time() < deadline:
-            state_after_remove = js_invoke(session, "get_state", {})
-            if not any(
-                item["galleryId"] == "G456"
-                for item in state_after_remove["galleries"]
-            ):
-                break
-            time.sleep(0.2)
-        assert not any(
-            item["galleryId"] == "G456" for item in state_after_remove["galleries"]
-        ), state_after_remove["galleries"]
-        assert os.path.isdir(rating_dir), "removing a gallery must not touch local files"
+        # Unlinking asks first and never touches local files.
+        click(session, "#btnUnlink")
+        wait_for(session, "done(!document.getElementById('confirmModal').classList.contains('hidden'));")
+        click(session, "#btnConfirmCancel")
+        assert any(item["galleryId"] == gallery for item in js_invoke(session, "get_state", {})["galleries"])
 
         logout = js_invoke(session, "logout", {})
         assert logout.get("ok"), logout
@@ -1305,10 +666,8 @@ def main():
 
         state = js_invoke(session, "set_test_mode", {"enabled": True})
         assert state["config"]["apiKind"] == "development", state["config"]
-        assert state["config"]["apiBase"] == "https://devel.picstome.com", state["config"]
         state = js_invoke(session, "set_test_mode", {"enabled": False})
         assert state["config"]["apiKind"] == "production", state["config"]
-        assert state["config"]["apiBase"] == "https://app.picstome.com", state["config"]
 
         log("E2E PASSED")
     finally:

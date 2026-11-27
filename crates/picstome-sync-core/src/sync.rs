@@ -328,8 +328,15 @@ pub(crate) fn build_snapshot(
         }
     }
 
-    // Keep previous entries whose remote copy is gone but whose local copy is
-    // still present, including items the user chose to keep locally.
+    // Keep previous entries that the diff did not classify but whose local
+    // copy is still present. Two cases matter:
+    //
+    // * the remote copy is gone (including items the user chose to keep
+    //   locally), so the snapshot remembers that the local file is the only
+    //   copy left;
+    // * the file was held out of the diff by `plan_uploads` while the gallery
+    //   waits for a RAW choice. Dropping its baseline would make the next
+    //   sync adopt the edited local file as "in sync" and never upload it.
     for previous in previous {
         let Some(key) = previous.identity() else {
             continue;
@@ -340,7 +347,13 @@ pub(crate) fn build_snapshot(
         let Some(local) = local_by_key.get(&key).copied() else {
             continue;
         };
-        if manifest_by_key.contains_key(&key) {
+        let remote_present = manifest_by_key.contains_key(&key);
+        if remote_present {
+            // Held out of the diff by `plan_uploads` while the gallery waits
+            // for a RAW choice. Keep the previous baseline exactly as it was:
+            // refreshing the local hash here would hide the edit from the
+            // next review and it would never be uploaded.
+            files.push(previous.clone());
             continue;
         }
         let mut entry = previous.clone();
@@ -573,31 +586,58 @@ pub struct RemoteDeleteResolution {
     pub errors: Vec<SyncErrorItem>,
 }
 
-pub(crate) fn local_path_for(gallery: &GalleryEntry, file: &SnapshotFile) -> Option<PathBuf> {
-    let root = Path::new(&gallery.local_path);
-    let relative = file.relative_path.as_deref().unwrap_or(&file.filename);
-    let candidate = root.join(relative);
-    if is_inside(root, &candidate) && candidate.is_file() {
-        return Some(candidate);
-    }
-    safe_join(root, &file.filename).filter(|path| path.is_file())
+fn file_has_snapshot_identity(file: &SnapshotFile, path: &Path) -> bool {
+    let Some(expected) = file.identity() else {
+        return false;
+    };
+    path.file_name()
+        .and_then(|name| identity_key(&name.to_string_lossy()))
+        .as_deref()
+        == Some(expected.as_str())
 }
 
-fn gallery_trash_destination(root: &Path, filename: &str) -> PathBuf {
+pub(crate) fn local_path_for(gallery: &GalleryEntry, file: &SnapshotFile) -> Option<PathBuf> {
+    let root = Path::new(&gallery.local_path);
+    let explicit = file.relative_path.as_deref();
+    let relative = explicit.unwrap_or(&file.filename);
+    let candidate = root.join(relative);
+    if is_inside(root, &candidate) && candidate.is_file() {
+        // A recorded relative path belongs to this entry. A name derived only
+        // from the filename must still describe the same logical photo.
+        if explicit.is_some() || file_has_snapshot_identity(file, &candidate) {
+            return Some(candidate);
+        }
+    }
+    let fallback = safe_join(root, &file.filename).filter(|path| path.is_file())?;
+    // Only use the filename fallback for the same logical photo. Otherwise a
+    // different file that happens to share the name (explicit or stale
+    // identity keys, renamed remote copies) could be trashed or uploaded.
+    file_has_snapshot_identity(file, &fallback).then_some(fallback)
+}
+
+fn gallery_trash_destination(root: &Path, filename: &str) -> Option<PathBuf> {
     let dir = root.join(".picstome-trash");
     let stamp = now_millis();
     let filename = sanitize_file_name(filename).unwrap_or_else(|| "photo".to_string());
-    let candidate = dir.join(format!("{stamp}-{filename}"));
-    if !candidate.exists() {
-        return candidate;
-    }
-    for suffix in 1..1000 {
-        let candidate = dir.join(format!("{stamp}-{suffix}-{filename}"));
+    for suffix in 0..1000 {
+        let candidate = if suffix == 0 {
+            dir.join(format!("{stamp}-{filename}"))
+        } else {
+            dir.join(format!("{stamp}-{suffix}-{filename}"))
+        };
         if !candidate.exists() {
-            return candidate;
+            return Some(candidate);
         }
     }
-    dir.join(format!("{stamp}-{filename}"))
+    // Practically unreachable. A random suffix keeps an existing trashed file
+    // from ever being renamed over.
+    for _ in 0..1000 {
+        let candidate = dir.join(format!("{stamp}-{:08x}-{filename}", rand::random::<u32>()));
+        if !candidate.exists() {
+            return Some(candidate);
+        }
+    }
+    None
 }
 
 fn move_to_gallery_trash(
@@ -606,7 +646,9 @@ fn move_to_gallery_trash(
     path: &Path,
     system_error: &str,
 ) -> Result<PathBuf, String> {
-    let destination = gallery_trash_destination(root, filename);
+    let destination = gallery_trash_destination(root, filename).ok_or_else(|| {
+        format!("system trash failed ({system_error}); no free name in the gallery trash folder")
+    })?;
     if let Some(parent) = destination.parent() {
         std::fs::create_dir_all(parent).map_err(|error| {
             format!("system trash failed ({system_error}); gallery trash folder failed ({error})")
@@ -1236,6 +1278,12 @@ pub(crate) fn download_target(
     let Some(remote_name) = sanitize_file_name(&photo.filename) else {
         return DownloadTarget::Unsafe;
     };
+    // Never silently rename a file: the snapshot identity is derived from the
+    // manifest name, but later scans derive it from the name on disk. If they
+    // differ, the same photo would look deleted remotely and new locally.
+    if remote_name != photo.filename {
+        return DownloadTarget::Unsafe;
+    }
     let relative_path = match existing {
         Some(local) if local.filename.eq_ignore_ascii_case(&remote_name) => {
             local.relative_path.clone()
@@ -1366,8 +1414,10 @@ pub(crate) struct UploadPlan {
 /// * JPEG + RAW: new photos upload their RAW files first and the JPEG last.
 ///   A modified photo only re-uploads the edited file.
 ///
-/// Held photos are removed from the diff, so they are not pending changes,
-/// never deletion proposals and not recorded in the snapshot.
+/// Held photos are removed from the diff, so they are not pending changes and
+/// never deletion proposals. A photo that already had a baseline keeps it in
+/// the snapshot (see [`build_snapshot`]), so an edit made while the question
+/// was open is uploaded once the choice is made.
 pub(crate) fn plan_uploads(
     diff: &mut Diff,
     local_files: &[crate::model::LocalFile],
@@ -1814,6 +1864,38 @@ mod tests {
     }
 
     #[test]
+    fn held_raw_decision_keeps_the_previous_baseline() {
+        // `plan_uploads` removes photos with a RAW from the diff while the
+        // gallery has no RAW choice yet. Their baseline must survive the
+        // snapshot write, otherwise the next review adopts the edited local
+        // file as "in sync" and silently never uploads it.
+        let mut local = local();
+        local.hash = Some("h2".into());
+        local.size = 11;
+        local.mtime_ms = 456;
+        // The held photo is not part of the diff at all.
+        let snapshot = build_snapshot(
+            &gallery(),
+            &manifest_with(remote()),
+            &[local.clone()],
+            &[previous(Some(123))],
+            &diff_with(),
+            &[],
+            &[],
+            1,
+        );
+        assert_eq!(snapshot.files.len(), 1);
+        assert_eq!(snapshot.files[0].hash.as_deref(), Some("h1"));
+        // The old local baseline is kept on purpose, so the edit is still
+        // visible as a local modification.
+        assert_eq!(snapshot.files[0].local_hash.as_deref(), Some("h1"));
+
+        // Once the RAW choice exists the edit is still a pending upload.
+        let diff = compute_diff(&snapshot.files, &[remote()], &[local]);
+        assert_eq!(diff.counts.local_modified, 1);
+    }
+
+    #[test]
     fn successful_transfer_records_the_new_remote_state() {
         let mut photo = remote();
         photo.hash = Some("h2".into());
@@ -1835,6 +1917,41 @@ mod tests {
         assert_eq!(snapshot.files[0].hash.as_deref(), Some("h2"));
         assert_eq!(snapshot.files[0].version_count, Some(2));
         assert_eq!(snapshot.files[0].mtime, Some(456));
+    }
+
+    #[test]
+    fn local_path_for_refuses_a_file_with_a_different_identity() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("a.jpg"), b"x").unwrap();
+        let mut gallery = gallery();
+        gallery.local_path = dir.path().to_string_lossy().to_string();
+
+        let mut file = previous(Some(1));
+        file.relative_path = None;
+        file.identity_key = Some("image:other".into());
+        assert!(local_path_for(&gallery, &file).is_none());
+
+        file.identity_key = Some("image:a".into());
+        assert_eq!(
+            local_path_for(&gallery, &file),
+            Some(dir.path().join("a.jpg"))
+        );
+    }
+
+    #[test]
+    fn download_target_never_silently_renames_a_padded_filename() {
+        let mut photo = remote();
+        photo.filename = " a.jpg".into();
+        assert!(matches!(
+            download_target(Path::new("/tmp/gallery"), &photo, None),
+            DownloadTarget::Unsafe
+        ));
+
+        photo.filename = "a.jpg".into();
+        assert!(matches!(
+            download_target(Path::new("/tmp/gallery"), &photo, None),
+            DownloadTarget::Path { .. }
+        ));
     }
 
     #[test]

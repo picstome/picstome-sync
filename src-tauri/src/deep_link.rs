@@ -99,7 +99,11 @@ pub async fn handle_url(app: AppHandle, raw: String) {
             let Some(app_state) = app.try_state::<AppState>() else {
                 return;
             };
-            let expected = app_state.auth_nonce.lock().unwrap().take();
+            let expected = app_state
+                .auth_nonce
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .take();
             if expected.as_deref() != Some(state.as_str()) {
                 let _ = app.emit(
                     "auth-status",
@@ -112,7 +116,10 @@ pub async fn handle_url(app: AppHandle, raw: String) {
             let store = app_state.store.clone();
             match api.exchange_code(&code).await {
                 Ok(response) => {
-                    let _ = app_state.token_store.save(Some(&response.token));
+                    let _ = app_state
+                        .token_store
+                        .save_async(Some(response.token.clone()))
+                        .await;
                     let me = api.me().await.ok();
                     let email = me
                         .as_ref()

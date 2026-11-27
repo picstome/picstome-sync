@@ -33,3 +33,21 @@ rand.workspace = true
 url.workspace = true
 base64 = "0.22"
 futures.workspace = true
+
+# The API token is kept in the OS credential store when one is available:
+# Windows Credential Manager, macOS Keychain, or the Linux Secret Service.
+# Linux uses the pure-Rust zbus backend (no libdbus build dependency) and is
+# always called from a blocking thread. Scripts and headless machines can set
+# PICSTOME_DISABLE_KEYRING=1 to fall back to the 0600 auth.json file.
+[target.'cfg(target_os = "linux")'.dependencies]
+keyring = { version = "3", default-features = false, features = [
+    "async-secret-service",
+    "crypto-rust",
+    "tokio",
+] }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+keyring = { version = "3", default-features = false, features = ["apple-native"] }
+
+[target.'cfg(target_os = "windows")'.dependencies]
+keyring = { version = "3", default-features = false, features = ["windows-native"] }

@@ -26,6 +26,21 @@ fn local_changed(file: &LocalFile, base: &SnapshotFile) -> bool {
     }
 }
 
+/// The local bytes already are the remote photo: either the served copy
+/// (`download_hash`) or the uploaded source (`hash`).
+///
+/// This is how the engine recovers from a crash between a transfer and the
+/// snapshot write, or from an upload whose response was lost: the next review
+/// sees "both sides changed", but they hold identical content, so it must
+/// adopt the pair instead of reporting a conflict the photographer cannot
+/// resolve from the app.
+fn local_matches_remote(file: &LocalFile, photo: &Photo) -> bool {
+    let Some(local) = file.hash.as_deref() else {
+        return false;
+    };
+    photo.content_hash() == Some(local) || photo.hash.as_deref() == Some(local)
+}
+
 pub fn compute_diff(
     snapshot_files: &[SnapshotFile],
     remote_photos: &[Photo],
@@ -87,18 +102,39 @@ pub fn compute_diff(
                 _ => diff.local_new.push(file.clone()),
             },
             (Some(photo), Some(file)) => {
+                let local_matches = local_matches_remote(file, photo);
                 let Some(base) = base else {
                     // First time this identity is seen on both sides. Adopt it as
                     // the common baseline; the remote may be a resized version of
                     // the original local file, so sizes/hashes must not conflict.
-                    diff.in_sync.push(photo.clone());
+                    //
+                    // Exception: Picstome is currently showing a RAW while this
+                    // folder has the JPEG for the same photo. That happens when
+                    // the RAW upload succeeded but the JPEG upload failed, and
+                    // adopting the pair would leave the RAW as the version
+                    // clients see forever. Upload the local JPEG again.
+                    if local_matches {
+                        diff.in_sync.push(photo.clone());
+                    } else if crate::identity::is_raw(&photo.filename)
+                        && !crate::identity::is_raw(&file.filename)
+                    {
+                        diff.local_modified.push(file.clone());
+                    } else {
+                        diff.in_sync.push(photo.clone());
+                    }
                     continue;
                 };
 
                 let remote_was_changed = remote_changed(photo, base);
                 let local_was_changed = local_changed(file, base);
 
-                if remote_was_changed && local_was_changed {
+                // The local bytes already are the remote content and they moved
+                // since the review: a transfer landed on disk but the snapshot
+                // write did not (crash, full disk, lost response). Adopting the
+                // pair avoids an unresolvable conflict.
+                if local_was_changed && local_matches {
+                    diff.in_sync.push(photo.clone());
+                } else if remote_was_changed && local_was_changed {
                     diff.conflicts.push(Conflict {
                         identity_key: key.clone(),
                         remote: ConflictPhoto {
@@ -528,5 +564,45 @@ mod extra_tests {
         );
         assert_eq!(diff.counts.remote_deleted, 0);
         assert_eq!(diff.counts.local_new, 1);
+    }
+
+    #[test]
+    fn identical_content_recovers_from_an_interrupted_snapshot_write() {
+        // A download reached the disk but the snapshot write did not.
+        let mut base = snapshot_with("p1", "a.jpg", Some("old"), Some(10), Some(1));
+        base.local_present = true;
+        base.local_hash = Some("old".into());
+        base.local_size = Some(10);
+        base.mtime = Some(1);
+        let mut remote = photo_with("p1", "a.jpg", Some("new-source"), Some(10), Some(2));
+        remote.download_hash = Some("new-download".into());
+        let diff = compute_diff(
+            &[base.clone()],
+            &[remote.clone()],
+            &[local_with("a.jpg", Some("new-download"), 10)],
+        );
+        assert_eq!(diff.counts.conflicts, 0);
+        assert_eq!(diff.counts.in_sync, 1);
+
+        // An upload succeeded but the snapshot write did not.
+        remote.download_hash = Some("served-elsewhere".into());
+        let diff = compute_diff(
+            &[base],
+            &[remote],
+            &[local_with("a.jpg", Some("new-source"), 10)],
+        );
+        assert_eq!(diff.counts.conflicts, 0);
+        assert_eq!(diff.counts.in_sync, 1);
+    }
+
+    #[test]
+    fn remote_raw_with_a_local_jpeg_uploads_the_jpeg_again() {
+        // The RAW upload succeeded and the JPEG upload failed: Picstome shows
+        // the RAW, the folder has the JPEG. The JPEG must become current again
+        // instead of the pair being adopted as "in sync".
+        let remote = photo_with("p1", "PAIR.CR3", Some("raw"), Some(10), Some(1));
+        let diff = compute_diff(&[], &[remote], &[local_with("PAIR.jpg", Some("jpeg"), 10)]);
+        assert_eq!(diff.counts.local_modified, 1);
+        assert_eq!(diff.counts.in_sync, 0);
     }
 }

@@ -468,27 +468,36 @@ pub async fn plan_sync(
 
     // Downloads, with the place each one would be written.
     let local_by_key = preferred_local_files(&local_files);
-    let downloads: Vec<PlannedDownload> = diff
+    let mut downloads = Vec::new();
+    for (photo, reason) in diff
         .remote_new
         .iter()
         .map(|photo| (photo, "new"))
         .chain(diff.remote_modified.iter().map(|photo| (photo, "modified")))
-        .filter_map(|(photo, reason)| {
-            let existing = photo
-                .identity()
-                .and_then(|key| local_by_key.get(&key).copied());
-            match download_target(Path::new(&gallery.local_path), photo, existing) {
-                DownloadTarget::Path { relative_path, .. } => Some(PlannedDownload {
-                    id: photo.id.clone(),
-                    filename: photo.filename.clone(),
-                    relative_path,
-                    size: photo.size,
-                    reason: reason.into(),
-                }),
-                DownloadTarget::Unsafe => None,
-            }
-        })
-        .collect();
+    {
+        let existing = photo
+            .identity()
+            .and_then(|key| local_by_key.get(&key).copied());
+        match download_target(Path::new(&gallery.local_path), photo, existing) {
+            DownloadTarget::Path { relative_path, .. } => downloads.push(PlannedDownload {
+                id: photo.id.clone(),
+                filename: photo.filename.clone(),
+                relative_path,
+                size: photo.size,
+                reason: reason.into(),
+            }),
+            DownloadTarget::Unsafe => warnings.push(SyncWarningItem {
+                kind: "unsafe_filename".into(),
+                filename: Some(photo.filename.clone()),
+                preferred: None,
+                path: None,
+                message: format!(
+                    "{} has a name that cannot be saved safely and was not downloaded",
+                    photo.filename
+                ),
+            }),
+        }
+    }
     let uploads: Vec<PlannedUpload> = upload_plan
         .units
         .iter()
@@ -595,6 +604,29 @@ async fn unchanged(root: &Path, file: &LocalFile) -> bool {
     metadata.len() == file.size && file_mtime_ms(&path).await == Some(file.mtime_ms)
 }
 
+/// Like [`unchanged`], but also re-reads the file when the reviewed content
+/// hash is known.
+///
+/// Used immediately before an action that destroys local bytes (overwriting a
+/// photo with a new remote version, or moving it to the trash): size and mtime
+/// alone can miss a same-size edit made within the filesystem timestamp
+/// resolution, and that edit must never be thrown away silently.
+async fn unchanged_exact(root: &Path, file: &LocalFile) -> bool {
+    if !unchanged(root, file).await {
+        return false;
+    }
+    let Some(expected) = file.hash.as_deref() else {
+        return true;
+    };
+    let Some(path) = safe_join_relative(root, &file.relative_path) else {
+        return false;
+    };
+    match crate::localfiles::hash_file(&path).await {
+        Ok(hash) => hash == expected,
+        Err(_) => false,
+    }
+}
+
 /// Join a `/`-separated relative path under `root`, refusing anything that
 /// would leave it.
 fn safe_join_relative(root: &Path, relative: &str) -> Option<std::path::PathBuf> {
@@ -642,6 +674,16 @@ pub async fn apply_sync(
     {
         return Err(CoreError::Outdated(
             "This gallery changed after the review; review the changes again".into(),
+        ));
+    }
+    // The folder may have been relocated or relinked after the review. Applying
+    // against the old path could recreate it and write photos there.
+    if !store
+        .get_gallery(&gallery_id)
+        .is_some_and(|current| current.local_path == gallery.local_path)
+    {
+        return Err(CoreError::Outdated(
+            "The gallery folder changed after the review; review the changes again".into(),
         ));
     }
     let deletes: HashSet<&String> = selection
@@ -705,7 +747,7 @@ pub async fn apply_sync(
         let Some(file) = local_by_path.get(path.as_str()) else {
             continue;
         };
-        if !unchanged(&root, file).await {
+        if !unchanged_exact(&root, file).await {
             skipped_changed.push(file.filename.clone());
             continue;
         }
@@ -790,7 +832,7 @@ pub async fn apply_sync(
         // still exactly what was reviewed, or the photographer's edits since
         // then would be lost.
         if let Some(local) = existing {
-            if !unchanged(&root, local).await {
+            if !unchanged_exact(&root, local).await {
                 skipped_changed.push(photo.filename.clone());
                 continue;
             }
@@ -966,10 +1008,26 @@ pub async fn apply_sync(
     diff.local_deleted
         .retain(|photo| !restore.contains(&photo.id));
     diff.remote_new.extend(restored);
+    // The scan happened before the trash phase: a file that was just moved to
+    // the trash must not be counted (or recorded) as still present locally.
+    let trashed_relative: HashSet<String> = trashed_local
+        .iter()
+        .filter_map(|item| {
+            Path::new(&item.original_path)
+                .strip_prefix(&root)
+                .ok()
+                .map(|path| path.to_string_lossy().replace('\\', "/"))
+        })
+        .collect();
+    let snapshot_local_files: Vec<LocalFile> = local_files
+        .iter()
+        .filter(|file| !trashed_relative.contains(&file.relative_path))
+        .cloned()
+        .collect();
     let mut snapshot = build_snapshot(
         &gallery,
         &manifest,
-        &local_files,
+        &snapshot_local_files,
         &previous_files,
         &diff,
         &downloaded,
@@ -1056,12 +1114,27 @@ pub async fn apply_sync(
         let Some(item) = plan.remote_deleted.iter().find(|item| item.id == choice.id) else {
             continue;
         };
+        // The photo is back in Picstome (restored, re-created, or re-added
+        // under a new id) after the review. Trashing the local copy over a
+        // stale plan would destroy the only remaining copy, so leave it alone.
+        let key = item
+            .identity_key
+            .clone()
+            .or_else(|| identity_key(&item.filename));
+        let reappeared = fresh
+            .photos
+            .iter()
+            .any(|photo| photo.id == choice.id || (key.is_some() && photo.identity() == key));
+        if reappeared {
+            skipped_changed.push(item.filename.clone());
+            continue;
+        }
         let local = item
             .relative_path
             .as_deref()
             .and_then(|path| local_by_path.get(path));
         if let Some(local) = local {
-            if !unchanged(&root, local).await {
+            if !unchanged_exact(&root, local).await {
                 skipped_changed.push(item.filename.clone());
                 continue;
             }

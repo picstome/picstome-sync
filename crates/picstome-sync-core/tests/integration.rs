@@ -1623,6 +1623,51 @@ async fn apply_runs_only_the_ticked_actions() {
     mock.close().await;
 }
 
+/// A first-sync file moved to the trash must not stay in the snapshot: the
+/// scan happened before the trash, and counting a file that is no longer on
+/// disk makes the gallery report a phantom photo until the next review.
+#[tokio::test]
+async fn trashed_first_sync_file_is_not_counted_in_the_snapshot() {
+    let (mock, api, _dir, store, gallery) = setup_sync().await;
+    let root = std::path::Path::new(&gallery.local_path);
+    std::fs::write(root.join("LOCAL_ONLY.jpg"), jpeg_bytes(600, 3)).unwrap();
+
+    let planned = plan_sync(&api, &store, &gallery, &SyncOptions::default(), silence())
+        .await
+        .unwrap();
+    assert_eq!(planned.plan.uploads.len(), 1);
+    let selection = PlanSelection {
+        trash_local: vec!["LOCAL_ONLY.jpg".into()],
+        ..Default::default()
+    };
+    let report = apply_sync(
+        &api,
+        &store,
+        planned,
+        &selection,
+        &SyncOptions::default(),
+        silence(),
+    )
+    .await
+    .unwrap();
+    assert!(report.errors.is_empty(), "{:?}", report.errors);
+    assert!(!root.join("LOCAL_ONLY.jpg").exists());
+
+    let snapshot = store.load_snapshot("G123").expect("snapshot");
+    assert_eq!(snapshot.local_photo_count, 0);
+    assert_eq!(snapshot.local_bytes, 0);
+    assert!(snapshot.files.is_empty(), "{:?}", snapshot.files);
+
+    // The remote gallery is untouched: its 50 photos are proposed as new
+    // downloads, never as a local deletion.
+    let next = plan_sync(&api, &store, &gallery, &SyncOptions::default(), silence())
+        .await
+        .unwrap();
+    assert!(next.plan.local_deleted.is_empty());
+    assert_eq!(next.plan.downloads.len(), 50);
+    mock.close().await;
+}
+
 /// A file edited between the review and Apply is left alone and reported.
 #[tokio::test]
 async fn apply_skips_files_changed_after_the_review() {

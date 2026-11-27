@@ -356,6 +356,9 @@ function warningText(warning) {
     if (warning.kind === "file_too_large" && s?.fileTooLarge) {
         return fmt(s.fileTooLarge, vars);
     }
+    if (warning.kind === "unsafe_filename" && s?.unsafeFilename) {
+        return fmt(s.unsafeFilename, vars);
+    }
     return warning.message || "";
 }
 

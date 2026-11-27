@@ -296,12 +296,21 @@ impl ChunkLedger {
     }
 }
 
+/// Append a suffix to a path's file name without converting it to a string.
+/// `display()` would replace invalid UTF-8 bytes and could point a sidecar at
+/// a different file.
+fn with_suffix(path: &Path, suffix: &str) -> PathBuf {
+    let mut name = path.as_os_str().to_os_string();
+    name.push(suffix);
+    PathBuf::from(name)
+}
+
 fn part_path(dest: &Path) -> PathBuf {
-    PathBuf::from(format!("{}.part", dest.display()))
+    with_suffix(dest, ".part")
 }
 
 fn meta_path(dest: &Path) -> PathBuf {
-    PathBuf::from(format!("{}.part.json", dest.display()))
+    with_suffix(dest, ".part.json")
 }
 
 /// Download a file in parallel ranges, writing each chunk straight into its
@@ -444,7 +453,7 @@ async fn download_chunked(
 
     let _ = tokio::fs::remove_file(&meta_file).await;
     // Older builds kept one file per chunk in `<dest>.parts`; clean it up.
-    let _ = tokio::fs::remove_dir_all(PathBuf::from(format!("{}.parts", dest.display()))).await;
+    let _ = tokio::fs::remove_dir_all(with_suffix(dest, ".parts")).await;
     Ok(())
 }
 
@@ -524,11 +533,16 @@ pub async fn download_file(
     client: &Client,
     url: &str,
     dest: &Path,
-    options: DownloadOptions,
+    mut options: DownloadOptions,
     progress: ProgressFn,
 ) -> CoreResult<DownloadResult> {
     if let Some(parent) = dest.parent() {
         tokio::fs::create_dir_all(parent).await?;
+    }
+    // A zero chunk size would underflow the range arithmetic below. The caller
+    // never sets it, but this is a public entry point.
+    if options.chunk_bytes == 0 {
+        options.chunk_bytes = DOWNLOAD_CHUNK_BYTES;
     }
 
     // Cheaply decide whether the destination is already the wanted file. The
@@ -624,9 +638,14 @@ pub async fn download_file(
     // Replace atomically: removing `dest` first would leave a window in which
     // a crash loses the previous version of the photo.
     let (from, to) = (part.clone(), dest.to_path_buf());
-    tokio::task::spawn_blocking(move || crate::atomic::replace_file(&from, &to))
-        .await
-        .map_err(|err| CoreError::Other(format!("rename task failed: {err}")))??;
+    tokio::task::spawn_blocking(move || {
+        crate::atomic::replace_file(&from, &to)?;
+        // The rename is only durable once the directory entry is synced.
+        crate::atomic::sync_parent_dir(&to);
+        Ok::<(), std::io::Error>(())
+    })
+    .await
+    .map_err(|err| CoreError::Other(format!("rename task failed: {err}")))??;
     let _ = tokio::fs::remove_file(meta_path(dest)).await;
 
     Ok(DownloadResult {

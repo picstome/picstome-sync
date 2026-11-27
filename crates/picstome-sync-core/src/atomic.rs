@@ -27,6 +27,10 @@ fn temporary_path(path: &Path) -> PathBuf {
 /// `rename` already replaces atomically on Unix and (via `MoveFileExW`) on
 /// Windows; the fallback only covers Windows cases where the destination is
 /// read-only or briefly locked by another process (indexers, antivirus).
+///
+/// The fallback moves the old destination aside instead of deleting it, and
+/// puts it back if the second rename fails: a failed replacement must never
+/// leave the caller without the previous version.
 pub fn replace_file(from: &Path, to: &Path) -> io::Result<()> {
     match fs::rename(from, to) {
         Ok(()) => Ok(()),
@@ -37,14 +41,47 @@ pub fn replace_file(from: &Path, to: &Path) -> io::Result<()> {
                 io::ErrorKind::AlreadyExists | io::ErrorKind::PermissionDenied
             ) =>
         {
-            match fs::remove_file(to) {
+            let backup = temporary_path(to);
+            match fs::rename(to, &backup) {
                 Ok(()) => {}
                 Err(error) if error.kind() == io::ErrorKind::NotFound => {}
                 Err(error) => return Err(error),
             }
-            fs::rename(from, to)
+            match fs::rename(from, to) {
+                Ok(()) => {
+                    let _ = fs::remove_file(&backup);
+                    Ok(())
+                }
+                Err(error) => {
+                    if backup.exists() {
+                        let _ = fs::rename(&backup, to);
+                    }
+                    Err(error)
+                }
+            }
         }
         Err(error) => Err(error),
+    }
+}
+
+/// Make a completed rename durable by syncing its parent directory.
+///
+/// `fsync` on a file only guarantees the file's contents; on a crash the
+/// directory entry pointing at the new name can still be lost. This is
+/// best-effort: some filesystems and Windows do not allow opening a directory,
+/// and a failure here must never turn a completed write into an error.
+pub fn sync_parent_dir(path: &Path) {
+    #[cfg(unix)]
+    {
+        if let Some(parent) = path.parent() {
+            if let Ok(dir) = fs::File::open(parent) {
+                let _ = dir.sync_all();
+            }
+        }
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = path;
     }
 }
 
@@ -67,7 +104,9 @@ pub fn write_bytes(path: &Path, data: &[u8]) -> io::Result<()> {
         file.write_all(data)?;
         file.sync_all()?;
         drop(file);
-        replace_file(&temporary, path)
+        replace_file(&temporary, path)?;
+        sync_parent_dir(path);
+        Ok(())
     })();
     if result.is_err() {
         let _ = fs::remove_file(&temporary);
