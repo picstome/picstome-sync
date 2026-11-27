@@ -1668,6 +1668,147 @@ async fn trashed_first_sync_file_is_not_counted_in_the_snapshot() {
     mock.close().await;
 }
 
+#[tokio::test]
+async fn edited_folder_creates_a_sibling_gallery_in_the_same_photoshoot() {
+    let (mock, api, _dir, store, gallery) = setup_sync().await;
+    let root = std::path::Path::new(&gallery.local_path);
+    std::fs::create_dir_all(root.join("editadas")).unwrap();
+    std::fs::write(root.join("editadas/EDITED_01.jpg"), jpeg_bytes(500, 7)).unwrap();
+
+    let planned = plan_sync(&api, &store, &gallery, &SyncOptions::default(), silence())
+        .await
+        .unwrap();
+    assert_eq!(planned.plan.edited_folders.len(), 1);
+    let proposal = &planned.plan.edited_folders[0];
+    assert_eq!(proposal.folder, "editadas");
+    assert_eq!(proposal.gallery_name, "MiBoda editadas");
+    assert_eq!(proposal.photoshoot_id, Some(123));
+    assert_eq!(proposal.photo_count, 1);
+    assert!(
+        planned.plan.uploads.is_empty(),
+        "the parent must not upload the edited folder"
+    );
+
+    let selection = PlanSelection {
+        create_edited: vec!["editadas".into()],
+        ..Default::default()
+    };
+    let report = apply_sync(
+        &api,
+        &store,
+        planned,
+        &selection,
+        &SyncOptions::default(),
+        silence(),
+    )
+    .await
+    .unwrap();
+    assert!(report.errors.is_empty(), "{:?}", report.errors);
+    assert_eq!(report.created_galleries.len(), 1);
+    let created = &report.created_galleries[0];
+    assert_eq!(created.name, "MiBoda editadas");
+    assert_eq!(created.photoshoot_id, Some(123));
+    assert_eq!(
+        created.local_path,
+        root.join("editadas").to_string_lossy().to_string()
+    );
+
+    let linked = store.get_gallery(&created.id).expect("linked gallery");
+    assert_eq!(linked.local_path, created.local_path);
+    assert!(
+        !store
+            .load_snapshot("G123")
+            .unwrap()
+            .files
+            .iter()
+            .any(|file| file.filename == "EDITED_01.jpg"),
+        "the parent snapshot must ignore the edited folder"
+    );
+
+    // The local link exists, so the next parent review does not create it
+    // again.
+    let again = plan_sync(&api, &store, &gallery, &SyncOptions::default(), silence())
+        .await
+        .unwrap();
+    assert!(again.plan.edited_folders.is_empty());
+    assert_eq!(
+        again.plan.edited_folders_linked,
+        vec!["editadas".to_string()]
+    );
+
+    // The new gallery is empty in Picstome; its own review uploads the photo.
+    let child = store.get_gallery(&created.id).unwrap();
+    let child_plan = plan_sync(&api, &store, &child, &SyncOptions::default(), silence())
+        .await
+        .unwrap();
+    assert_eq!(child_plan.plan.uploads.len(), 1);
+    assert_eq!(child_plan.plan.uploads[0].filename, "EDITED_01.jpg");
+    let selection = PlanSelection::transfers(&child_plan.plan);
+    let report = apply_sync(
+        &api,
+        &store,
+        child_plan,
+        &selection,
+        &SyncOptions::default(),
+        silence(),
+    )
+    .await
+    .unwrap();
+    assert!(report.errors.is_empty(), "{:?}", report.errors);
+    assert_eq!(report.uploaded.len(), 1);
+    let child_manifest = api.manifest(&created.id).await.unwrap();
+    assert_eq!(child_manifest.photos.len(), 1);
+    assert_eq!(child_manifest.photos[0].filename, "EDITED_01.jpg");
+    assert_eq!(api.manifest("G123").await.unwrap().photos.len(), 50);
+    mock.close().await;
+}
+
+#[tokio::test]
+async fn edited_folder_for_a_gallery_without_photoshoot_is_standalone() {
+    let (mock, api, dir, store, _gallery) = setup_sync().await;
+    let local_path = dir.path().join("Retrato");
+    std::fs::create_dir_all(local_path.join("export")).unwrap();
+    std::fs::write(local_path.join("export/EXP_01.jpg"), jpeg_bytes(400, 4)).unwrap();
+    let gallery = store
+        .upsert_gallery(GalleryEntry {
+            gallery_id: "G456".into(),
+            name: "Retrato Estudio".into(),
+            local_path: local_path.to_string_lossy().to_string(),
+            last_sync_at: None,
+            remote_rev: None,
+            parent_gallery_id: None,
+            raw_mode: None,
+        })
+        .unwrap()
+        .unwrap();
+
+    let planned = plan_sync(&api, &store, &gallery, &SyncOptions::default(), silence())
+        .await
+        .unwrap();
+    assert_eq!(planned.plan.edited_folders.len(), 1);
+    assert_eq!(planned.plan.edited_folders[0].photoshoot_id, None);
+
+    let selection = PlanSelection {
+        create_edited: vec!["export".into()],
+        ..Default::default()
+    };
+    let report = apply_sync(
+        &api,
+        &store,
+        planned,
+        &selection,
+        &SyncOptions::default(),
+        silence(),
+    )
+    .await
+    .unwrap();
+    assert!(report.errors.is_empty(), "{:?}", report.errors);
+    let created = &report.created_galleries[0];
+    assert_eq!(created.name, "Retrato Estudio export");
+    assert_eq!(created.photoshoot_id, None);
+    mock.close().await;
+}
+
 /// A file edited between the review and Apply is left alone and reported.
 #[tokio::test]
 async fn apply_skips_files_changed_after_the_review() {

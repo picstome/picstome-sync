@@ -63,6 +63,9 @@ pub struct GalleryRecord {
     pub name: String,
     pub rev: u64,
     pub photos: Vec<PhotoRecord>,
+    pub photoshoot_id: Option<i64>,
+    pub expiration_date: Option<String>,
+    pub is_public: bool,
 }
 
 #[derive(Debug)]
@@ -170,6 +173,9 @@ pub fn seed_galleries(photo_size: usize) -> HashMap<String, GalleryRecord> {
             name: "MiBoda".into(),
             rev: 1,
             photos: weddings,
+            photoshoot_id: Some(123),
+            expiration_date: Some("2026-12-27".into()),
+            is_public: false,
         },
     );
     galleries.insert(
@@ -179,6 +185,9 @@ pub fn seed_galleries(photo_size: usize) -> HashMap<String, GalleryRecord> {
             name: "Retrato Estudio".into(),
             rev: 1,
             photos: portraits,
+            photoshoot_id: None,
+            expiration_date: None,
+            is_public: false,
         },
     );
 
@@ -270,6 +279,9 @@ fn gallery_summary(gallery: &GalleryRecord, base: &str) -> Value {
         "photo_count": gallery.photos.len(),
         "rev": gallery.rev,
         "updated_at": gallery.photos.iter().map(|photo| photo.updated_at.clone()).max(),
+        "photoshoot_id": gallery.photoshoot_id,
+        "expiration_date": gallery.expiration_date,
+        "is_public": gallery.is_public,
     })
 }
 
@@ -440,6 +452,9 @@ async fn galleries(
         .get("search")
         .map(|value| value.trim().to_lowercase())
         .unwrap_or_default();
+    let photoshoot = params
+        .get("photoshoot_id")
+        .and_then(|value| value.parse::<i64>().ok());
     let page = params
         .get("page")
         .and_then(|value| value.parse::<usize>().ok())
@@ -454,6 +469,7 @@ async fn galleries(
     let mut items: Vec<Value> = galleries
         .values()
         .filter(|gallery| search.is_empty() || gallery.name.to_lowercase().contains(&search))
+        .filter(|gallery| photoshoot.is_none_or(|id| gallery.photoshoot_id == Some(id)))
         .map(|gallery| gallery_summary(gallery, &host_base(&headers)))
         .collect();
     items.sort_by(|a, b| {
@@ -482,6 +498,69 @@ async fn galleries(
             }
         }),
     )
+}
+
+/// Create a private gallery, optionally in a photoshoot. Mirrors
+/// `POST /api/v1/galleries` from the v1 contract.
+async fn create_gallery(
+    State(state): State<Arc<MockState>>,
+    headers: HeaderMap,
+    Json(body): Json<Value>,
+) -> Response {
+    if !is_authorized(&headers, &state) {
+        return unauthorized();
+    }
+    let name = body
+        .get("name")
+        .and_then(Value::as_str)
+        .unwrap_or("Untitled")
+        .trim()
+        .to_string();
+    if name.is_empty() || name.chars().count() > 255 {
+        return json_response(
+            StatusCode::UNPROCESSABLE_ENTITY,
+            json!({
+                "message": "The given data was invalid.",
+                "errors": {"name": ["The name field is required."]},
+                "code": "validation_error",
+            }),
+        );
+    }
+    let photoshoot_id = body.get("photoshoot_id").and_then(Value::as_i64);
+    if let Some(id) = photoshoot_id {
+        let galleries = state.galleries.read().await;
+        if !galleries
+            .values()
+            .any(|gallery| gallery.photoshoot_id == Some(id))
+        {
+            return json_response(
+                StatusCode::UNPROCESSABLE_ENTITY,
+                json!({
+                    "message": "The given data was invalid.",
+                    "errors": {"photoshoot_id": ["The selected photoshoot id is invalid."]},
+                    "code": "validation_error",
+                }),
+            );
+        }
+    }
+    let expiration_date = match body.get("expiration_date") {
+        Some(Value::Null) => None,
+        Some(Value::String(value)) => Some(value.clone()),
+        _ => Some("2026-12-27".to_string()),
+    };
+    let id = format!("G{}", state.next_id());
+    let record = GalleryRecord {
+        id: id.clone(),
+        name,
+        rev: 1,
+        photos: Vec::new(),
+        photoshoot_id,
+        expiration_date,
+        is_public: false,
+    };
+    let summary = gallery_summary(&record, &host_base(&headers));
+    state.galleries.write().await.insert(id, record);
+    json_response(StatusCode::CREATED, json!({ "data": summary }))
 }
 
 /// A deterministic SVG cover: a colour band derived from the gallery id with
@@ -956,7 +1035,7 @@ pub async fn start_mock_server(options: MockServerOptions) -> std::io::Result<Mo
         .route("/api/v1/tokens/exchange", post(exchange))
         .route("/api/v1/tokens/revoke", post(revoke))
         .route("/api/v1/me", get(me))
-        .route("/api/v1/galleries", get(galleries))
+        .route("/api/v1/galleries", get(galleries).post(create_gallery))
         .route("/api/v1/manifest", get(manifest))
         .route("/api/v1/photos", post(upload_photo).delete(delete_photos))
         .route("/files/:gallery/:photo", get(file))

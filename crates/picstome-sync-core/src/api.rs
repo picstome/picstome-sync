@@ -318,6 +318,56 @@ impl ApiClient {
         Self::decode(response).await
     }
 
+    /// Find one gallery in the team list, including its photoshoot id.
+    ///
+    /// The list is paginated and has no id filter, so search by name first and
+    /// fall back to the first pages. Used for edited-folder proposals.
+    pub async fn find_gallery(
+        &self,
+        gallery_id: &str,
+        name: &str,
+    ) -> CoreResult<Option<GallerySummary>> {
+        let search = name.trim();
+        let mut page = 1;
+        loop {
+            let result = self
+                .galleries_page((!search.is_empty()).then_some(search), page, 100)
+                .await?;
+            if let Some(found) = result.data.iter().find(|gallery| gallery.id == gallery_id) {
+                return Ok(Some(found.clone()));
+            }
+            if page >= result.meta.last_page || page >= 5 {
+                break;
+            }
+            page += 1;
+        }
+        Ok(None)
+    }
+
+    /// Create a private gallery in the current team, optionally inside a
+    /// photoshoot. The server applies the plan's default expiration date when
+    /// `expiration_date` is omitted.
+    pub async fn create_gallery(
+        &self,
+        name: &str,
+        photoshoot_id: Option<i64>,
+    ) -> CoreResult<GallerySummary> {
+        let mut body = serde_json::json!({ "name": name });
+        if let Some(id) = photoshoot_id {
+            body["photoshoot_id"] = serde_json::json!(id);
+        }
+        let response = self
+            .send(Method::POST, "/api/v1/galleries", Some(body))
+            .await?;
+
+        #[derive(Deserialize)]
+        struct CreatedGallery {
+            data: GallerySummary,
+        }
+        let response: CreatedGallery = Self::decode(response).await?;
+        Ok(response.data)
+    }
+
     pub async fn upload_photo(
         &self,
         gallery_id: &str,

@@ -29,14 +29,15 @@ use crate::error::{CoreError, CoreResult};
 use crate::identity::identity_key;
 use crate::ignored::GalleryIgnores;
 use crate::localfiles::{
-    preferred_local_files, scan_local_photos_with, RawLocalFile, MAX_PHOTO_BYTES,
+    detect_edited_folders, is_edited_gallery_folder_name, preferred_local_files, scan_local_photos,
+    scan_local_photos_with, RawLocalFile, MAX_PHOTO_BYTES,
 };
 use crate::model::{
-    Conflict, DeleteProposal, DeleteProposals, Diff, DownloadedItem, GalleryEntry, LocalFile,
-    Manifest, Photo, Progress, RatingSyncPlan, RemoteDeletedItem, SnapshotFile, SyncErrorItem,
-    SyncReport, SyncScanStats, SyncTimings, SyncWarningItem,
+    Conflict, CreatedGallery, DeleteProposal, DeleteProposals, Diff, DownloadedItem, GalleryEntry,
+    LocalFile, Manifest, Photo, Progress, RatingSyncPlan, RemoteDeletedItem, SnapshotFile,
+    SyncErrorItem, SyncReport, SyncScanStats, SyncTimings, SyncWarningItem,
 };
-use crate::sanitize::is_inside;
+use crate::sanitize::{is_inside, lexical_absolute};
 use crate::sync::{
     apply_remote_deletions, attach_companions, build_rating_plan, build_snapshot, companion_paths,
     download_proposals, download_target, duplicate_local_warnings, file_mtime_ms, now_millis,
@@ -79,6 +80,23 @@ pub struct PlannedUpload {
     pub raw_first: Vec<String>,
 }
 
+/// A subfolder of the gallery (`editadas`, `edit`, `exportadas`, `export`)
+/// that can become its own Picstome gallery.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct EditedFolderProposal {
+    /// Folder name as it is on disk.
+    pub folder: String,
+    /// Folder path relative to the gallery root.
+    pub relative_path: String,
+    /// Proposed gallery name: parent name plus the folder name.
+    pub gallery_name: String,
+    pub photo_count: u64,
+    /// `None` means the parent gallery has no photoshoot; the new gallery is
+    /// created standalone.
+    pub photoshoot_id: Option<i64>,
+}
+
 /// Everything a sync would do, for the photographer to review.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -111,6 +129,13 @@ pub struct SyncPlan {
     /// Deleting every `local_deleted` photo in Picstome needs the count typed
     /// back (see [`MASS_DELETE_MIN`]).
     pub mass_delete: bool,
+    /// Edited subfolders that can become their own gallery in the same
+    /// photoshoot as this one.
+    #[serde(default)]
+    pub edited_folders: Vec<EditedFolderProposal>,
+    /// Edited subfolders that already have a linked local gallery.
+    #[serde(default)]
+    pub edited_folders_linked: Vec<String>,
     pub scan_stats: SyncScanStats,
     pub timings: SyncTimings,
 }
@@ -126,6 +151,7 @@ impl SyncPlan {
             || !self.conflicts.is_empty()
             || !self.ratings.items.is_empty()
             || !self.ratings.needs_rating.is_empty()
+            || !self.edited_folders.is_empty()
     }
 }
 
@@ -163,6 +189,8 @@ pub struct PlanSelection {
     /// Local files to move to the trash (relative paths), with every other
     /// file of the same photo beside them.
     pub trash_local: Vec<String>,
+    /// Edited subfolders to turn into new galleries (relative paths).
+    pub create_edited: Vec<String>,
 }
 
 impl PlanSelection {
@@ -204,6 +232,23 @@ struct PlanContext {
 
 fn new_plan_id() -> String {
     format!("{:x}{:08x}", now_millis(), rand::random::<u32>())
+}
+
+/// `"MiBoda"` + `"editadas"` -> `"MiBoda editadas"`, capped to the API's
+/// 255-character name limit.
+fn child_gallery_name(base: &str, folder: &str) -> String {
+    let base = base.trim();
+    let folder = folder.trim();
+    let name = if base.is_empty() {
+        folder.to_string()
+    } else {
+        format!("{base} {folder}")
+    };
+    name.chars().take(255).collect()
+}
+
+fn same_local_folder(entry: &GalleryEntry, path: &Path) -> bool {
+    lexical_absolute(Path::new(&entry.local_path)) == lexical_absolute(path)
 }
 
 fn progress_event(gallery_id: &str, phase: &str, done: u64, total: u64) -> Progress {
@@ -466,6 +511,73 @@ pub async fn plan_sync(
         Vec::new()
     };
 
+    let base_name = if manifest.name.is_empty() {
+        gallery.name.clone()
+    } else {
+        manifest.name.clone()
+    };
+
+    // Edited subfolders can become sibling galleries in the same photoshoot.
+    // They are excluded from the parent scan on purpose, so this is a
+    // separate, direct-children-only detection.
+    let mut edited_folders = Vec::new();
+    let mut edited_folders_linked = Vec::new();
+    let edited_candidates = detect_edited_folders(Path::new(&gallery.local_path), MAX_PHOTO_BYTES);
+    if !edited_candidates.is_empty() {
+        let index = store.load_index();
+        let mut to_propose = Vec::new();
+        for candidate in edited_candidates {
+            if index
+                .iter()
+                .any(|entry| same_local_folder(entry, &candidate.path))
+            {
+                edited_folders_linked.push(candidate.name);
+            } else {
+                to_propose.push(candidate);
+            }
+        }
+        if !to_propose.is_empty() {
+            match api.find_gallery(gallery_id, &base_name).await {
+                Ok(Some(parent)) if parent.photoshoot_known() => {
+                    let photoshoot_id = parent.photoshoot();
+                    for candidate in to_propose {
+                        edited_folders.push(EditedFolderProposal {
+                            folder: candidate.name.clone(),
+                            relative_path: candidate.name.clone(),
+                            gallery_name: child_gallery_name(&base_name, &candidate.name),
+                            photo_count: candidate.photo_count,
+                            photoshoot_id,
+                        });
+                    }
+                }
+                Ok(Some(_)) => warnings.push(SyncWarningItem {
+                    kind: "edited_folder_unsupported".into(),
+                    filename: None,
+                    preferred: None,
+                    path: None,
+                    message: "This Picstome API does not expose the gallery photoshoot; update Picstome to create edited galleries in the same photoshoot.".into(),
+                }),
+                Ok(None) => warnings.push(SyncWarningItem {
+                    kind: "edited_folder_lookup_failed".into(),
+                    filename: None,
+                    preferred: None,
+                    path: None,
+                    message: format!(
+                        "Could not find \"{base_name}\" in the Picstome gallery list; \
+                         edited folders will be proposed again on the next review."
+                    ),
+                }),
+                Err(error) => warnings.push(SyncWarningItem {
+                    kind: "edited_folder_lookup_failed".into(),
+                    filename: None,
+                    preferred: None,
+                    path: None,
+                    message: format!("Could not read the gallery photoshoot: {error}"),
+                }),
+            }
+        }
+    }
+
     // Downloads, with the place each one would be written.
     let local_by_key = preferred_local_files(&local_files);
     let mut downloads = Vec::new();
@@ -550,11 +662,7 @@ pub async fn plan_sync(
     let plan = SyncPlan {
         id: new_plan_id(),
         gallery_id: gallery.gallery_id.clone(),
-        name: if manifest.name.is_empty() {
-            gallery.name.clone()
-        } else {
-            manifest.name.clone()
-        },
+        name: base_name,
         first_sync,
         downloads,
         uploads,
@@ -573,6 +681,8 @@ pub async fn plan_sync(
         ignored_remote,
         remote_total,
         mass_delete,
+        edited_folders,
+        edited_folders_linked,
         scan_stats,
         timings,
     };
@@ -634,6 +744,178 @@ fn safe_join_relative(root: &Path, relative: &str) -> Option<std::path::PathBuf>
     is_inside(root, &path).then_some(path)
 }
 
+/// Create one private Picstome gallery per selected edited subfolder.
+///
+/// The new gallery is a sibling of the original inside the same photoshoot.
+/// Before creating, the parent gallery is read again so a photoshoot removed
+/// or changed in the web since the review is respected; a gallery that already
+/// exists with the same name and photoshoot is linked instead of duplicated.
+#[allow(clippy::too_many_arguments)]
+async fn create_edited_galleries(
+    api: &ApiClient,
+    store: &Store,
+    parent: &GalleryEntry,
+    parent_name: &str,
+    proposals: &[EditedFolderProposal],
+    selected: &[String],
+    root: &Path,
+) -> (Vec<CreatedGallery>, Vec<SyncErrorItem>) {
+    let mut created = Vec::new();
+    let mut errors = Vec::new();
+    let wanted: HashSet<&str> = selected.iter().map(String::as_str).collect();
+    if wanted.is_empty() {
+        return (created, errors);
+    }
+
+    let edited_error = |folder: &str, message: String| SyncErrorItem {
+        phase: "edited_gallery".into(),
+        filename: Some(folder.to_string()),
+        path: None,
+        message,
+    };
+
+    // The photoshoot is read fresh: the web may have changed it after the
+    // review. Refuse to create a standalone gallery when the API is too old
+    // to tell, because that would put the photos in the wrong place.
+    let fresh_parent = match api.find_gallery(&parent.gallery_id, parent_name).await {
+        Ok(Some(gallery)) if gallery.photoshoot_known() => gallery,
+        Ok(Some(_)) => {
+            errors.push(edited_error(
+                "",
+                "This Picstome API does not expose the gallery photoshoot; update Picstome and review again.".into(),
+            ));
+            return (created, errors);
+        }
+        Ok(None) => {
+            errors.push(edited_error(
+                "",
+                "Could not find the original gallery in Picstome; review the changes again.".into(),
+            ));
+            return (created, errors);
+        }
+        Err(error) => {
+            errors.push(edited_error(
+                "",
+                format!("Could not read the original gallery photoshoot: {error}"),
+            ));
+            return (created, errors);
+        }
+    };
+    let photoshoot_id = fresh_parent.photoshoot();
+
+    let index = store.load_index();
+    for proposal in proposals {
+        if !wanted.contains(proposal.relative_path.as_str()) {
+            continue;
+        }
+        let folder = Path::new(&proposal.relative_path);
+        if folder.components().count() != 1
+            || !is_edited_gallery_folder_name(&proposal.relative_path)
+        {
+            errors.push(edited_error(
+                &proposal.folder,
+                "This folder can no longer be turned into a gallery".into(),
+            ));
+            continue;
+        }
+        let folder_path = root.join(folder);
+        let Ok(metadata) = std::fs::symlink_metadata(&folder_path) else {
+            errors.push(edited_error(
+                &proposal.folder,
+                "The edited folder no longer exists".into(),
+            ));
+            continue;
+        };
+        if !metadata.file_type().is_dir() {
+            errors.push(edited_error(
+                &proposal.folder,
+                "The edited folder is not a regular directory anymore".into(),
+            ));
+            continue;
+        }
+        if index
+            .iter()
+            .any(|entry| same_local_folder(entry, &folder_path))
+        {
+            // Another apply or the previous review already linked it.
+            continue;
+        }
+        let (files, _scan_errors) = scan_local_photos(&folder_path, 8, true, MAX_PHOTO_BYTES);
+        if files.is_empty() {
+            errors.push(edited_error(
+                &proposal.folder,
+                "The edited folder no longer contains photos".into(),
+            ));
+            continue;
+        }
+
+        // Reuse a gallery created by a previous attempt (or manually in the
+        // web) instead of creating a duplicate.
+        let existing = match api
+            .galleries_page(Some(&proposal.gallery_name), 1, 100)
+            .await
+        {
+            Ok(page) => page.data.into_iter().find(|gallery| {
+                gallery.name == proposal.gallery_name
+                    && gallery.photoshoot_known()
+                    && gallery.photoshoot() == photoshoot_id
+            }),
+            Err(error) => {
+                errors.push(edited_error(
+                    &proposal.folder,
+                    format!("Could not check for an existing gallery: {error}"),
+                ));
+                continue;
+            }
+        };
+        let gallery = match existing {
+            Some(gallery) => gallery,
+            None => match api
+                .create_gallery(&proposal.gallery_name, photoshoot_id)
+                .await
+            {
+                Ok(gallery) => gallery,
+                Err(error) => {
+                    errors.push(edited_error(
+                        &proposal.folder,
+                        format!("Could not create the edited gallery: {error}"),
+                    ));
+                    continue;
+                }
+            },
+        };
+
+        let local_path = folder_path.to_string_lossy().to_string();
+        let entry = GalleryEntry {
+            gallery_id: gallery.id.clone(),
+            name: gallery.name.clone(),
+            local_path: local_path.clone(),
+            last_sync_at: None,
+            remote_rev: None,
+            parent_gallery_id: None,
+            raw_mode: parent.raw_mode,
+        };
+        if let Err(error) = store.upsert_gallery(entry) {
+            errors.push(edited_error(
+                &proposal.folder,
+                format!(
+                    "The gallery was created in Picstome but could not be linked locally: {error}"
+                ),
+            ));
+            continue;
+        }
+        let photoshoot = gallery.photoshoot();
+        created.push(CreatedGallery {
+            id: gallery.id,
+            name: gallery.name,
+            local_path,
+            photoshoot_id: photoshoot,
+            photo_count: files.len() as u64,
+        });
+    }
+    (created, errors)
+}
+
 /// Apply the ticked actions of a reviewed plan.
 ///
 /// Order: forget/ignore choices, trash, downloads, uploads, snapshot, then
@@ -663,9 +945,10 @@ pub async fn apply_sync(
     let gallery_id = gallery.gallery_id.clone();
     let root = Path::new(&gallery.local_path).to_path_buf();
     let now = now_millis();
-    // "Nothing to sync" means no file differed when the review was made.
-    let in_sync = !diff.has_changes();
     let mut timings = plan.timings;
+    // "Nothing to sync" means no file differed when the review was made and no
+    // new gallery was requested.
+    let mut in_sync = !diff.has_changes() && selection.create_edited.is_empty();
 
     if store
         .load_snapshot(&gallery_id)
@@ -1062,6 +1345,24 @@ pub async fn apply_sync(
     })?;
     timings.snapshot_ms = snapshot_started.elapsed().as_millis() as u64;
 
+    // Edited subfolders selected in the review become sibling galleries in
+    // the same photoshoot. This is a server-side create plus a local link; the
+    // photos themselves are uploaded by the new gallery's own review.
+    let (created_galleries, edited_errors) = create_edited_galleries(
+        api,
+        store,
+        &gallery,
+        &plan.name,
+        &plan.edited_folders,
+        &selection.create_edited,
+        &root,
+    )
+    .await;
+    if !created_galleries.is_empty() {
+        in_sync = false;
+    }
+    errors.extend(edited_errors);
+
     // Delete in Picstome the photos deleted here, if still unchanged there
     // and still absent here.
     let mut deleted_remote = Vec::new();
@@ -1191,6 +1492,7 @@ pub async fn apply_sync(
         },
         favorites: rating_plan.needs_rating.clone(),
         rating_plan,
+        created_galleries,
         errors: plan.errors.iter().cloned().chain(errors).collect(),
         warnings: plan.warnings.clone(),
         ignored_local: plan.ignored_local.clone(),
@@ -1280,6 +1582,8 @@ mod tests {
             ignored_remote: vec![],
             remote_total: 3,
             mass_delete: false,
+            edited_folders: vec![],
+            edited_folders_linked: vec![],
             scan_stats: SyncScanStats::default(),
             timings: SyncTimings::default(),
         };

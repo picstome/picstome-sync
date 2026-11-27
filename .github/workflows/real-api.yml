@@ -7,6 +7,10 @@ on:
         description: "Exercise upload + delete round-trip on the real gallery"
         type: boolean
         default: false
+      create_edit:
+        description: "Create a disposable edited gallery and upload/delete one photo (leaves an empty gallery)"
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -35,6 +39,7 @@ jobs:
         run: cargo run -p picstome-sync-core --bin real-api-smoke
         env:
           PICSTOME_REAL_WRITE: ${{ inputs.write && '1' || '0' }}
+          PICSTOME_REAL_CREATE_EDIT: ${{ inputs.create_edit && '1' || '0' }}
 
   app:
     name: Tauri UI against real API

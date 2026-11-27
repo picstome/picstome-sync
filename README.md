@@ -33,6 +33,10 @@ A `picstome://sync` link from the web opens the review, never applies it.
   trash. Nothing is deleted without choosing it. Skipped items are tracked in
   `.picstome-ignore.json` and become sync candidates again if the file or the
   remote version changes.
+- Detects `editadas`, `edit`, `exportadas` and `export` subfolders inside a
+  linked folder and offers to create a sibling gallery in the same Picstome
+  photoshoot, then review and upload its photos. The parent gallery never
+  uploads those files.
 - Downloads remote photos, uploads local photos, and updates changed files.
 - Detects local deletions and proposes deleting the remote copy.
 - Detects remote deletions and asks whether to trash the local copy, keep it,
@@ -132,6 +136,12 @@ A `picstome://sync` link from the web opens the review, never applies it.
   linked folder disappears (renamed, drive unplugged), the gallery offers
   **Locate…**, which keeps the sync history. Local deletions go to
   the OS trash or a `.picstome-trash` folder inside the gallery.
+- **Edited galleries:** an `editadas`/`edit`/`exportadas`/`export` subfolder is
+  never uploaded to its parent gallery. The review can create a new private
+  gallery with the same photoshoot, and the photos are uploaded only after
+  reviewing that new gallery. This needs the v1 `POST /api/v1/galleries`
+  endpoint and `photoshoot_id` in `GET /api/v1/galleries`; with an older API the
+  app shows an update warning and leaves the folder untouched.
 - **Logs:** per-gallery JSONL logs at `logs/<gallery-id>.log`, rotated at
   512 KB. Uploads, downloads, ratings, deletions, trash locations, errors,
   warnings, and conflicts are recorded.

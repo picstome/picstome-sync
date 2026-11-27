@@ -216,7 +216,7 @@ pub struct Manifest {
     pub photos: Vec<Photo>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct GallerySummary {
     pub id: String,
     pub name: String,
@@ -228,6 +228,27 @@ pub struct GallerySummary {
     pub photo_count: Option<u64>,
     #[serde(default)]
     pub rev: Option<Value>,
+    /// Internal photoshoot id. `None` means the field was absent (an older
+    /// API); `Some(None)` means the gallery has no photoshoot (explicit null).
+    #[serde(default, deserialize_with = "deserialize_double_option")]
+    pub photoshoot_id: Option<Option<i64>>,
+    /// `YYYY-MM-DD`, or `null` when the gallery does not expire.
+    #[serde(default)]
+    pub expiration_date: Option<String>,
+    #[serde(default)]
+    pub is_public: Option<bool>,
+}
+
+impl GallerySummary {
+    /// Whether the API told us about the photoshoot field at all.
+    pub fn photoshoot_known(&self) -> bool {
+        self.photoshoot_id.is_some()
+    }
+
+    /// The photoshoot id, or `None` when the gallery has no photoshoot.
+    pub fn photoshoot(&self) -> Option<i64> {
+        self.photoshoot_id.flatten()
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -535,6 +556,18 @@ pub struct SyncScanStats {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub struct CreatedGallery {
+    pub id: String,
+    pub name: String,
+    pub local_path: String,
+    #[serde(default)]
+    pub photoshoot_id: Option<i64>,
+    #[serde(default)]
+    pub photo_count: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct SyncReport {
     pub gallery_id: String,
     pub name: String,
@@ -552,6 +585,9 @@ pub struct SyncReport {
     #[serde(default)]
     pub rating_plan: RatingSyncPlan,
     pub errors: Vec<SyncErrorItem>,
+    /// Galleries created from edited subfolders during this apply.
+    #[serde(default)]
+    pub created_galleries: Vec<CreatedGallery>,
     #[serde(default)]
     pub warnings: Vec<SyncWarningItem>,
     #[serde(default)]
@@ -829,6 +865,23 @@ mod tests {
         assert!(normalize_api_base("").is_err());
         assert!(normalize_api_base("ftp://example.test").is_err());
         assert!(normalize_api_base("not a url").is_err());
+    }
+
+    #[test]
+    fn gallery_summary_distinguishes_missing_and_null_photoshoot() {
+        let missing: GallerySummary = serde_json::from_str(r#"{"id":"G1","name":"x"}"#).unwrap();
+        assert!(!missing.photoshoot_known());
+        assert_eq!(missing.photoshoot(), None);
+
+        let null: GallerySummary =
+            serde_json::from_str(r#"{"id":"G1","name":"x","photoshoot_id":null}"#).unwrap();
+        assert!(null.photoshoot_known());
+        assert_eq!(null.photoshoot(), None);
+
+        let with_id: GallerySummary =
+            serde_json::from_str(r#"{"id":"G1","name":"x","photoshoot_id":123}"#).unwrap();
+        assert!(with_id.photoshoot_known());
+        assert_eq!(with_id.photoshoot(), Some(123));
     }
 
     #[test]

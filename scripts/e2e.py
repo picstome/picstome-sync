@@ -30,6 +30,7 @@ import subprocess
 import sys
 import tempfile
 import time
+import traceback
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -333,8 +334,8 @@ def _mock_request(url, body=None):
         return json.loads(response.read() or b"null")
 
 
-def mock_manifest(api_base):
-    return _mock_request(f"{api_base}/api/v1/manifest?gallery=G123")
+def mock_manifest(api_base, gallery="G123"):
+    return _mock_request(f"{api_base}/api/v1/manifest?gallery={gallery}")
 
 
 def mock_remove(api_base, photo_id):
@@ -653,6 +654,64 @@ def main():
             plan = review_ui(session)
         assert plan is None or not (plan["downloads"] or plan["uploads"]), summarize(plan)
 
+        if MOCK:
+            # 11. An edited subfolder becomes a sibling gallery in the same
+            #     photoshoot. The parent never uploads its photos.
+            parent_photos = len(mock_manifest(api_base)["photos"])
+            edited_dir = os.path.join(photos, "editadas")
+            os.makedirs(edited_dir, exist_ok=True)
+            write_jpeg(os.path.join(edited_dir, "EDIT_01.jpg"), 4096, 5)
+
+            plan = review_ui(session)
+            edited = plan.get("editedFolders") or []
+            assert len(edited) == 1, summarize(plan)
+            assert edited[0]["folder"] == "editadas", edited
+            assert edited[0]["galleryName"] == "MiBoda editadas", edited
+            assert edited[0]["photoshootId"] == 123, edited
+            assert not any(
+                item["filename"] == "EDIT_01.jpg" for item in plan["uploads"]
+            ), summarize(plan)
+
+            set_row(session, "editedFolders", edited[0]["relativePath"], "create")
+            report = apply_ui(session)
+            created = report.get("createdGalleries") or []
+            assert len(created) == 1, report_summary(report)
+            assert created[0]["name"] == "MiBoda editadas", created
+            assert created[0]["photoshootId"] == 123, created
+            child_id = created[0]["id"]
+
+            clicked = ui(
+                session,
+                """
+                const button = document.querySelector(
+                  '.report-created-gallery[data-gallery-id="%s"]'
+                );
+                if (button) button.click();
+                done(Boolean(button));
+                """
+                % child_id,
+            )
+            assert clicked, "the report must offer a button to review the new gallery"
+            child_plan = wait_for(
+                session,
+                "done(!state.syncBusy && state.review && "
+                "state.review.plan.galleryId === %s ? state.review.plan : null);"
+                % json.dumps(child_id),
+                timeout=60,
+            )
+            names = [item["filename"] for item in child_plan["uploads"]]
+            assert names == ["EDIT_01.jpg"], summarize(child_plan)
+            report = apply_ui(session)
+            assert [
+                item["filename"] for item in report["uploaded"]
+            ] == ["EDIT_01.jpg"], report_summary(report)
+            assert len(mock_manifest(api_base)["photos"]) == parent_photos
+            child_manifest = mock_manifest(api_base, child_id)
+            assert [photo["filename"] for photo in child_manifest["photos"]] == [
+                "EDIT_01.jpg"
+            ], child_manifest
+            open_gallery(session, gallery)
+
         # Unlinking asks first and never touches local files.
         click(session, "#btnUnlink")
         wait_for(session, "done(!document.getElementById('confirmModal').classList.contains('hidden'));")
@@ -694,6 +753,7 @@ if __name__ == "__main__":
     try:
         main()
     except Exception as err:
+        traceback.print_exc()
         log("E2E FAILED:", err)
         try:
             code = DRIVER_PROCESS.poll() if DRIVER_PROCESS else None

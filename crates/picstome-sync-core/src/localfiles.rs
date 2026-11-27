@@ -13,8 +13,24 @@ use crate::identity::{identity_key, is_photo_file, preferred_file};
 use crate::model::{LocalFile, SnapshotFile};
 
 pub const MAX_PHOTO_BYTES: u64 = 500 * 1024 * 1024;
-pub const EDITED_FOLDER_NAMES: &[&str] =
-    &["editadas", "editada", "edits", "edited", "edit", "finales"];
+pub const EDITED_FOLDER_NAMES: &[&str] = &[
+    "editadas",
+    "editada",
+    "edits",
+    "edited",
+    "edit",
+    "finales",
+    "export",
+    "exports",
+    "exported",
+    "exportadas",
+];
+
+/// Subfolders that can be turned into their own Picstome gallery, in the same
+/// photoshoot as the parent gallery. Kept separate from the exclusion list:
+/// `edits`/`finales` are ignored by the parent, but the photographer did not
+/// ask for them to become galleries.
+pub const EDITED_GALLERY_FOLDER_NAMES: &[&str] = &["editadas", "edit", "exportadas", "export"];
 /// Sequential reads benefit from a large buffer: a 64 KiB buffer turns one
 /// 40 MB RAW into 640 blocking-pool round trips.
 const HASH_BUFFER_BYTES: usize = 1024 * 1024;
@@ -78,6 +94,63 @@ pub struct HashStats {
 
 pub fn is_edited_folder_name(name: &str) -> bool {
     EDITED_FOLDER_NAMES.contains(&name.trim().to_ascii_lowercase().as_str())
+}
+
+/// Whether a folder name is one the app offers to turn into its own gallery.
+pub fn is_edited_gallery_folder_name(name: &str) -> bool {
+    EDITED_GALLERY_FOLDER_NAMES.contains(&name.trim().to_ascii_lowercase().as_str())
+}
+
+/// A direct child folder of a gallery that looks like an edited/exported set
+/// and can become its own gallery.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct EditedFolder {
+    pub name: String,
+    pub path: PathBuf,
+    pub photo_count: u64,
+}
+
+/// Find direct child folders named `editadas`, `edit`, `exportadas` or
+/// `export` that contain at least one supported photo.
+///
+/// Only direct children are considered: nested folders are already excluded
+/// from the parent sync, and turning them into galleries would make the
+/// local layout ambiguous.
+pub fn detect_edited_folders(dir: &Path, max_bytes: u64) -> Vec<EditedFolder> {
+    let root = crate::sanitize::lexical_absolute(dir);
+    let Ok(entries) = std::fs::read_dir(&root) else {
+        return Vec::new();
+    };
+    let mut folders = Vec::new();
+    for entry in entries.filter_map(Result::ok) {
+        let Ok(file_type) = entry.file_type() else {
+            continue;
+        };
+        if !file_type.is_dir() {
+            continue;
+        }
+        let name = entry.file_name().to_string_lossy().to_string();
+        if name.starts_with('.') {
+            continue;
+        }
+        if !EDITED_GALLERY_FOLDER_NAMES.contains(&name.trim().to_ascii_lowercase().as_str()) {
+            continue;
+        }
+        let path = entry.path();
+        // Count with the same rules the child gallery will use for its own
+        // first sync (depth, hidden folders, size limit).
+        let (files, _errors) = scan_local_photos(&path, 8, true, max_bytes);
+        if files.is_empty() {
+            continue;
+        }
+        folders.push(EditedFolder {
+            name,
+            path,
+            photo_count: files.len() as u64,
+        });
+    }
+    folders.sort_by(|a, b| a.name.cmp(&b.name));
+    folders
 }
 
 pub fn scan_local_photos(
@@ -701,7 +774,38 @@ mod extra_tests {
     fn edited_folder_names_are_case_insensitive() {
         assert!(is_edited_folder_name("EDITS"));
         assert!(is_edited_folder_name(" Editadas "));
+        assert!(is_edited_folder_name("export"));
+        assert!(is_edited_folder_name("EXPORTADAS"));
         assert!(!is_edited_folder_name("editorial"));
+        assert!(is_edited_gallery_folder_name("Edit"));
+        assert!(!is_edited_gallery_folder_name("finales"));
+    }
+
+    #[test]
+    fn detects_only_direct_edited_folders_with_photos() {
+        let dir = tempfile::tempdir().unwrap();
+        for name in ["editadas", "Edit", "exportadas", "export", "finales"] {
+            std::fs::create_dir_all(dir.path().join(name)).unwrap();
+            std::fs::write(dir.path().join(name).join("a.jpg"), b"x").unwrap();
+        }
+        std::fs::create_dir_all(dir.path().join("edit")).unwrap(); // empty
+        std::fs::create_dir_all(dir.path().join("notes")).unwrap();
+        std::fs::write(dir.path().join("notes").join("a.jpg"), b"x").unwrap();
+        std::fs::create_dir_all(dir.path().join("editadas").join("nested")).unwrap();
+        std::fs::write(
+            dir.path().join("editadas").join("nested").join("b.jpg"),
+            b"y",
+        )
+        .unwrap();
+
+        let folders = detect_edited_folders(dir.path(), MAX_PHOTO_BYTES);
+        let names: Vec<&str> = folders.iter().map(|folder| folder.name.as_str()).collect();
+        assert_eq!(names, vec!["Edit", "editadas", "export", "exportadas"]);
+        let editadas = folders
+            .iter()
+            .find(|folder| folder.name == "editadas")
+            .unwrap();
+        assert_eq!(editadas.photo_count, 2);
     }
 
     #[test]

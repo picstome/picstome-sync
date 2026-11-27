@@ -34,6 +34,9 @@ async fn run() -> Result<(), String> {
     let write = std::env::var("PICSTOME_REAL_WRITE")
         .map(|value| value == "1")
         .unwrap_or(false);
+    let create_edit = std::env::var("PICSTOME_REAL_CREATE_EDIT")
+        .map(|value| value == "1")
+        .unwrap_or(false);
 
     let api = ApiClient::new(Some(&base), Some(token)).map_err(|err| err.to_string())?;
     let me = api.me().await.map_err(|err| err.to_string())?;
@@ -42,6 +45,27 @@ async fn run() -> Result<(), String> {
         .await
         .map_err(|err| err.to_string())?;
     let remote_count = manifest.photos.len();
+
+    // The edited-folder feature needs the gallery's photoshoot from the list
+    // endpoint. Fail loudly if devel still serves the old resource.
+    let summary = api
+        .find_gallery(&gallery_id, &manifest.name)
+        .await
+        .map_err(|err| err.to_string())?
+        .ok_or_else(|| {
+            "the configured gallery is missing from GET /api/v1/galleries".to_string()
+        })?;
+    if !summary.photoshoot_known() {
+        return Err(
+            "GET /api/v1/galleries does not expose photoshoot_id; deploy the new API resource"
+                .to_string(),
+        );
+    }
+    println!(
+        "gallery {} photoshoot_id: {:?}",
+        summary.name,
+        summary.photoshoot()
+    );
 
     let dir = std::env::temp_dir().join(format!(
         "picstome-real-smoke-{}-{}",
@@ -143,10 +167,15 @@ async fn run() -> Result<(), String> {
             .ok_or_else(|| "uploaded photo not present in manifest".to_string())?;
 
         std::fs::remove_file(&upload_path).map_err(|err| err.to_string())?;
-        let after_delete_proposal =
-            run_gallery_sync(&api, &store, &gallery, SyncOptions::default(), progress)
-                .await
-                .map_err(|err| err.to_string())?;
+        let after_delete_proposal = run_gallery_sync(
+            &api,
+            &store,
+            &gallery,
+            SyncOptions::default(),
+            progress.clone(),
+        )
+        .await
+        .map_err(|err| err.to_string())?;
         if after_delete_proposal.proposals.delete_remote.len() != 1 {
             return Err("expected one delete proposal".into());
         }
@@ -178,6 +207,84 @@ async fn run() -> Result<(), String> {
         });
     }
 
+    let mut edit_summary = json!(null);
+    if create_edit {
+        // Opt-in live check of POST /api/v1/galleries: create a disposable
+        // gallery in the same photoshoot, upload one real photo, then delete
+        // the photo. The empty gallery is left for the tester to remove in the
+        // web UI; there is no gallery-delete API.
+        let mut name = format!("{} edit smoke {}", manifest.name, rand::random::<u32>());
+        name = name.chars().take(255).collect();
+        let created = api
+            .create_gallery(&name, summary.photoshoot())
+            .await
+            .map_err(|err| format!("create gallery failed: {err}"))?;
+
+        let edit_dir = dir.join("edit-smoke");
+        std::fs::create_dir_all(&edit_dir).map_err(|err| err.to_string())?;
+        std::fs::write(
+            edit_dir.join("PIXEL.jpg"),
+            include_bytes!("../../assets/pixel.jpg"),
+        )
+        .map_err(|err| err.to_string())?;
+        let edit_gallery = store
+            .upsert_gallery(GalleryEntry {
+                gallery_id: created.id.clone(),
+                name: created.name.clone(),
+                local_path: edit_dir.to_string_lossy().to_string(),
+                last_sync_at: None,
+                remote_rev: None,
+                parent_gallery_id: None,
+                raw_mode: None,
+            })
+            .map_err(|err| err.to_string())?
+            .ok_or_else(|| "could not link the created gallery".to_string())?;
+
+        let report = run_gallery_sync(
+            &api,
+            &store,
+            &edit_gallery,
+            SyncOptions::default(),
+            progress.clone(),
+        )
+        .await
+        .map_err(|err| err.to_string())?;
+        if !report.errors.is_empty() || report.uploaded.len() != 1 {
+            return Err(format!(
+                "edited gallery upload failed: uploaded {:?} errors {:?}",
+                report.uploaded.len(),
+                report.errors
+            ));
+        }
+        let child_manifest = api
+            .manifest(&created.id)
+            .await
+            .map_err(|err| err.to_string())?;
+        if child_manifest.photos.len() != 1 {
+            return Err(format!(
+                "expected 1 photo in the edited gallery, got {}",
+                child_manifest.photos.len()
+            ));
+        }
+        let photo_id = child_manifest.photos[0].id.clone();
+        api.delete_photos(&created.id, &[photo_id])
+            .await
+            .map_err(|err| err.to_string())?;
+
+        println!(
+            "created edited gallery {} ({:?}) and uploaded/deleted one photo",
+            created.id,
+            created.photoshoot()
+        );
+        edit_summary = json!({
+            "id": created.id,
+            "name": created.name,
+            "photoshootId": created.photoshoot(),
+            "uploaded": 1,
+            "cleanup": "photo deleted; empty gallery remains in Picstome",
+        });
+    }
+
     let _ = std::fs::remove_dir_all(&dir);
 
     println!(
@@ -190,6 +297,7 @@ async fn run() -> Result<(), String> {
             "downloaded": first.downloaded.len(),
             "secondSkipped": second.skipped,
             "write": write_summary,
+            "editSmoke": edit_summary,
         }))
         .unwrap_or_default()
     );
