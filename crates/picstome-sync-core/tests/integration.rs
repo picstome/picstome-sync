@@ -1681,7 +1681,7 @@ async fn edited_folder_creates_a_sibling_gallery_in_the_same_photoshoot() {
     assert_eq!(planned.plan.edited_folders.len(), 1);
     let proposal = &planned.plan.edited_folders[0];
     assert_eq!(proposal.folder, "editadas");
-    assert_eq!(proposal.gallery_name, "MiBoda editadas");
+    assert_eq!(proposal.gallery_name, "MiBoda - Editadas");
     assert_eq!(proposal.photoshoot_id, Some(123));
     assert_eq!(proposal.photo_count, 1);
     assert!(
@@ -1706,7 +1706,7 @@ async fn edited_folder_creates_a_sibling_gallery_in_the_same_photoshoot() {
     assert!(report.errors.is_empty(), "{:?}", report.errors);
     assert_eq!(report.created_galleries.len(), 1);
     let created = &report.created_galleries[0];
-    assert_eq!(created.name, "MiBoda editadas");
+    assert_eq!(created.name, "MiBoda - Editadas");
     assert_eq!(created.photoshoot_id, Some(123));
     assert_eq!(
         created.local_path,
@@ -1804,7 +1804,7 @@ async fn edited_folder_for_a_gallery_without_photoshoot_is_standalone() {
     .unwrap();
     assert!(report.errors.is_empty(), "{:?}", report.errors);
     let created = &report.created_galleries[0];
-    assert_eq!(created.name, "Retrato Estudio export");
+    assert_eq!(created.name, "Retrato Estudio - Exports");
     assert_eq!(created.photoshoot_id, None);
     mock.close().await;
 }

@@ -78,6 +78,7 @@ const state = {
     },
     confirm: {
         open: false,
+        kind: "",
         title: "",
         message: "",
         confirmLabel: "",
@@ -90,6 +91,8 @@ const state = {
      * the choice made for every row. `null` when there is none.
      */
     review: null,
+    /** Result of the one-shot edited-folder creation, shown inside the review. */
+    editedResult: null,
 };
 
 const els = {
@@ -1172,7 +1175,12 @@ function renderMain() {
     els.detailPath.title = gallery.exists ? s.openFolder : s.folderMissing;
     els.detailStats.textContent = galleryStatsText(gallery);
     const rawLabels = { jpeg_only: s.rawModeJpegOnly, jpeg_and_raw: s.rawModeJpegAndRaw };
-    els.detailRawMode.textContent = rawLabels[gallery.rawMode] || "";
+    els.detailRawMode.replaceChildren();
+    if (gallery.rawMode) {
+        const label = `${rawLabels[gallery.rawMode]} · ${s.rawModeChange}`;
+        els.detailRawMode.append(icon("pencil"), el("span", "", label));
+        els.detailRawMode.setAttribute("aria-label", label);
+    }
     els.detailRawMode.title = s.rawChangeTitle;
     els.detailRawMode.classList.toggle("hidden", !gallery.rawMode);
     els.detailLastSync.textContent = fmt(s.lastSyncAt, {
@@ -1285,8 +1293,14 @@ function renderSyncModal() {
     const view = syncProgressView(progress, s);
     const name = state.syncTarget?.name;
     show(els.syncModal);
-    const applying = state.syncTarget?.mode === "apply";
-    els.syncModalTitle.textContent = fmt(applying ? s.applyingGallery : s.reviewingGallery, {
+    const mode = state.syncTarget?.mode;
+    const title =
+        mode === "edited"
+            ? s.creatingEditedGallery
+            : mode === "apply"
+              ? s.applyingGallery
+              : s.reviewingGallery;
+    els.syncModalTitle.textContent = fmt(title, {
         name: name || "",
     });
     els.syncModalPhase.textContent = view.title;
@@ -1418,16 +1432,6 @@ function renderReport() {
             line.className = "report-file";
             line.textContent = text;
             els.reportFiles.appendChild(line);
-        }
-        for (const item of createdGalleries) {
-            const button = el(
-                "button",
-                "secondary small report-created-gallery",
-                fmt(s.reviewEditedGalleryName, { name: item.name }),
-            );
-            button.type = "button";
-            button.dataset.galleryId = item.id;
-            els.reportFiles.appendChild(button);
         }
     }
 
@@ -1732,6 +1736,7 @@ function settleConfirm(choice) {
     const resolve = state.confirm.resolve;
     state.confirm = {
         open: false,
+        kind: "",
         title: "",
         message: "",
         confirmLabel: "",
@@ -1747,10 +1752,10 @@ function settleConfirm(choice) {
  * Ask the photographer to choose. Resolves `"confirm"` for the main button,
  * `"alt"` for the optional second action and `null` when cancelled.
  */
-function askChoice({ title, message, confirmLabel, altLabel = "", danger = true }) {
+function askChoice({ kind = "", title, message, confirmLabel, altLabel = "", danger = true }) {
     if (state.confirm.resolve) settleConfirm(null);
     return new Promise((resolve) => {
-        state.confirm = { open: true, title, message, confirmLabel, altLabel, danger, resolve };
+        state.confirm = { open: true, kind, title, message, confirmLabel, altLabel, danger, resolve };
         renderConfirm();
     });
 }
@@ -2045,7 +2050,6 @@ async function handleSyncError(err, gallery) {
 
 /** Row choices offered per group, the first being the default. */
 const REVIEW_OPTIONS = {
-    editedFolders: ["create", "later"],
     downloads: ["apply", "later", "ignore"],
     uploads: ["apply", "later", "ignore"],
     uploadsFirstSync: ["apply", "later", "ignore", "trash"],
@@ -2081,7 +2085,6 @@ function reviewOptionLabel(group, option, s) {
         upload: s.optUploadAgain,
         delete: s.optDeleteInPicstome,
         restore: s.optDownloadAgain,
-        create: s.optCreateGallery,
     };
     return labels[option] || option;
 }
@@ -2089,7 +2092,6 @@ function reviewOptionLabel(group, option, s) {
 /** Build the review state for a plan, every row on its default. */
 function newReview(galleryId, plan) {
     const choices = {
-        editedFolders: {},
         downloads: {},
         uploads: {},
         remoteDeleted: {},
@@ -2099,9 +2101,6 @@ function newReview(galleryId, plan) {
     const ratings = plan.ratings || {};
     for (const item of ratings.items || []) choices.ratings[item.id] = "apply";
     for (const item of ratings.needsRating || []) choices.ratings[item.id] = "apply";
-    for (const item of plan.editedFolders || []) {
-        choices.editedFolders[item.relativePath] = "later";
-    }
     for (const item of plan.downloads) choices.downloads[item.id] = "apply";
     for (const item of plan.uploads) choices.uploads[item.relativePath] = "apply";
     for (const item of plan.remoteDeleted) choices.remoteDeleted[item.id] = "later";
@@ -2124,22 +2123,6 @@ function reviewGroups(review, s) {
     const size = (bytes) => (bytes ? formatBytes(bytes) : "");
     const meta = (...parts) => parts.filter(Boolean).join(" · ");
     return [
-        {
-            key: "editedFolders",
-            title: s.groupEditedFolders,
-            items: plan.editedFolders || [],
-            id: (item) => item.relativePath,
-            name: (item) => item.folder,
-            meta: (item) =>
-                item.photoshootId != null
-                    ? fmt(s.editedFolderMeta, {
-                          n: item.photoCount,
-                          gallery: plan.name,
-                      })
-                    : fmt(s.editedFolderNoPhotoshoot, { n: item.photoCount }),
-            options: REVIEW_OPTIONS.editedFolders,
-            tone: "info",
-        },
         {
             key: "downloads",
             title: s.groupDownloads,
@@ -2385,6 +2368,60 @@ function renderReviewNotes(plan, s) {
     return section;
 }
 
+/** Note for the gallery created from an edited folder, with a shortcut. */
+function renderEditedResult(s) {
+    const result = state.editedResult;
+    if (!result) return null;
+    const section = el("section", "review-group notes edited-result");
+    const head = el("div", "review-group-head");
+    head.appendChild(el("h3", "", s.editedGalleryDoneTitle));
+    section.appendChild(head);
+    const created = result.created || [];
+    if (created.length === 1) {
+        section.appendChild(
+            el(
+                "div",
+                "review-note-line",
+                fmt(s.editedGalleryDone, {
+                    name: created[0].name,
+                    n: result.uploaded || 0,
+                }),
+            ),
+        );
+    } else if (created.length > 1) {
+        section.appendChild(
+            el(
+                "div",
+                "review-note-line",
+                fmt(s.editedGalleriesDone, {
+                    n: created.length,
+                    uploaded: result.uploaded || 0,
+                }),
+            ),
+        );
+    }
+    for (const item of created) {
+        const open = el(
+            "button",
+            "secondary small review-open-edited",
+            fmt(s.openEditedGallery, { name: item.name }),
+        );
+        open.type = "button";
+        open.dataset.galleryId = item.id;
+        section.appendChild(open);
+    }
+    const errors = result.errors || [];
+    if (errors.length > 0) {
+        section.appendChild(
+            el("div", "report-error", fmt(s.editedGalleryErrors, { n: errors.length })),
+        );
+        for (const error of errors.slice(0, 3)) {
+            section.appendChild(el("div", "report-error", error.message || String(error)));
+        }
+    }
+    return section;
+}
+
 function renderReview() {
     const s = state.strings;
     const review = state.review;
@@ -2401,6 +2438,8 @@ function renderReview() {
         .map((group) => renderReviewGroup(review, group, s));
     const notes = renderReviewNotes(plan, s);
     if (notes) nodes.push(notes);
+    const editedResult = renderEditedResult(s);
+    if (editedResult) nodes.unshift(editedResult);
     els.reviewGroups.replaceChildren(...nodes);
 
     els.btnReviewDiscard.textContent = s.reviewDiscard;
@@ -2443,15 +2482,80 @@ function showPlan(galleryId, plan) {
         (plan.ratings?.needsRating || []).length;
     state.review = hasWork ? newReview(galleryId, plan) : null;
     state.report = hasWork ? null : inSyncReport(galleryId);
+    state.editedResult = null;
+}
+
+/**
+ * One question for edited subfolders: create the gallery and upload its
+ * photos. After "Create and upload" there are no more prompts; the new
+ * gallery is synced in the same operation.
+ */
+async function offerEditedGallery(galleryId, plan) {
+    const proposals = plan?.editedFolders || [];
+    if (proposals.length === 0 || state.syncBusy) return;
+
+    const first = proposals[0];
+    const one = proposals.length === 1;
+    const message = one
+        ? fmt(
+              first.photoshootId != null
+                  ? state.strings.editedFolderPrompt
+                  : state.strings.editedFolderPromptNoPhotoshoot,
+              {
+                  folder: first.folder,
+                  n: first.photoCount,
+                  name: first.galleryName,
+              },
+          )
+        : fmt(state.strings.editedFoldersPrompt, {
+              n: proposals.length,
+              names: proposals.map((item) => item.galleryName).join(", "),
+          });
+    const confirmed = await askConfirm({
+        kind: "edited_gallery",
+        title: state.strings.editedFolderPromptTitle,
+        message,
+        confirmLabel: state.strings.editedFolderCreateUpload,
+        danger: false,
+    });
+    if (!confirmed) return;
+
+    beginSync(galleryId, plan.name, "edited");
+    try {
+        const result = await invoke("create_edited_gallery", {
+            galleryId,
+            folders: proposals.map((item) => item.relativePath),
+        });
+        state.editedResult = result;
+    } catch (err) {
+        state.editedResult = {
+            created: [],
+            uploaded: 0,
+            downloaded: 0,
+            errors: [
+                {
+                    phase: "edited_gallery",
+                    filename: null,
+                    path: null,
+                    message: err?.message || String(err),
+                },
+            ],
+        };
+    } finally {
+        endSync();
+        await refreshState();
+        renderAll();
+    }
 }
 
 /** Review the selected gallery. */
 async function reviewCurrent() {
     const gallery = currentGallery();
     if (!gallery || state.syncBusy) return;
+    let plan = null;
     beginSync(gallery.galleryId, gallery.name);
     try {
-        const plan = await invoke("review_gallery", { galleryId: gallery.galleryId });
+        plan = await invoke("review_gallery", { galleryId: gallery.galleryId });
         endSync();
         showPlan(gallery.galleryId, plan);
     } catch (err) {
@@ -2459,6 +2563,7 @@ async function reviewCurrent() {
         if (await handleSyncError(err, gallery)) return;
     }
     renderAll();
+    if (plan) await offerEditedGallery(gallery.galleryId, plan);
 }
 
 /**
@@ -2487,6 +2592,7 @@ async function linkAndReview(galleryId, name) {
     if (result?.plan) showPlan(galleryId, result.plan);
     renderAll();
     refreshLog();
+    if (result?.plan) await offerEditedGallery(galleryId, result.plan);
 }
 
 /** The backend selection for the choices of a review. */
@@ -2509,7 +2615,6 @@ function reviewSelection(review) {
         trashLocal: pick("uploads", "trash"),
         deleteRemote: pick("localDeleted", "delete"),
         restore: pick("localDeleted", "restore"),
-        createEdited: pick("editedFolders", "create"),
         confirmMassDelete: Number(review.massConfirm) || null,
         remoteDeleted: Object.entries(review.choices.remoteDeleted)
             .filter(([, choice]) => actions[choice])
@@ -2566,6 +2671,7 @@ async function applyReview() {
 async function discardReview() {
     const review = state.review;
     state.review = null;
+    state.editedResult = null;
     renderAll();
     if (review) {
         try {
@@ -2728,6 +2834,7 @@ async function openGallery(galleryId) {
     if (state.review && state.review.galleryId !== galleryId) discardReview();
     state.currentGalleryId = galleryId;
     state.report = null;
+    state.editedResult = null;
     renderAll();
     refreshLog();
 
@@ -2895,16 +3002,13 @@ els.btnClearLog.addEventListener("click", clearLog);
 
 els.btnReviewApply.addEventListener("click", applyReview);
 els.btnReviewDiscard.addEventListener("click", discardReview);
-els.report.addEventListener("click", (event) => {
-    const button = event.target.closest(".report-created-gallery");
+els.review.addEventListener("click", (event) => {
+    const button = event.target.closest(".review-open-edited");
     if (!button || state.syncBusy) return;
     const galleryId = button.dataset.galleryId;
     if (!galleryId) return;
-    state.currentGalleryId = galleryId;
-    state.report = null;
-    refreshState()
-        .then(() => reviewCurrent())
-        .catch(() => renderAll());
+    state.editedResult = null;
+    openGallery(galleryId);
 });
 els.reviewGroups.addEventListener("change", (event) => {
     const review = state.review;

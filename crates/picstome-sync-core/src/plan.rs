@@ -234,15 +234,28 @@ fn new_plan_id() -> String {
     format!("{:x}{:08x}", now_millis(), rand::random::<u32>())
 }
 
-/// `"MiBoda"` + `"editadas"` -> `"MiBoda editadas"`, capped to the API's
+/// Human label for an edited-folder suffix. `edit`/`edits` become “Edits”,
+/// `export`/`exports` become “Exports”, and the Spanish variants keep their
+/// own label, so the gallery name is predictable regardless of folder case.
+pub fn edited_gallery_suffix(folder: &str) -> String {
+    match folder.trim().to_ascii_lowercase().as_str() {
+        "editadas" | "editada" => "Editadas".to_string(),
+        "edits" | "edited" | "edit" => "Edits".to_string(),
+        "exportadas" | "exportada" => "Exportadas".to_string(),
+        "exports" | "exported" | "export" => "Exports".to_string(),
+        _ => folder.trim().to_string(),
+    }
+}
+
+/// `"MiBoda"` + `"editadas"` -> `"MiBoda - Editadas"`, capped to the API's
 /// 255-character name limit.
-fn child_gallery_name(base: &str, folder: &str) -> String {
+pub fn child_gallery_name(base: &str, folder: &str) -> String {
     let base = base.trim();
-    let folder = folder.trim();
+    let suffix = edited_gallery_suffix(folder);
     let name = if base.is_empty() {
-        folder.to_string()
+        suffix
     } else {
-        format!("{base} {folder}")
+        format!("{base} - {suffix}")
     };
     name.chars().take(255).collect()
 }
@@ -751,7 +764,7 @@ fn safe_join_relative(root: &Path, relative: &str) -> Option<std::path::PathBuf>
 /// or changed in the web since the review is respected; a gallery that already
 /// exists with the same name and photoshoot is linked instead of duplicated.
 #[allow(clippy::too_many_arguments)]
-async fn create_edited_galleries(
+pub async fn create_edited_galleries(
     api: &ApiClient,
     store: &Store,
     parent: &GalleryEntry,
@@ -1592,5 +1605,18 @@ mod tests {
         assert_eq!(selection.uploads, vec!["sub/b.jpg".to_string()]);
         assert!(selection.delete_remote.is_empty());
         assert!(plan.has_changes());
+    }
+
+    #[test]
+    fn names_edited_galleries_with_a_hyphen_and_canonical_suffix() {
+        assert_eq!(edited_gallery_suffix("editadas"), "Editadas");
+        assert_eq!(edited_gallery_suffix("edit"), "Edits");
+        assert_eq!(edited_gallery_suffix("EDIT"), "Edits");
+        assert_eq!(edited_gallery_suffix("export"), "Exports");
+        assert_eq!(
+            child_gallery_name("MiBoda", "exportadas"),
+            "MiBoda - Exportadas"
+        );
+        assert_eq!(child_gallery_name("", "edits"), "Edits");
     }
 }

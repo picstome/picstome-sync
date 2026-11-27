@@ -14,12 +14,19 @@ use picstome_sync_core::config::Store;
 use picstome_sync_core::covers::CoverCache;
 use picstome_sync_core::error::ErrorPayload;
 use picstome_sync_core::ignored::GalleryIgnores;
+use picstome_sync_core::localfiles::{
+    is_edited_gallery_folder_name, scan_local_photos, MAX_PHOTO_BYTES,
+};
 use picstome_sync_core::mock::MockServer;
 use picstome_sync_core::model::{
-    AppState as AppStateView, AuthState, ConfigView, FavoritePhoto, GalleryEntry, GalleryPage,
-    GallerySummary, GalleryView, Progress, RawMode, SyncReport, DEFAULT_API_BASE,
+    AppState as AppStateView, AuthState, ConfigView, CreatedGallery, FavoritePhoto, GalleryEntry,
+    GalleryPage, GallerySummary, GalleryView, Progress, RawMode, SyncErrorItem, SyncReport,
+    DEFAULT_API_BASE,
 };
-use picstome_sync_core::plan::{apply_sync, plan_sync, PlanSelection, PlannedSync, SyncPlan};
+use picstome_sync_core::plan::{
+    apply_sync, child_gallery_name, create_edited_galleries, plan_sync, EditedFolderProposal,
+    PlanSelection, PlannedSync, SyncPlan,
+};
 use picstome_sync_core::sanitize::{sanitize_file_names, sanitize_gallery_id};
 use picstome_sync_core::sync::{
     adopt_local_changes, folder_exists, mark_favorites_rated, mark_ratings_applied,
@@ -1120,6 +1127,192 @@ pub async fn apply_review(
     };
     emit_state(&app, &state).await;
     Ok(ApplyResult { report, ratings })
+}
+
+/// Result of creating an edited-folder gallery and uploading its photos in one
+/// go, after the single confirmation dialog.
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CreateEditedResult {
+    pub created: Vec<CreatedGallery>,
+    pub uploaded: usize,
+    pub downloaded: usize,
+    pub errors: Vec<SyncErrorItem>,
+}
+
+/// Create one gallery per edited subfolder and sync it immediately.
+///
+/// This is the "single question" flow: the UI asks once, then this command
+/// creates/links the gallery in the parent's photoshoot and runs the new
+/// gallery's normal review+apply without asking again. It holds the gallery
+/// lock for the whole operation.
+#[tauri::command]
+pub async fn create_edited_gallery(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    gallery_id: String,
+    folders: Vec<String>,
+) -> Result<CreateEditedResult, ErrorPayload> {
+    let Some(id) = sanitize_gallery_id(&gallery_id) else {
+        return Err(invalid_gallery());
+    };
+    let _ops = state.try_gallery_ops()?;
+    let Some(gallery) = state.store.get_gallery(&id) else {
+        return Err(not_linked());
+    };
+    if !folder_exists(&gallery.local_path) {
+        return Err(folder_missing());
+    }
+    let api = state.api().await;
+    let manifest = api.manifest(&id).await?;
+    let parent_name = if manifest.name.trim().is_empty() {
+        gallery.name.clone()
+    } else {
+        manifest.name.clone()
+    };
+    let root = PathBuf::from(&gallery.local_path);
+
+    let wanted: Vec<String> = folders
+        .into_iter()
+        .filter(|folder| {
+            Path::new(folder).components().count() == 1 && is_edited_gallery_folder_name(folder)
+        })
+        .collect();
+    if wanted.is_empty() {
+        return Err(command_error(
+            "No edited folder to create",
+            "invalid_request",
+        ));
+    }
+
+    let scan_root = root.clone();
+    let scan_name = parent_name.clone();
+    let proposals = tokio::task::spawn_blocking(move || {
+        let mut proposals = Vec::new();
+        for folder in wanted {
+            let path = scan_root.join(&folder);
+            let Ok(metadata) = std::fs::symlink_metadata(&path) else {
+                continue;
+            };
+            if !metadata.file_type().is_dir() {
+                continue;
+            }
+            let (files, _) = scan_local_photos(&path, 8, true, MAX_PHOTO_BYTES);
+            if files.is_empty() {
+                continue;
+            }
+            proposals.push(EditedFolderProposal {
+                folder: folder.clone(),
+                relative_path: folder.clone(),
+                gallery_name: child_gallery_name(&scan_name, &folder),
+                photo_count: files.len() as u64,
+                // The creator reads the fresh photoshoot from the parent.
+                photoshoot_id: None,
+            });
+        }
+        proposals
+    })
+    .await
+    .map_err(|error| command_error(error.to_string(), "error"))?;
+    if proposals.is_empty() {
+        return Err(command_error(
+            "The edited folder no longer contains photos",
+            "invalid_request",
+        ));
+    }
+
+    let progress: Arc<dyn Fn(Progress) + Send + Sync> = {
+        let parent = id.clone();
+        let app = app.clone();
+        Arc::new(move |mut event| {
+            // The UI is showing the parent gallery while this runs; keep the
+            // progress bar in the same operation.
+            event.gallery_id = parent.clone();
+            let _ = app.emit("sync-progress", event);
+        })
+    };
+
+    let selected: Vec<String> = proposals
+        .iter()
+        .map(|proposal| proposal.relative_path.clone())
+        .collect();
+    let (created, mut errors) = create_edited_galleries(
+        &api,
+        &state.store,
+        &gallery,
+        &parent_name,
+        &proposals,
+        &selected,
+        &root,
+    )
+    .await;
+
+    let mut uploaded = 0usize;
+    let mut downloaded = 0usize;
+    for item in &created {
+        let Some(child) = state.store.get_gallery(&item.id) else {
+            errors.push(SyncErrorItem {
+                phase: "edited_gallery".into(),
+                filename: Some(item.name.clone()),
+                path: None,
+                message: "The new gallery is not linked locally".into(),
+            });
+            continue;
+        };
+        let options = SyncOptions {
+            raw_mode: child.raw_mode,
+            ..Default::default()
+        };
+        match plan_sync(&api, &state.store, &child, &options, progress.clone()).await {
+            Ok(child_plan) => {
+                let selection = PlanSelection::transfers(&child_plan.plan);
+                match apply_sync(
+                    &api,
+                    &state.store,
+                    child_plan,
+                    &selection,
+                    &options,
+                    progress.clone(),
+                )
+                .await
+                {
+                    Ok(report) => {
+                        uploaded += report.uploaded.len();
+                        downloaded += report.downloaded.len();
+                        append_sync_log(&state.store, &report);
+                        errors.extend(report.errors);
+                    }
+                    Err(error) => errors.push(SyncErrorItem {
+                        phase: "edited_gallery".into(),
+                        filename: Some(item.name.clone()),
+                        path: None,
+                        message: error.to_string(),
+                    }),
+                }
+            }
+            Err(error) => errors.push(SyncErrorItem {
+                phase: "edited_gallery".into(),
+                filename: Some(item.name.clone()),
+                path: None,
+                message: error.to_string(),
+            }),
+        }
+    }
+
+    if created.is_empty() && errors.is_empty() {
+        return Err(command_error(
+            "The edited folder is already linked",
+            "invalid_request",
+        ));
+    }
+
+    emit_state(&app, &state).await;
+    Ok(CreateEditedResult {
+        created,
+        uploaded,
+        downloaded,
+        errors,
+    })
 }
 
 #[tauri::command]

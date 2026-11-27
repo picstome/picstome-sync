@@ -24,13 +24,21 @@ pub const EDITED_FOLDER_NAMES: &[&str] = &[
     "exports",
     "exported",
     "exportadas",
+    "exportada",
 ];
 
 /// Subfolders that can be turned into their own Picstome gallery, in the same
 /// photoshoot as the parent gallery. Kept separate from the exclusion list:
-/// `edits`/`finales` are ignored by the parent, but the photographer did not
+/// `edited`/`finales` are ignored by the parent, but the photographer did not
 /// ask for them to become galleries.
-pub const EDITED_GALLERY_FOLDER_NAMES: &[&str] = &["editadas", "edit", "exportadas", "export"];
+pub const EDITED_GALLERY_FOLDER_NAMES: &[&str] = &[
+    "editadas",
+    "edits",
+    "edit",
+    "exportadas",
+    "exports",
+    "export",
+];
 /// Sequential reads benefit from a large buffer: a 64 KiB buffer turns one
 /// 40 MB RAW into 640 blocking-pool round trips.
 const HASH_BUFFER_BYTES: usize = 1024 * 1024;
@@ -778,6 +786,8 @@ mod extra_tests {
         assert!(is_edited_folder_name("EXPORTADAS"));
         assert!(!is_edited_folder_name("editorial"));
         assert!(is_edited_gallery_folder_name("Edit"));
+        assert!(is_edited_gallery_folder_name("Edits"));
+        assert!(is_edited_gallery_folder_name("EXPORTS"));
         assert!(!is_edited_gallery_folder_name("finales"));
     }
 

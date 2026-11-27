@@ -223,6 +223,32 @@ def set_group(session, group, value):
     _choose(session, f'select.review-all[data-group="{group}"]', value)
 
 
+def screenshot(session, name):
+    """Save the Xvfb screen so the UI can be reviewed before shipping."""
+    # Let the modal/backdrop animations finish before capturing.
+    time.sleep(0.4)
+    folder = "/tmp/opencode"
+    os.makedirs(folder, exist_ok=True)
+    suffix = "-es" if os.environ.get("PICSTOME_LANG", "").lower().startswith("es") else ""
+    path = os.path.join(folder, name.replace(".png", f"{suffix}.png"))
+    try:
+        # WebKitGTK's WebDriver screenshot endpoint hangs under Xvfb, so grab
+        # the virtual display with ImageMagick instead.
+        subprocess.run(
+            ["import", "-window", "root", path],
+            check=True,
+            env=os.environ,
+            timeout=20,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.PIPE,
+        )
+    except Exception as error:
+        log("screenshot skipped:", error)
+        return None
+    log("screenshot:", path)
+    return path
+
+
 def has_group(session, group):
     return ui(
         session,
@@ -666,51 +692,59 @@ def main():
             edited = plan.get("editedFolders") or []
             assert len(edited) == 1, summarize(plan)
             assert edited[0]["folder"] == "editadas", edited
-            assert edited[0]["galleryName"] == "MiBoda editadas", edited
+            assert edited[0]["galleryName"] == "MiBoda - Editadas", edited
             assert edited[0]["photoshootId"] == 123, edited
             assert not any(
                 item["filename"] == "EDIT_01.jpg" for item in plan["uploads"]
             ), summarize(plan)
 
-            set_row(session, "editedFolders", edited[0]["relativePath"], "create")
-            report = apply_ui(session)
-            created = report.get("createdGalleries") or []
-            assert len(created) == 1, report_summary(report)
-            assert created[0]["name"] == "MiBoda editadas", created
-            assert created[0]["photoshootId"] == 123, created
-            child_id = created[0]["id"]
-
-            clicked = ui(
+            prompt = wait_for(
                 session,
-                """
-                const button = document.querySelector(
-                  '.report-created-gallery[data-gallery-id="%s"]'
-                );
-                if (button) button.click();
-                done(Boolean(button));
-                """
-                % child_id,
-            )
-            assert clicked, "the report must offer a button to review the new gallery"
-            child_plan = wait_for(
-                session,
-                "done(!state.syncBusy && state.review && "
-                "state.review.plan.galleryId === %s ? state.review.plan : null);"
-                % json.dumps(child_id),
+                "done(state.confirm.open && state.confirm.kind === 'edited_gallery'"
+                " ? {title: state.confirm.title, message: state.confirm.message} : null);",
                 timeout=60,
             )
-            names = [item["filename"] for item in child_plan["uploads"]]
-            assert names == ["EDIT_01.jpg"], summarize(child_plan)
-            report = apply_ui(session)
-            assert [
-                item["filename"] for item in report["uploaded"]
-            ] == ["EDIT_01.jpg"], report_summary(report)
+            assert "MiBoda - Editadas" in prompt["message"], prompt
+            screenshot(session, "edited-gallery-prompt.png")
+
+            click(session, "#btnConfirmOk")
+            result = wait_for(
+                session,
+                "done(!state.syncBusy && state.editedResult ? state.editedResult : null);",
+                timeout=180,
+            )
+            created = result.get("created") or []
+            assert len(created) == 1, result
+            assert created[0]["name"] == "MiBoda - Editadas", created
+            assert created[0]["photoshootId"] == 123, created
+            assert result.get("uploaded") == 1, result
+            child_id = created[0]["id"]
+            screenshot(session, "edited-gallery-result.png")
+
             assert len(mock_manifest(api_base)["photos"]) == parent_photos
             child_manifest = mock_manifest(api_base, child_id)
             assert [photo["filename"] for photo in child_manifest["photos"]] == [
                 "EDIT_01.jpg"
             ], child_manifest
+
+            # The command already synced the child; the parent review has no
+            # actions left. Discard it and go back to the parent.
+            discard_ui(session)
             open_gallery(session, gallery)
+
+            # The RAW badge is the per-gallery setting: it says what is
+            # uploaded for RAW files and opens the dialog to change it.
+            js_invoke(
+                session,
+                "set_gallery_raw_mode",
+                {"galleryId": gallery, "mode": "jpeg_only"},
+            )
+            wait_for(
+                session,
+                "done((state.galleries.find(g => g.galleryId === %s) || {}).rawMode"
+                " === 'jpeg_only');" % json.dumps(gallery),
+            )
+            screenshot(session, "raw-badge.png")
 
         # Unlinking asks first and never touches local files.
         click(session, "#btnUnlink")

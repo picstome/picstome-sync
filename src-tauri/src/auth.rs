@@ -11,7 +11,11 @@ use serde::{Deserialize, Serialize};
 /// identifier so the user can recognise it in Keychain/Credential Manager.
 const KEYRING_SERVICE: &str = "com.picstome.sync";
 const KEYRING_USER: &str = "picstome-api-token";
-/// Escape hatch for headless machines, CI and scripts: keep the 0600 file.
+/// The OS credential store is opt-in: it can prompt for the computer
+/// password on every launch with an ad-hoc signed macOS build, or when the
+/// Linux keyring is locked.
+const USE_KEYRING_ENV: &str = "PICSTOME_USE_KEYRING";
+/// Force the historical 0600 file even when `PICSTOME_USE_KEYRING=1`.
 const DISABLE_KEYRING_ENV: &str = "PICSTOME_DISABLE_KEYRING";
 
 /// A broken Secret Service must not freeze the window at startup. macOS is
@@ -68,7 +72,7 @@ impl SecretBackend for KeyringBackend {
     }
 }
 
-/// Used when `PICSTOME_DISABLE_KEYRING=1` is set.
+/// The historical, default storage: `auth.json` with mode 0600.
 struct FileOnlyBackend;
 
 impl SecretBackend for FileOnlyBackend {
@@ -86,15 +90,19 @@ impl SecretBackend for FileOnlyBackend {
     }
 }
 
-fn keyring_disabled() -> bool {
-    std::env::var(DISABLE_KEYRING_ENV)
+fn env_flag(name: &str) -> bool {
+    std::env::var(name)
         .map(|value| value == "1" || value.eq_ignore_ascii_case("true"))
         .unwrap_or(false)
 }
 
-/// Stores the API token in the OS credential store and falls back to the
-/// historical `auth.json` (mode 0600) when no secure store is available, so a
-/// headless Linux machine can still sign in.
+fn keyring_enabled() -> bool {
+    env_flag(USE_KEYRING_ENV) && !env_flag(DISABLE_KEYRING_ENV)
+}
+
+/// Stores the API token in `auth.json` (mode 0600) by default. With
+/// `PICSTOME_USE_KEYRING=1` it uses the OS credential store instead, falling
+/// back to the file when the store is unavailable.
 #[derive(Clone)]
 pub struct TokenStore {
     path: PathBuf,
@@ -112,10 +120,10 @@ impl std::fmt::Debug for TokenStore {
 
 impl TokenStore {
     pub fn new(path: impl Into<PathBuf>) -> Self {
-        let backend: Arc<dyn SecretBackend> = if keyring_disabled() {
-            Arc::new(FileOnlyBackend)
-        } else {
+        let backend: Arc<dyn SecretBackend> = if keyring_enabled() {
             Arc::new(KeyringBackend)
+        } else {
+            Arc::new(FileOnlyBackend)
         };
         Self {
             path: path.into(),

@@ -172,6 +172,7 @@ pub fn run() {
             commands::start_sync,
             commands::review_gallery,
             commands::apply_review,
+            commands::create_edited_gallery,
             commands::discard_review,
             commands::clear_sync_ignores,
             commands::locate_gallery,

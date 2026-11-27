@@ -2037,6 +2037,10 @@ input[type="radio"]:focus-visible {
     font-family: inherit;
 }
 
+#detailRawMode {
+    gap: 5px;
+}
+
 .meta-action:hover {
     border-color: var(--line-strong);
     background: #ffffff;
@@ -2213,6 +2217,11 @@ input[type="radio"]:focus-visible {
     color: var(--graphite);
     font-size: 12px;
     line-height: 1.5;
+}
+
+.review-open-edited {
+    align-self: flex-start;
+    margin-top: 4px;
 }
 
 .mass-delete {

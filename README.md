@@ -74,13 +74,13 @@ A `picstome://sync` link from the web opens the review, never applies it.
   [`crates/picstome-sync-core`](crates/picstome-sync-core) and does not depend on
   Tauri. The UI is static HTML/CSS/JS in [`ui`](ui).
 - **Authentication:** the browser authorization flow returns to
-  `picstome://auth`; the token is kept in the OS credential store (Windows
-  Credential Manager, macOS Keychain, or the Linux Secret Service) and is never
-  written to disk when that store is available. On machines without a secure
-  store (headless Linux, CI), or with `PICSTOME_DISABLE_KEYRING=1`, it falls
-  back to `auth.json` (mode `0600`) in the app data directory. An `auth.json`
-  left by an older build is migrated into the credential store and removed on
-  the first run that can use it.
+  `picstome://auth`; the token is kept in `auth.json` (mode `0600`) in the app
+  data directory, as in earlier builds. With `PICSTOME_USE_KEYRING=1` it is
+  stored in the OS credential store instead (Windows Credential Manager, macOS
+  Keychain, or the Linux Secret Service) and removed from disk; an existing
+  `auth.json` is migrated on the first run. The keyring is opt-in because
+  macOS ad-hoc builds and locked Linux keyrings can ask for the computer
+  password on every launch.
 - **Sync state:** each gallery has a JSON snapshot in the app data directory.
   Remote changes are detected by `version_count`; local changes by the file
   hash, size, and modification time. This avoids treating a resized web copy as
@@ -205,7 +205,8 @@ Useful developer variables:
 | `PICSTOME_TOKEN` | Pre-supply a token in debug/demo builds only. |
 | `PICSTOME_MOCK=1` | Use mock mode. |
 | `PICSTOME_DISABLE_UPDATE_CHECK=1` | Skip the GitHub update check (tests/E2E). |
-| `PICSTOME_DISABLE_KEYRING=1` | Skip the OS credential store and use `auth.json` (mode `0600`). |
+| `PICSTOME_USE_KEYRING=1` | Store the token in the OS credential store instead of `auth.json` (may prompt for the computer password). |
+| `PICSTOME_DISABLE_KEYRING=1` | Force `auth.json` even when `PICSTOME_USE_KEYRING=1` (tests/E2E). |
 
 ### Standalone mock API
 
